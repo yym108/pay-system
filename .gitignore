@@ -1,0 +1,20 @@
+# 构建产物
+/bin/
+/dist/
+*.exe
+*.test
+
+# 覆盖率与性能分析
+*.out
+coverage.*
+*.pprof
+
+# 本地配置与密钥（只提交 deploy/.env.example）
+.env
+deploy/.env
+*.local
+
+# IDE 与系统文件
+.idea/
+.vscode/
+.DS_Store
