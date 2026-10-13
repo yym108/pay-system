@@ -1,6 +1,6 @@
 # 技术路线与决策记录
 
-> 最后更新：2026-10-12
+> 最后更新：2026-10-13
 > 状态：已决策，第 1 周开工即按本文锁定版本。推翻任一决策需在本文追加新记录，写明原因。
 > 2026-10-12：项目聚焦支付、退款、转账三条资金链路，新增 D17–D21（账户分片、跨分片转账 TCC、平台子账户、批量记账、链路延迟优化），调整 D10、D14 与 §4。
 
@@ -34,7 +34,7 @@
 
 | 组件 | 版本 | 说明 |
 |---|---|---|
-| Go | 1.27（本机 1.27.1，镜像 `golang:1.27.2-alpine`） | `go.mod` 写 `go 1.27.0` |
+| Go | 1.27（本机 1.27.2，镜像 `golang:1.27.2-alpine`） | `go.mod` 写 `go 1.27.0`；BASE-01 Dockerfile 锁定 digest `sha256:f92b6ef800e499660581efdabdf25d9d817a9d124eaf900924f0504e7e27e12d` |
 | github.com/cloudwego/hertz | v0.10.6 | 网关、channel_mock、merchant-demo |
 | github.com/cloudwego/kitex | v0.16.3 | RPC 运行时，代码生成工具同版本 `kitex/tool/cmd/kitex@v0.16.3` |
 | github.com/cloudwego/thriftgo | v0.4.5 | kitex 代码生成依赖 |
@@ -65,6 +65,11 @@
 | Prometheus | `prom/prometheus:v3.15.0` |
 | Jaeger | `jaegertracing/jaeger:2.22.0`（直接接收 OTLP） |
 | 压测 | `grafana/k6:2.3.0` |
+| BASE-01 运行时 | `alpine:3.22.1` | 最小运行镜像；Dockerfile 锁定 digest `sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1`，使用 UID/GID 65532 的非 root 用户 |
+
+BASE-01 镜像 digest 于 2026-10-13 在本机 Docker 29.4.0 执行 `docker pull` 后用 `docker image inspect` 获取并写入 `deploy/Dockerfile`。运行阶段选择 Alpine 是为了减少占用；程序以 `CGO_ENABLED=0` 的静态二进制运行，不需要额外运行时依赖。
+
+BASE-01（2026-10-13）：根据本机实际安装版本，将本表 Go 本机版本从 1.27.1 更正为 1.27.2；模块语言版本仍按需求锁定为 `go 1.27.0`。
 
 ### 2.3 已完成的兼容性验证
 

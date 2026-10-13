@@ -332,7 +332,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 
 | 编号 | 功能点 | 优先级 | 里程碑 | 依赖 | 状态 |
 |---|---|---|---|---|---|
-| BASE-01 | 工程骨架与构建 | P0 | M1 | — | TODO |
+| BASE-01 | 工程骨架与构建 | P0 | M1 | — | DONE |
 | BASE-02 | 本地环境编排 | P0 | M1 | BASE-01 | TODO |
 | BASE-03 | 数据库迁移与种子数据 | P0 | M1 | BASE-02 | TODO |
 | BASE-04 | 金额工具 | P0 | M1 | BASE-01 | TODO |

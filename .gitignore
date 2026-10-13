@@ -8,6 +8,8 @@
 *.out
 coverage.*
 *.pprof
+*.log
+.cache/
 
 # 本地配置与密钥（只提交 deploy/.env.example）
 .env

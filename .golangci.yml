@@ -1,0 +1,131 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - staticcheck
+    - gosec
+    - errorlint
+    - bodyclose
+    - sqlclosecheck
+    - rowserrcheck
+    - noctx
+    - contextcheck
+    - depguard
+    - forbidigo
+  settings:
+    depguard:
+      rules:
+        service_account:
+          list-mode: lax
+          files:
+            - "**/service/account/**/*.go"
+          allow:
+            - github.com/yym108/pay-system/service/account
+          deny:
+            - pkg: github.com/yym108/pay-system/service/
+              desc: 服务之间必须通过 kitex_gen 或事件结构交互
+        service_payment:
+          list-mode: lax
+          files:
+            - "**/service/payment/**/*.go"
+          allow:
+            - github.com/yym108/pay-system/service/payment
+          deny:
+            - pkg: github.com/yym108/pay-system/service/
+              desc: 服务之间必须通过 kitex_gen 或事件结构交互
+        service_channel_mock:
+          list-mode: lax
+          files:
+            - "**/service/channel_mock/**/*.go"
+          allow:
+            - github.com/yym108/pay-system/service/channel_mock
+          deny:
+            - pkg: github.com/yym108/pay-system/service/
+              desc: 服务之间必须通过 kitex_gen 或事件结构交互
+        gateway:
+          files:
+            - "**/gateway/**/*.go"
+          deny:
+            - pkg: github.com/yym108/pay-system/service/
+              desc: gateway 只能通过 kitex_gen 或事件结构交互
+        job:
+          files:
+            - "**/job/**/*.go"
+          deny:
+            - pkg: github.com/yym108/pay-system/service/
+              desc: job 只能通过 kitex_gen 或事件结构交互
+        pkg:
+          files:
+            - "**/pkg/**/*.go"
+          deny:
+            - pkg: github.com/yym108/pay-system/service/
+              desc: 公共包不能依赖 service
+            - pkg: github.com/yym108/pay-system/gateway
+              desc: 公共包不能依赖 gateway
+            - pkg: github.com/yym108/pay-system/job
+              desc: 公共包不能依赖 job
+        cmd_account:
+          list-mode: lax
+          files:
+            - "**/cmd/account/**/*.go"
+          allow:
+            - github.com/yym108/pay-system/service/account
+          deny:
+            - pkg: github.com/yym108/pay-system/service/
+              desc: cmd/account 只能装配 service/account
+        cmd_payment:
+          list-mode: lax
+          files:
+            - "**/cmd/payment/**/*.go"
+          allow:
+            - github.com/yym108/pay-system/service/payment
+          deny:
+            - pkg: github.com/yym108/pay-system/service/
+              desc: cmd/payment 只能装配 service/payment
+        cmd_channel_mock:
+          list-mode: lax
+          files:
+            - "**/cmd/channel-mock/**/*.go"
+          allow:
+            - github.com/yym108/pay-system/service/channel_mock
+          deny:
+            - pkg: github.com/yym108/pay-system/service/
+              desc: cmd/channel-mock 只能装配 service/channel_mock
+        cmd_recon:
+          list-mode: lax
+          files:
+            - "**/cmd/recon/**/*.go"
+          allow:
+            - github.com/yym108/pay-system/job/recon
+          deny:
+            - pkg: github.com/yym108/pay-system/service/
+              desc: cmd/recon 只能装配 job/recon
+        cmd_without_service:
+          files:
+            - "**/cmd/gateway/**/*.go"
+            - "**/cmd/merchant-demo/**/*.go"
+            - "**/cmd/paycli/**/*.go"
+          deny:
+            - pkg: github.com/yym108/pay-system/service/
+              desc: 该命令不直接装配 service
+    forbidigo:
+      forbid:
+        - pattern: time\.Now
+          msg: 当前时间必须通过注入的 clock.Clock 获取
+        - pattern: float32
+          msg: 金额链路禁止使用浮点类型
+        - pattern: float64
+          msg: 金额链路禁止使用浮点类型
+      # time.Now 只在业务 biz/job 包禁止，clock 等基础设施可实现真实时钟。
+  exclusions:
+    rules:
+      - path-except: '(^|/)service/[^/]+/biz(/|/.*\.go$)|(^|/)job(/|/.*\.go$)'
+        text: 'use of `time\.Now` forbidden'
+        linters:
+          - forbidigo
+      - path-except: '(^|/)service(/|/.*\.go$)|(^|/)pkg/money(/|/.*\.go$)'
+        text: 'use of `float(32|64)` forbidden'
+        linters:
+          - forbidigo
