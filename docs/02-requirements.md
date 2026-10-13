@@ -455,9 +455,9 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 
 验收：
 
-- [ ] `make build` 产出 7 个二进制。
-- [ ] `make lint` 无告警；在 `service/payment/biz` 中写一个 `time.Now()` 能被 lint 拦截。
-- [ ] `docker build --build-arg APP=gateway` 成功，容器以非 root 用户运行。
+- [x] `make build` 产出 7 个二进制。
+- [x] `make lint` 无告警；在 `service/payment/biz` 中写一个 `time.Now()` 能被 lint 拦截。
+- [x] `docker build --build-arg APP=gateway` 成功，容器以非 root 用户运行。
 
 #### BASE-02 本地环境编排
 
