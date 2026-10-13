@@ -1,0 +1,14 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  // 主代理只编排，代码由 coder 子代理编写（见 .opencode/agents/）
+  "default_agent": "lead",
+  "agents": {
+    // 内置子代理也统一使用 GPT-6.1。ocompat 是全局配置中 O/ 的无斜杠别名（agent 配置不接受带斜杠的 provider ID）
+    "explore": {
+      "model": "ocompat/gpt-6.1-sol#medium",
+    },
+    "general": {
+      "model": "ocompat/gpt-6.1-sol#high",
+    },
+  },
+}
