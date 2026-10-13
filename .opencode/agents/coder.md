@@ -1,7 +1,7 @@
 ---
-description: pay-system 编码子代理（GPT-6.1）：按 pay-feature-dev 技能实现一个功能点，提交后写功能点报告。不做 Git 写操作。
+description: pay-system 编码子代理（Grok 4.7）：按 pay-feature-dev 技能实现一个功能点，提交后写功能点报告。不做 Git 写操作。
 mode: subagent
-model: ocompat/gpt-6.1-sol#high
+model: grok/grok-4.7#high
 color: "#10a37f"
 permissions:
   - action: subagent

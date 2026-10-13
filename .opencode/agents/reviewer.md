@@ -1,7 +1,7 @@
 ---
-description: pay-system 审查子代理（GPT-6.1）：只读审查一个功能点分支相对 main 的改动，缺陷优先，重点是资金一致性。
+description: pay-system 审查子代理（Grok 4.7）：只读审查一个功能点分支相对 main 的改动，缺陷优先，重点是资金一致性。
 mode: subagent
-model: ocompat/gpt-6.1-sol#high
+model: grok/grok-4.7#high
 color: "#e0a030"
 permissions:
   - action: edit
