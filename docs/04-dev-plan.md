@@ -118,7 +118,7 @@
 ## 4. 第一次开工会话清单
 
 1. 确认 `docs/01-tech-decisions.md` 中的决策和需求 §8.1 的待定事项，有异议先改文档再写代码。
-2. 确定 module path（`github.com/<github-id>/pay-system`）。
+2. module path 已定为 `github.com/yym108/pay-system`，远程仓库 `git@github.com:yym108/pay-system.git`。
 3. 安装工具（版本固定）：
 
    ```bash

@@ -231,7 +231,7 @@
 
 ### 7.1 Go 代码
 
-- module：`github.com/<github-id>/pay-system`。
+- module：`github.com/yym108/pay-system`。
 - 包名小写单词，不用下划线；目录名可用下划线（`channel_mock`），对应包名去掉下划线。
 - 文件名小写下划线：`payment_order.go`、`payment_order_test.go`。
 - 集成测试文件加 `//go:build integration`；端到端测试位于 `test/e2e/`，加 `//go:build e2e`。
@@ -327,4 +327,4 @@
 | v1.0 | 2026-10-12 | 从 `docs/02-requirements.md` v2.0 §2.6、§6.7 拆出；新增编号体系、码段划分、可重试说明、`fail_code` 登记、命名规范 |
 | v1.1 | 2026-10-12 | §1.1 登记流程图编号 `SM`、`SL`、`CF` 与问题编号 `R`；`10001` 增加 413 映射（请求体超限）；`30006` 扩展到退款（R6、R14） |
 | v2.0 | 2026-10-12 | 随需求 v3.0 聚焦三条链路：新增模块前缀 `TRF`、`OPT`，编号 `S<n>`，验收扩展到 A12；新增单号前缀 `TF`、标识 `out_transfer_no` / `shard` / `sub_no`；新增错误码 `30008`，扩展 `30001`、`40002`、`40003`、`40004` 的说明；新增 fail_code `TRY_TIMEOUT`、`ACCOUNT_INVALID`；事务规则增加“一个事务只访问一个分片、禁止 XA”；幂等键增加转账单与转账分支，删除差错挂账凭证；配置增加分片 DSN、子账户数、批量记账、转账、缓存开关，通知改为固定间隔，删除全局限流 `RATE_LIMIT_GLOBAL` 与 `NOTIFY_BACKOFF`；§5.3 第 5 条明确携带对象的错误在 RPC 层用响应字段 `biz_code` 传递 |
-| v2.0 | 2026-10-13 | §7.6 补充不属于功能点的提交前缀 `[docs]`、`[chore]` |
+| v2.0 | 2026-10-13 | §7.6 补充不属于功能点的提交前缀 `[docs]`、`[chore]`；module path 定为 `github.com/yym108/pay-system` |

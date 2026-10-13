@@ -446,7 +446,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 
 规则：
 
-1. `go.mod` 声明 `go 1.27.0`，module path 为 `github.com/<github-id>/pay-system`；依赖版本与 `docs/01-tech-decisions.md` §2 一致，显式 require `github.com/bytedance/sonic v1.15.4`。
+1. `go.mod` 声明 `go 1.27.0`，module path 为 `github.com/yym108/pay-system`；依赖版本与 `docs/01-tech-decisions.md` §2 一致，显式 require `github.com/bytedance/sonic v1.15.4`。
 2. 每个可执行程序位于 `cmd/<name>/main.go`，`main` 只做配置加载、依赖装配、启动与退出。
 3. Makefile 目标：`gen`、`build`、`lint`、`test`、`test-integration`、`cover`、`up`、`down`、`migrate`、`seed`、`e2e`、`chaos`、`load`。
 4. `.golangci.yml` 至少启用：`errcheck`、`govet`、`staticcheck`、`gosec`、`errorlint`、`bodyclose`、`sqlclosecheck`、`rowserrcheck`、`noctx`、`contextcheck`、`depguard`（落实 §2.3 的跨服务 import 限制）、`forbidigo`（禁止 `float32/float64` 出现在 `service/`、`pkg/money` 的金额字段，禁止 `time.Now()` 出现在 `biz` 包）。
@@ -2582,7 +2582,7 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 
 | # | 事项 | 默认处理 | 最晚决定 |
 |---|---|---|---|
-| Q1 | GitHub module path | `github.com/<github-id>/pay-system` | 开工第一天 |
+| Q1 | GitHub module path | 已定：`github.com/yym108/pay-system`（2026-10-13） | 已关闭 |
 | Q2 | NFR-PERF 目标是否需要调整 | 首次基线压测后按数据调整 | M7 第一次压测后 |
 | Q3 | 热点账户是否做缓冲入账（OPT-05） | 子账户拆分（OPT-03）后行锁仍是瓶颈且 P0、P1 已完成才做 | M8 |
 | Q4 | `STATUS_MISMATCH`（本地已终态）的处理 | 已随 REC-07 砍掉，保持 PENDING 进入报告 | 已关闭 |
@@ -2597,4 +2597,4 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 | 2026-10-12 | v2.2 | 按 `docs/06-flows.md` §5 的 R1–R14 补齐规则并确认基线：GW-01 网关调用超时与 §5.4.1 对齐、请求体超限 413 / `10001`（R1、R14）；GW-06 未知单号与金额不一致返回 200 并告警，新增 `pay_callback_rejected_total`（R2）；PAY-05 关单 ALREADY_PAID / FAILED、退款重提 REJECTED 的处理（R3、R4）；PAY-06 关单渠道已失败（R5）；REF-02 渠道拒绝返回 `30006`、冻结 `40001` / `40005` 按内部错误处理（R6、R7）；CH-04 先幂等再校验额度（R8）；outbox 新增 `biz_no` 与 `idx_biz_no_event_type`（R9）；LEDGER_MISSING 跨批次复核、人工 FIX_ORDER 不直接 RESOLVED（R10）；`recon_diff` 新增 HANDLING，人工挂账先占位再记账（R11）；NTF-02 白名单校验失败直接 DEAD（R12）；GW-03 凭证回源失败 `10004`（R13）；ACC-04 透支账户冻结 `10001`、ReplayEvent 遇 PENDING 返回成功、批次重跑从 INIT 开始（R14） |
 | 2026-10-12 | v3.0 | 项目聚焦支付、退款、转账三条链路（§1.1）。新增：账户 2 分片与路由 ACC-13、平台账户每分片一套并拆子账户、转账在途账户 `TRANSIT`（§2.5、D17、D19）；不变量 10–12；转账模块 TRF-01~05（同分片本地事务 + 失败墓碑 ACC-07，跨分片 TCC + 收款方分支 ACC-14，恢复任务）；性能模块 OPT-01~05（分阶段耗时、批量记账、子账户、链路延迟、缓冲入账 P2）；故障点与演练 C9–C13；NFR-PERF 增加退款、转账、热点账户目标；验收 A11、A12。修改：Freeze / ReleaseFreeze / ConfirmFreeze 改为以商户号为入参；Post 改为进程内方法；ACC-10 增加分片与在途守恒；CH-07、GW-08 升为 P0；NTF-02 改为固定间隔 5 次；GW-05 改为进程内商户限流，去掉全局限流与 Redis 限流；管理接口只保留重放、核对、触发对账；`recon_diff` 只保留 PENDING / RESOLVED / IGNORED，新增 `TRANSFER_MISMATCH`，`handle_action` FIX_ORDER 改名 REPLAY。砍掉：ACC-09、ACC-12、REC-04、REC-07、OPS-04、`SUSPENSE` 账户与 `ADJUST` 凭证；ACC-08 降为 P1。原 R11（HANDLING）随 REC-07 一并移除。按 `docs/06-flows.md` R15、R16 补充：分支调用返回 `10001` / `10006` 的处理（TRF-02、TRF-03），反序列化失败的消息在分组前直接进 DLQ（OPT-02） |
 | 2026-10-13 | v3.0 | §0.2 新增第 6 条：功能点代码提交后在 `docs/reports/` 出具自包含报告，模板见 `.opencode/skills/pay-feature-dev/report-template.md`；流程只增加收尾步骤，不改业务规则 |
-| 2026-10-13 | v3.0 | v3.0 确认为开发基线；§2.3 补充 account、payment 的包内划分，明确转账协调者放在 payment（来源 `docs/07-module-plan.md`） |
+| 2026-10-13 | v3.0 | v3.0 确认为开发基线；§2.3 补充 account、payment 的包内划分，明确转账协调者放在 payment（来源 `docs/07-module-plan.md`）；Q1 关闭，module path 定为 `github.com/yym108/pay-system` |
