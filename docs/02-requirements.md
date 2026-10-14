@@ -345,7 +345,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | BASE-08 | 数据库访问与事务 | P0 | M1 | BASE-06 | DONE |
 | BASE-09 | 配置 | P0 | M1 | BASE-01 | DONE |
 | BASE-10 | 日志与脱敏 | P0 | M1 | BASE-01 | DONE |
-| BASE-11 | 集成测试基座 | P0 | M1 | BASE-03、BASE-08 | TODO |
+| BASE-11 | 集成测试基座 | P0 | M1 | BASE-03、BASE-08 | DONE |
 | BASE-12 | IDL 与代码生成 | P0 | M1 | BASE-01 | TODO |
 | BASE-13 | 签名库 | P0 | M3 | BASE-01 | TODO |
 | BASE-14 | 密钥加密 | P0 | M3 | BASE-01 | TODO |
@@ -738,8 +738,8 @@ DSN 只按驱动的文本规则装配，不连接数据库：
 
 验收：
 
-- [ ] 两个集成测试包并行运行互不影响。
-- [ ] 复用模式下单个包启动开销 < 2 秒。
+- [x] 两个集成测试包并行运行互不影响。
+- [x] 复用模式下单个包启动开销 < 2 秒。
 
 #### BASE-12 IDL 与代码生成
 
@@ -2697,3 +2697,4 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 | 2026-10-15 | v3.0 | BASE-09 口径澄清：缺少或非法的环境变量，错误文本包含变量名。`secret:"true"` 的字段输出 `***`，不实现 `pkg/logx`。recon 不读 `MYSQL_DSN`，用 `ACCOUNT_DB_DSN_0` 的 host、port、query 和 `MYSQL_RECON_PASSWORD` 装配四条 `svc_recon` DSN（`pay_recon`、`pay_payment`、`pay_account_0`、`pay_account_1`）。channel-mock 不读 `MYSQL_DSN`，`MYSQL_HOST` 默认 `mysql`、`MYSQL_PORT` 默认 `3306`，装配 `svc_channel_mock` 到 `pay_channel_mock`。payment、account、seed 的 DSN 原样保存。装配不连接数据库。seed、bootstrap 只增加配置结构体，不改建号和种子流程。不改资金流向、接口、表结构和错误码 |
 | 2026-10-15 | v3.0 | BASE-10 口径澄清：字段名不区分大小写，包含片段即匹配。卡号短于 10、手机号短于 7、证件号短于 2 时整段换成 `***`。分组键和 error 走同一套规则，error 先转成字符串。兜底扫描只认 ASCII 连续数字；正好 11 位且以 1 开头的按手机号，不当卡号；更短的数字（如金额）和长于 19 位的不脱敏。`trace_id`、`span_id` 来自 otel trace API 的 `SpanContextFromContext`，不引入 sdk。`request_id` 来自 `WithRequestID`。这三个关联字段按原值写入。访问日志只有路径、状态码、耗时、商户号、错误码，不记录请求体。不改 `pkg/config` 的脱敏。不改资金流向、接口、表结构和错误码 |
 | 2026-10-15 | v3.0 | BASE-08 口径澄清：`WithTx` 对 1213、1205 含第一次在内最多执行 4 次，三次重试前等待 10ms、20ms、40ms（约定 §6.3 的 3 是重试次数）。事务总时长默认 3 秒，用父 ctx 派生，先到期的生效，超时取消并回滚。`IsDuplicate` 只识别 1062，不实现 `errno.ErrDuplicate`，不注册 `30002`。`MustAffectOne` 不映射业务码。不改资金流向、接口、表结构和已有错误码 |
+| 2026-10-15 | v3.0 | BASE-11 口径澄清：每个测试包使用带随机后缀的独立 schema，结束时只删除这个库，不碰 `pay_account_0` 这类固定库名。设置 `TEST_MYSQL_DSN` 时复用已有 MySQL，不启动容器。2 秒的计时从 MySQL 已经接受连接开始，包括建库和执行调用方指定的 `migrations/<服务>`，不包括拉取镜像和容器第一次启动。Kafka 助手使用已锁定的 `apache/kafka:4.3.1`，不在每个 MySQL 测试里启动。不改资金流向、接口、表结构和错误码 |

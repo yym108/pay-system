@@ -1,6 +1,6 @@
 # pay-system 全局约定与编号规范
 
-> 版本：v2.10　最后修改：2026-10-15
+> 版本：v2.11　最后修改：2026-10-15
 > 适用：全部代码、文档、配置。需求见 `docs/02-requirements.md`，接口见 `docs/05-api.md`，表结构见 `docs/database.md`。
 
 本文集中登记会被多个功能点共用的约定：编号体系、业务单号、金额、时间、错误码、幂等与事务规则、命名规范、配置项。新增或修改这些内容时，先改本文并在 §9 记录，再改代码。
@@ -389,6 +389,7 @@ Hertz `hlog` 和 Kitex `klog` 经适配器写入同一个 slog handler。`SetDef
 | `MYSQL_MIGRATOR_PASSWORD` | bootstrap、migrate | 无（必填，secret） | `migrator` 口令，只给迁移容器做 DDL |
 | `DEMO_APP_SECRET_FORMAT` | seed | `demo_secret_%s_0123456789ab` | 种子商户明文，`%s` 为商户号。种子加密后写入，明文只出现在环境文件。secret |
 | `SEED_LOAD` | seed | `0` | `1` 时额外创建 `M200000`–`M200099`。不入账 |
+| `TEST_MYSQL_DSN` | 集成测试（`internal/testkit`） | 无 | 只给测试。非空时复用已有 MySQL，不启动容器。不是服务配置，不进入配置结构体，也不写入 `deploy/.env.example` |
 
 ### 8.1 DSN 装配
 
@@ -400,7 +401,7 @@ BASE-09 只拼 DSN 文本，不连接数据库，也不调用驱动的 `ParseDSN
 
 这四条 recon DSN 和 channel-mock 的 DSN 都是 secret，启动输出里只有 `***`。
 
-新增配置项：先登记到本表（或在对应功能点中说明并归入此表），再加入配置结构体和 `deploy/.env.example`。`deploy/.env.example` 已包含本表演示值；`MYSQL_ROOT_PASSWORD` 只给 compose 的 MySQL 容器做插值，不进入业务服务的配置结构体，只进入 bootstrap。`MYSQL_HOST`、`MYSQL_PORT` 有默认值，故意不写入 example，避免 compose 把宿主机地址插进容器。bootstrap 的 `MYSQL_HOST` 默认 `127.0.0.1`；channel-mock 的 `MYSQL_HOST` 默认 `mysql`。
+新增配置项：先登记到本表（或在对应功能点中说明并归入此表），再加入配置结构体和 `deploy/.env.example`。`deploy/.env.example` 已包含本表演示值；`MYSQL_ROOT_PASSWORD` 只给 compose 的 MySQL 容器做插值，不进入业务服务的配置结构体，只进入 bootstrap。`MYSQL_HOST`、`MYSQL_PORT` 有默认值，故意不写入 example，避免 compose 把宿主机地址插进容器。bootstrap 的 `MYSQL_HOST` 默认 `127.0.0.1`；channel-mock 的 `MYSQL_HOST` 默认 `mysql`。`TEST_MYSQL_DSN` 只在 `internal/testkit` 读取，不加入配置结构体，也不写入 `deploy/.env.example`。
 
 ## 9. 变更记录
 
@@ -420,3 +421,4 @@ BASE-09 只拼 DSN 文本，不连接数据库，也不调用驱动的 `ParseDSN
 | v2.8 | 2026-10-15 | BASE-09：§8 写明配置从调用方传入的环境解析；`secret:"true"` 输出 `***`。`WORKER_ID` 只属于 6 个发号进程。`MYSQL_DSN` 不再交给 recon、channel-mock；`CHANNEL_MOCKPAY_URL` 本功能点只给 payment。`MYSQL_ROOT_PASSWORD` 只进入 bootstrap，不进业务服务。新增 §8.1：recon 用 `ACCOUNT_DB_DSN_0` 的 host、port、query 和 `MYSQL_RECON_PASSWORD` 装配四条 `svc_recon` DSN；channel-mock 的 `MYSQL_HOST` 默认 `mysql`（bootstrap 仍是 `127.0.0.1`），`MYSQL_PORT` 默认 `3306`，装配 `svc_channel_mock` 到 `pay_channel_mock`。不新增变量名 |
 | v2.9 | 2026-10-15 | BASE-10：§7.5 写明每条日志的固定字段，以及按字段名脱敏、太短整段 `***`、字符串兜底扫描的规则。`trace_id` / `span_id` 来自 otel trace API，`request_id` 来自 `WithRequestID`，三者按原值写入。访问日志不记录请求体。不改 v2.7、v2.8 |
 | v2.10 | 2026-10-15 | BASE-08：§6.3 写明 1213/1205 含第一次在内最多执行 4 次，三次重试前等待 10ms、20ms、40ms；事务总时长默认 3 秒，用父 ctx 派生，先到期的取消并回滚。不新增错误码 |
+| v2.11 | 2026-10-15 | BASE-11：§8 说明 `TEST_MYSQL_DSN` 只给集成测试复用已有 MySQL。不进入 `deploy/.env.example`，也不进入业务配置 |
