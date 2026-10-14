@@ -14,3 +14,4 @@
 | BASE-09 | 配置 | 基础设施 | `cb968f5` | 2026-10-15 | [BASE-09-config.md](BASE-09-config.md) |
 | BASE-10 | 日志与脱敏 | 基础设施 | `5d83baf` | 2026-10-15 | [BASE-10-logx.md](BASE-10-logx.md) |
 | BASE-08 | 数据库访问与事务 | 基础设施 | `f535462` | 2026-10-15 | [BASE-08-dbx.md](BASE-08-dbx.md) |
+| BASE-11 | 集成测试基座 | 基础设施 | `2abe147` | 2026-10-15 | [BASE-11-integration.md](BASE-11-integration.md) |
