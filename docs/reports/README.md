@@ -10,3 +10,4 @@
 | BASE-04 | 金额工具 | 基础设施 | `5df4729` | 2026-10-14 | [BASE-04-money.md](BASE-04-money.md) |
 | BASE-05 | ID 生成 | 基础设施 | `795cc26` | 2026-10-14 | [BASE-05-idgen.md](BASE-05-idgen.md) |
 | BASE-06 | 错误码 | 基础设施 | `d81c442` | 2026-10-14 | [BASE-06-errno.md](BASE-06-errno.md) |
+| BASE-07 | 时钟 | 基础设施 | `15e2022` | 2026-10-15 | [BASE-07-clock.md](BASE-07-clock.md) |
