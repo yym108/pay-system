@@ -2,6 +2,14 @@
 
 随手记录踩坑、数据和取舍。不替代需求与技术决策文档。
 
+## BASE-12 IDL
+
+- 生成命令必须写死 `kitex@v0.16.3`。`go run pkg@version` 不会把生成器写进业务 `go.mod`；真正进来的是生成代码 import 的 `github.com/cloudwego/gopkg v0.2.0`，版本跟 kitex v0.16.3 的 go.mod 走，不能顺手升。
+- 第一版必填字段不要写 Thrift 的 `required` 关键字，用默认 requiredness。`required` 一旦写上，缺字段就解码失败，以后也不能改成 optional。文档写可省略的才标 `optional`。
+- 状态用 string，不用 Thrift enum。enum 在线上是数字，和数据库里的 `ACTIVE`、`SUCCESS` 对不上。
+- `Post` 不要出现在 AccountService 里。它是进程内记账，确认冻结和转账在本进程调用；做成 RPC 就会在事务里跨网络。
+- `CreateRefund`、`CreateTransfer` 的 `40002`（退款还有 `30006`）必须连同单据返回。Kitex 的 `BizStatusError` 带不了响应体，所以这两支成功返回，把码放在 `biz_code`。别的业务错误仍然走 `BizStatusError`。
+
 ## BASE-08 数据库访问
 
 - `transaction_isolation` 的值必须自己带单引号。驱动连接后执行 `SET transaction_isolation = 'READ-COMMITTED'`，引号是值的一部分。不带引号时 MySQL 会把它当成标识符。`tx_isolation` 如果留在参数里，和 `transaction_isolation` 一起进 map，`SET` 的顺序不固定，隔离级别可能被改回去。强制参数时把这个旧名字删掉。

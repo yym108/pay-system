@@ -5,11 +5,16 @@ COMMANDS := gateway payment account recon channel-mock merchant-demo paycli
 # 默认读取 deploy/.env。验证或不落盘密钥时：make up ENV_FILE=deploy/.env.example
 ENV_FILE ?= deploy/.env
 
-.PHONY: gen build lint test test-integration cover up up-lite down migrate seed seed-load e2e chaos load
+.PHONY: gen gen-check build lint test test-integration cover up up-lite down migrate seed seed-load e2e chaos load
 
+# 生成器钉死 v0.16.3。不传 -service，因此不生成 main 与 handler。
 gen:
-	@echo "gen 由 BASE-12 实现"
-	@exit 1
+	@for idl in idl/account.thrift idl/payment.thrift idl/recon.thrift; do \
+		go run github.com/cloudwego/kitex/tool/cmd/kitex@v0.16.3 -module github.com/yym108/pay-system -gen-path kitex_gen "$$idl" || exit $$?; \
+	done
+
+gen-check: gen
+	git diff --exit-code kitex_gen
 
 build:
 	@mkdir -p bin

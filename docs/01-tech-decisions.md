@@ -64,6 +64,8 @@ BASE-10（2026-10-15）：新增直接依赖 `github.com/cloudwego/hertz v0.10.6
 
 BASE-08（2026-10-15）：新增直接依赖 `github.com/jmoiron/sqlx v1.4.0`，版本与上表相同，不升级。`github.com/go-sql-driver/mysql` 仍是已在 `go.mod` 的 v1.10.1，不升级。没有升级 kitex、sonic、hertz、otel。
 
+BASE-12（2026-10-15）：`make gen` 钉死为 `go run github.com/cloudwego/kitex/tool/cmd/kitex@v0.16.3 -module github.com/yym108/pay-system -gen-path kitex_gen`，对 `idl/account.thrift`、`idl/payment.thrift`、`idl/recon.thrift` 各跑一次。不传 `-service`，因此不生成 `main` 和 `handler`，也不监听端口。kitex 命令不写入 `go.mod`，避免生成器成为业务代码的直接依赖。生成文件头是 thriftgo 0.4.5 与 Kitex v0.16.3。`kitex_gen` 直接 import `github.com/cloudwego/gopkg/protocol/thrift`，`go mod tidy` 把 `github.com/cloudwego/gopkg v0.2.0` 列为直接依赖；这一版就是 kitex v0.16.3 的 `go.mod` 所要求的版本。kitex client/server 再带入间接依赖，其中包括 `github.com/cloudwego/thriftgo v0.4.5`、`github.com/cloudwego/netpoll`、`github.com/cloudwego/frugal`，以及 `golang.org/x/sync v0.22.0`（只被 kitex 的 singleflight 用到）。版本表里给业务 errgroup 预留的 `golang.org/x/sync v0.23.0` 没有改，也没有为了对齐表而抬高这次的间接版本。`gopkg.in/yaml.v3 v3.0.1` 被这条链路重新带成间接依赖，旁边仍是 BASE-10 的 `go.yaml.in/yaml/v3 v3.0.5`。kitex 仍是 v0.16.3，sonic 仍是 v1.15.4。本表已有版本号没有改。
+
 ### 2.2 容器镜像（均已确认提供 arm64 与 amd64）
 
 | 组件 | 镜像 |
@@ -112,6 +114,7 @@ BASE-01（2026-10-13）：根据本机实际安装版本，将本表 Go 本机�
 - 理由：Thrift 是 Kitex 的主力协议，字节内部服务大量使用，配套的 Frugal/FastCodec 性能最好；与目标岗位技术栈一致。
 - 网关对外是 HTTP JSON，路由在 Hertz 中手写，不用 `hz` 生成。原因是网关很薄，手写路由更容易控制验签、限流中间件顺序。
 - 代价：Thrift 生态的工具（lint、breaking change 检查）不如 Protobuf（buf）。约定：字段只增不删，新增字段一律 `optional`。
+- 补充（2026-10-15，BASE-12）：生成命令钉死 `go run github.com/cloudwego/kitex/tool/cmd/kitex@v0.16.3`，输出目录 `kitex_gen`。重复执行后 `git diff --exit-code kitex_gen` 必须为空。生成器不进 `go.mod`。状态在 IDL 里用 string，不用 Thrift 枚举数字。记账 `Post` 不生成 RPC。
 
 ### D3 Kafka + franz-go
 
