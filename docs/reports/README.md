@@ -19,3 +19,4 @@
 | ACC-13 | 账户分片路由 | 基础设施 | `a8be4d2` | 2026-10-15 | [ACC-13-shard.md](ACC-13-shard.md) |
 | ACC-01 | 开户 | 基础设施 | `1b2a54b` | 2026-10-15 | [ACC-01-open-account.md](ACC-01-open-account.md) |
 | ACC-02 | 账户查询 | 基础设施 | `b72e591` | 2026-10-15 | [ACC-02-get-account.md](ACC-02-get-account.md) |
+| ACC-03 | 通用记账 | 基础设施 | `31fff62` | 2026-10-15 | [ACC-03-ledger-post.md](ACC-03-ledger-post.md) |
