@@ -12,3 +12,4 @@
 | BASE-06 | 错误码 | 基础设施 | `d81c442` | 2026-10-14 | [BASE-06-errno.md](BASE-06-errno.md) |
 | BASE-07 | 时钟 | 基础设施 | `15e2022` | 2026-10-15 | [BASE-07-clock.md](BASE-07-clock.md) |
 | BASE-09 | 配置 | 基础设施 | `cb968f5` | 2026-10-15 | [BASE-09-config.md](BASE-09-config.md) |
+| BASE-10 | 日志与脱敏 | 基础设施 | `5d83baf` | 2026-10-15 | [BASE-10-logx.md](BASE-10-logx.md) |
