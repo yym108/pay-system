@@ -350,7 +350,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | BASE-13 | 签名库 | P0 | M3 | BASE-01 | TODO |
 | BASE-14 | 密钥加密 | P0 | M3 | BASE-01 | TODO |
 | ACC-13 | 账户分片路由 | P0 | M1 | BASE-08、BASE-09 | DONE |
-| ACC-01 | 开户 | P0 | M1 | ACC-13、BASE-05 | TODO |
+| ACC-01 | 开户 | P0 | M1 | ACC-13、BASE-05 | DONE |
 | ACC-02 | 账户查询 | P0 | M1 | ACC-01 | TODO |
 | ACC-03 | 通用记账 | P0 | M1 | ACC-01、BASE-04 | TODO |
 | ACC-04 | 冻结 | P0 | M2 | ACC-03 | TODO |
@@ -525,7 +525,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 - 密钥：BASE-14 属于 M3，不是本功能点依赖，本功能点不实现 `pkg/secretbox`。种子按 BASE-14 已写明的算法与密文格式（AES-256-GCM，`version(1B) + nonce(12B) + ciphertext + tag`，version 取值 1，主密钥 `SECRET_MASTER_KEY`）用标准库加密后写入。明文格式为 `DEMO_APP_SECRET_FORMAT`（默认 `demo_secret_%s_0123456789ab`，`%s` 为商户号），因此 `M100001` 的明文与 `docs/05-api.md` §3.7 测试向量一致。重复执行不覆盖已有密文（nonce 随机，覆盖会让密文变化）。BASE-14 实现时必须能解密这些种子密文，不得另起格式。
 - 压测入账：`make seed-load` 在本功能点只幂等创建 `M200000`–`M200099` 及其所属分片的零余额结算账户，费率 0。不写分录、不写非零余额（不变量 3）。`scripts/load-fund.sh` 不在本功能点实现；真实支付链路尚未存在，入账留给 QA-02。本功能点不调用、不伪造该脚本。
 - 启动范围：替换 profile `apps` 中 `migrate` / `seed` 的命令，使 `make migrate`、`make seed` 可单独执行。不把 profile `apps` 并入默认 `make up`（应用容器仍等 OPS-01 的 `/healthz`）。A1 仍由 BASE-02、BASE-03、OPS-01 共同完成。
-- 开户：ACC-01 的 `OpenAccount` 尚不存在。种子直接插入账户行（余额与冻结均为 0，不写分录），余额方向和透支标志按 §2.5.1 由账户类型决定。`docs/06-flows.md` 中“开户只由 seed 调用、不对运营开放”仍是目标态，本功能点不改图。账户号用确定性的 `AC` + 19 位数字，保证重复执行命中同一行，而不是每次新开账户。商户显示名是 `演示商户` 或 `压测商户` 加商户号；`app_id` 按约定 §2.3 取 `app_` + 商户号小写。`notify_url` 留空，不发明通知地址。
+- 开户：种子仍然直接插入账户行，不调用 `OpenAccount`（余额与冻结均为 0，不写分录）。余额方向和透支标志按 §2.5.1 由账户类型决定。`docs/06-flows.md` 中“开户只由 seed 调用、不对运营开放”仍是目标态，本功能点不改图。账户号用确定性的 `AC` + 19 位数字，保证重复执行命中同一行，而不是每次新开账户。商户显示名是 `演示商户` 或 `压测商户` 加商户号；`app_id` 按约定 §2.3 取 `app_` + 商户号小写。`notify_url` 留空，不发明通知地址。
 - 账号口令：`svc_account`、`svc_payment` 的口令从已有 `ACCOUNT_DB_DSN_*`、`MYSQL_DSN` 解析，不另设重复配置。`svc_recon`、`svc_channel_mock`、`migrator` 的口令是新增配置，见约定 §8。bootstrap 会删除并重建这五个账号，使授权保持在规则 3 的范围内。
 
 验收：
@@ -817,17 +817,17 @@ DSN 只按驱动的文本规则装配，不连接数据库：
 
 规则：
 
-1. `account_type` 与 `owner_type` 的组合必须符合 §2.5.1；`balance_direction`、`allow_overdraft` 由类型决定。
-2. MERCHANT 账户：`shard` 必须等于 `shard.Of(owner_id)`，`sub_no` 必须为 0，否则 `10001`。PLATFORM 账户：`sub_no` 范围 `[0, PLATFORM_SUB_ACCOUNTS)`。
-3. 按 `uk_owner_account_type_sub` 幂等：已存在则返回已有账户。
-4. 新账户余额、冻结均为 0，状态 ACTIVE。
+1. `account_type` 与 `owner_type` 的组合必须符合 §2.5.1；`balance_direction`、`allow_overdraft` 由类型决定，调用方不能指定。
+2. MERCHANT 账户：`shard` 必须等于 `shard.Of(owner_id)`，`sub_no` 必须为 0，否则 `10001`。PLATFORM 账户：`shard` 只能是 0 或 1，`sub_no` 范围 `[0, PLATFORM_SUB_ACCOUNTS)`。`CHANNEL_RECEIVABLE` 的 `owner_id` 非空且不超过 32 个字符；`FEE_INCOME`、`TRANSIT` 的 `owner_id` 必须是 `PLATFORM`。
+3. 按 `uk_owner_account_type_sub` 幂等：已存在则返回已有账户，不把余额和冻结金额改回 0。
+4. 新账户余额、冻结均为 0，状态 ACTIVE。币种固定 `CNY`。账户号在事务外用 `idgen.NewNo(ctx, "AC")` 生成。
 
-异常：组合非法、分片或子账户号非法 → `10001`。
+异常：组合非法、分片或子账户号非法 → `10001`，不写任何行。账户号与另一组 owner 冲突 → 已有的 `10003`，对外消息不带 SQL。
 
 验收：
 
-- [ ] 同一组合并发开户 50 次，只产生 1 个账户，50 次都返回同一 `account_no`。
-- [ ] `MERCHANT + FEE_INCOME` 返回 `10001`；把 `M100002` 开在分片 1 返回 `10001`。
+- [x] 同一组合并发开户 50 次，只产生 1 个账户，50 次都返回同一 `account_no`。
+- [x] `MERCHANT + FEE_INCOME` 返回 `10001`；把 `M100002` 开在分片 1 返回 `10001`。
 
 #### ACC-02 账户查询
 
@@ -2700,3 +2700,4 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 | 2026-10-15 | v3.0 | BASE-11 口径澄清：每个测试包使用带随机后缀的独立 schema，结束时只删除这个库，不碰 `pay_account_0` 这类固定库名。设置 `TEST_MYSQL_DSN` 时复用已有 MySQL，不启动容器。2 秒的计时从 MySQL 已经接受连接开始，包括建库和执行调用方指定的 `migrations/<服务>`，不包括拉取镜像和容器第一次启动。Kafka 助手使用已锁定的 `apache/kafka:4.3.1`，不在每个 MySQL 测试里启动。不改资金流向、接口、表结构和错误码 |
 | 2026-10-15 | v3.0 | BASE-12：IDL 为 `idl/base.thrift`、`idl/account.thrift`、`idl/payment.thrift`、`idl/recon.thrift`。记账 `Post` 是 account 进程内方法，不进入 RPC，IDL 里没有这个方法。一致性检查命令是 `make gen && git diff --exit-code kitex_gen`。不改资金流向、接口、表结构和错误码 |
 | 2026-10-15 | v3.0 | ACC-13 口径澄清：`/readyz` 本功能点只提供处理函数，监听、Kafka、SIGTERM 仍属 OPS-01；`Of` 不读环境变量，分片数写死 2；`Sub` 的 N 由调用方传入。不改变资金规则、接口、表结构和错误码 |
+| 2026-10-15 | v3.0 | ACC-01 口径澄清：幂等命中 `uk_owner_account_type_sub` 时返回已有行，不把余额和冻结金额改回 0。PLATFORM 账户 `shard` 只能是 0 或 1；`CHANNEL_RECEIVABLE` 的 `owner_id` 非空且不超过 32 个字符；`FEE_INCOME` 与 `TRANSIT` 的 `owner_id` 必须是 `PLATFORM`。账户号与另一组 owner 冲突时返回已有的 `10003`，对外消息不带 SQL。不改变资金规则、接口、表结构和错误码语义 |
