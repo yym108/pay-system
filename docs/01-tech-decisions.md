@@ -1,6 +1,6 @@
 # 技术路线与决策记录
 
-> 最后更新：2026-10-14
+> 最后更新：2026-10-15
 > 状态：已决策，第 1 周开工即按本文锁定版本。推翻任一决策需在本文追加新记录，写明原因。
 > 2026-10-12：项目聚焦支付、退款、转账三条资金链路，新增 D17–D21（账户分片、跨分片转账 TCC、平台子账户、批量记账、链路延迟优化），调整 D10、D14 与 §4。
 
@@ -55,6 +55,8 @@
 | golangci-lint | v2.14.0 | 静态检查，按官方建议安装预编译二进制，不放进 `go.mod` |
 
 BASE-06（2026-10-14）：`go.mod` 直接依赖已锁定的 `github.com/cloudwego/kitex v0.16.3`，只为 `pkg/kerrors` 的 `BizStatusError`。不生成 IDL，不运行 kitex 命令，也不起 RPC 服务。sonic 仍显式锁定 v1.15.4，高于 kitex 自带的 v1.15.0，避免 Go 1.27 回退到 `encoding/json`。kitex 带入的间接依赖：`github.com/bytedance/gopkg` 由 v0.1.3 升到 v0.1.4，`golang.org/x/arch` 升到 v0.14.0，新增 `google.golang.org/protobuf v1.36.11` 与 `google.golang.org/genproto/googleapis/rpc v0.0.0-20260630182238-925bb5da69e7`。后一个模块被 `BizStatusError` 引用的 gRPC status 类型导入；v0.16.3 的 `go.mod` 没有单独 pin 它，`go mod tidy` 解析到这一版并写入 `go.sum`。
+
+BASE-07（2026-10-15）：`pkg/clock` 的生产时钟用 `time.FixedZone("Asia/Shanghai", 8*60*60)`，不调用 `time.LoadLocation`，也不新增依赖。中国自 1991 年起没有夏令时，固定偏移与当前东八区民用时间一致，所以时钟不读 zoneinfo，也不 import `time/tzdata`。这不撤销 BASE-03：MySQL 驱动解析 `loc=Asia/Shanghai` 仍会 `LoadLocation`，构建继续使用 `-tags timetzdata`，Dockerfile 不改。`pkg/idgen` 仍使用自己的窄时钟，不改为依赖 `pkg/clock`。
 
 ### 2.2 容器镜像（均已确认提供 arm64 与 amd64）
 

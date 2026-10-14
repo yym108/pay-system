@@ -2,6 +2,13 @@
 
 随手记录踩坑、数据和取舍。不替代需求与技术决策文档。
 
+## BASE-07 时钟
+
+- 不要用 `time.LoadLocation("Asia/Shanghai")` 做业务时钟。运行镜像是没有 tzdata 的 Alpine，容器里这个调用会得到 `unknown time zone Asia/Shanghai`。中国自 1991 年起没有夏令时，`time.FixedZone("Asia/Shanghai", 8*60*60)` 的地点名和 +8 偏移都固定，不读 zoneinfo。
+- 数据库 DSN 的 `loc=Asia/Shanghai` 仍会让驱动调用 `LoadLocation`。那条路径继续靠 `-tags timetzdata`。时钟本身不靠它，所以本功能点不改 Dockerfile。
+- `FixedZone` 和 IANA 的 `Asia/Shanghai` 在当前日期都是 +8，只看现在的偏移分不出来。1991-07-01 的夏令时在 IANA 里是 +9，固定时区仍是 +8。测试用这个差别证明没有走 `LoadLocation`。
+- idgen 继续用自己的窄时钟。发号要观察回拨和等待，和业务上注入的 `Clock` 不是同一次取时。
+
 ## BASE-06 错误码
 
 - `Error()` 不带底层原因。`slog` 和 `fmt` 的默认打印走 `Error()`，把 SQL 或连接串拼进去就会漏到日志的 msg，甚至被当成对外文案。原因只放在 `Unwrap`，排查时显式取。

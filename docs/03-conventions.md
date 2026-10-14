@@ -1,6 +1,6 @@
 # pay-system 全局约定与编号规范
 
-> 版本：v2.6　最后修改：2026-10-14
+> 版本：v2.7　最后修改：2026-10-15
 > 适用：全部代码、文档、配置。需求见 `docs/02-requirements.md`，接口见 `docs/05-api.md`，表结构见 `docs/database.md`。
 
 本文集中登记会被多个功能点共用的约定：编号体系、业务单号、金额、时间、错误码、幂等与事务规则、命名规范、配置项。新增或修改这些内容时，先改本文并在 §9 记录，再改代码。
@@ -145,7 +145,9 @@ docker-compose 给将来会跑业务进程的 6 个占位服务写死互不相�
 
 ## 4. 时间
 
-1. 时区统一 `Asia/Shanghai`；程序 import `time/tzdata`，不依赖镜像中的时区文件。
+1. 时区统一 `Asia/Shanghai`，固定偏移 UTC+8。中国自 1991 年起没有夏令时，当前民用时间不随夏令时变化。运行镜像不安装 tzdata。
+   - 当前时间（`pkg/clock` 的 `Real`）用 `time.FixedZone("Asia/Shanghai", 8*60*60)`，不调用 `time.LoadLocation`，因此不依赖 zoneinfo，也不 import `time/tzdata`。没有时区文件时，地点名仍是 `Asia/Shanghai`。
+   - 数据库驱动解析 DSN 的 `loc=Asia/Shanghai` 时会 `LoadLocation`。该路径继续用构建标签 `-tags timetzdata` 把时区数据编进二进制（BASE-03），不在镜像里安装 tzdata。`pkg/clock` 不改变这条构建方式。
 2. 数据库 `DATETIME(3)`，DSN 设置 `loc=Asia/Shanghai`，MySQL 默认时区 `+08:00`。
 3. 接口与事件中的时间为 RFC 3339 毫秒格式：`2026-10-12T10:00:00.000+08:00`。
 4. 签名头中的时间戳为 Unix 秒。
@@ -370,3 +372,4 @@ docker-compose 给将来会跑业务进程的 6 个占位服务写死互不相�
 | v2.4 | 2026-10-14 | BASE-04：§3 明确 `money.Fee` 在费率越界、以及负金额且费率非 0 时返回错误，费率为 0 时结果为 0。不新增错误码 |
 | v2.5 | 2026-10-14 | BASE-05：§2.1 写明发号入口、回拨和 41 位溢出的口径；§2.5 登记 compose 中 6 个业务进程的 `WORKER_ID` 字面量；§5.3 写明 `ErrClockRollback` 由调用方映射为已有的 `10004`，不新增错误码；§8 的 `WORKER_ID` 说明指向 §2.5 |
 | v2.6 | 2026-10-14 | BASE-06：§5.2 增加“对外 msg”列，登记除 `30002` 外各码的稳定英文；§5.3 写明 nil 为成功码 `0` / `ok` / HTTP 200，`Error()` 只返回对外 msg、原因只在 `Unwrap`，`10001` 的 `HTTPStatus` 为 400（413 由网关返回，不另造码），`30002` 与未登记码不是可用错误、按 `10003` 处理，Kitex 用 `BizStatusError` 传码和对外 msg、客户端用 `FromBizStatusError` 还原且不采用与本表不一致的对端文本。不改码的数字、HTTP 语义和可重试含义，不实现 `ErrDuplicate` |
+| v2.7 | 2026-10-15 | BASE-07：§4 第 1 条写明 `pkg/clock` 的 `Real` 用 `time.FixedZone("Asia/Shanghai", 8*60*60)`，不调用 `time.LoadLocation`，不依赖 zoneinfo，也不 import `time/tzdata`。中国自 1991 年起没有夏令时，固定 +8 与当前民用时间一致。DSN 的 `LoadLocation` 仍用 `-tags timetzdata`，本功能点不改 Dockerfile |

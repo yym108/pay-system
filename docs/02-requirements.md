@@ -1,6 +1,6 @@
 # pay-system 需求规格说明书
 
-> 版本：v3.0　最后修改：2026-10-14
+> 版本：v3.0　最后修改：2026-10-15
 > 状态：v3.0 重新聚焦支付、退款、转账三条资金链路（变更见 §8.2），2026-10-13 已确认为开发基线；开发按 §3 功能点总表逐项推进
 > 上游：`PROJECT_GOALS.md`（目标与约束）、`docs/01-tech-decisions.md`（技术选型与版本）
 > 关联：`docs/03-conventions.md`（编号、错误码、命名等全局约定）、`docs/05-api.md`（接口文档）、`docs/database.md`（表结构）、`docs/04-dev-plan.md`（周计划）、`docs/06-flows.md`（流程图）
@@ -341,7 +341,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | BASE-04 | 金额工具 | P0 | M1 | BASE-01 | DONE |
 | BASE-05 | ID 生成 | P0 | M1 | BASE-01 | DONE |
 | BASE-06 | 错误码 | P0 | M1 | BASE-01 | DONE |
-| BASE-07 | 时钟 | P0 | M1 | BASE-01 | TODO |
+| BASE-07 | 时钟 | P0 | M1 | BASE-01 | DONE |
 | BASE-08 | 数据库访问与事务 | P0 | M1 | BASE-06 | TODO |
 | BASE-09 | 配置 | P0 | M1 | BASE-01 | TODO |
 | BASE-10 | 日志与脱敏 | P0 | M1 | BASE-01 | TODO |
@@ -635,10 +635,18 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 
 规则：`Clock` 接口提供 `Now()`；`Real` 实现返回东八区时间；`Fake` 实现支持 `Set`、`Advance`，并发安全。`biz` 和 `job` 包只能通过 `Clock` 取时间。
 
+口径澄清（2026-10-15）：不改业务规则、资金流向、接口、表结构、错误码，也不改 §3 依赖列。不实现配置、日志和数据库。
+
+- `Clock` 只有 `Now() time.Time`。`Real.Now` 返回这一瞬间的东八区时间。
+- 运行镜像不安装 tzdata。`Real` 不调用 `time.LoadLocation`，也不 import `time/tzdata`：没有时区文件时，`LoadLocation("Asia/Shanghai")` 会失败。中国自 1991 年起没有夏令时，固定偏移与当前民用时间一致，因此用 `time.FixedZone("Asia/Shanghai", 8*60*60)`。地点名是 `Asia/Shanghai`，与 UTC 同一瞬间的墙钟相差 8 小时。这样不依赖 zoneinfo。本功能点不改 Dockerfile。DSN 里的 `loc=Asia/Shanghai` 仍由驱动调用 `LoadLocation`，继续靠 BASE-03 的 `-tags timetzdata`。
+- `Fake` 提供 `Set`、`Advance`，用互斥锁保证并发安全。`Advance(10s)` 之后 `Now()` 比调用前精确多 10 秒。
+- `biz` 和 `job` 只能通过注入的 `Clock` 取时间（约定 §4；golangci 已禁止这两处调用 `time.Now`）。不新建空的 biz 或 job 包。不把 `pkg/idgen` 改成依赖 `pkg/clock`，idgen 保持自己的窄时钟。
+- “无时区文件的容器中也成立”不起容器验证：实现不读 zoneinfo。单元测试检查生产代码没有 `LoadLocation`、地点名是 `Asia/Shanghai`、偏移是 +8 小时，并用 1991-07-01 的夏令时差别证明地点不是 IANA 时区库的结果。
+
 验收：
 
-- [ ] `Fake.Advance(10s)` 后 `Now()` 精确前进 10 秒。
-- [ ] `Real.Now().Location()` 为 `Asia/Shanghai`，且在无时区文件的容器中也成立。
+- [x] `Fake.Advance(10s)` 后 `Now()` 精确前进 10 秒。
+- [x] `Real.Now().Location()` 为 `Asia/Shanghai`，且在无时区文件的容器中也成立。
 
 #### BASE-08 数据库访问与事务（pkg/dbx）
 
@@ -2669,3 +2677,4 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 | 2026-10-14 | v3.0 | BASE-04 口径澄清：`Add` / `Sub` 的溢出含负数与 `MinInt64`，返回普通 error 而不回绕。`Fee` 的 `rateBP` 越界返回错误；负金额且费率非 0 返回错误（四舍五入加数只对非负金额成立），费率为 0 时结果为 0。`ValidatePayAmount` 越界返回错误。不新增错误码，不实现 `pkg/errno`。不改资金流向、接口和表结构 |
 | 2026-10-14 | v3.0 | BASE-05 口径澄清：发号入口是 `Generator.NewNo(ctx, prefix)`，`ctx` 只用于取消等待，前缀规则不变。时间早于纪元或超出 41 位时返回错误，不回绕。回拨超过 5ms 时本包返回 `ErrClockRollback`，不返回数字码、不包装 Kitex 错误；调用方以后映射为已有的 `10004`。`WorkerIDFromEnv` 只返回错误，不 `os.Exit`。不实现 `pkg/clock` 和 `pkg/errno`。不改资金流向、接口、表结构和已登记错误码 |
 | 2026-10-14 | v3.0 | BASE-06 口径澄清：`pkg/errno` 定义约定 §5.2 除 `30002` 外的全部码。`30002` 保留不用、没有名称，不提供可用错误。`nil` 是成功（码 `0`，msg `ok`，HTTP 200），不是 `10003`。未知非 nil 错误和未登记码视为 `10003`，对外消息固定 `internal error`，不含底层文本。`Error()` 只返回 `Msg`，底层错误只通过 `Unwrap` 取得。对外 msg 是稳定短英文，表见本节 BASE-06，并登记到约定 §5.2。`10001` 的 `HTTPStatus` 是 400；请求体超过 64KB 返回 413 是网关行为，本包不实现网关，也不另造码。Kitex 只用 `kerrors.BizStatusError` 双向转换，不生成 IDL。不实现 `errno.ErrDuplicate`（BASE-08）。不改资金流向、接口字段、表结构和已有码的含义 |
+| 2026-10-15 | v3.0 | BASE-07 口径澄清：`Clock.Now` 返回 `time.Time`。`Real` 用 `time.FixedZone("Asia/Shanghai", 8*60*60)`，不调用 `time.LoadLocation`，因此不依赖 zoneinfo；中国自 1991 年起没有夏令时，固定 +8 与当前民用时间一致。运行镜像不安装 tzdata，本功能点不改 Dockerfile。`Fake` 的 `Set`、`Advance` 并发安全，`Advance(10s)` 后 `Now()` 精确前进 10 秒。`biz` 和 `job` 只通过 `Clock` 取时间，不新建空包，也不把 `pkg/idgen` 改成依赖 `pkg/clock`。不实现配置、日志和数据库。不改资金流向、接口、表结构和错误码 |
