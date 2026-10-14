@@ -1,6 +1,6 @@
 # pay-system 需求规格说明书
 
-> 版本：v3.0　最后修改：2026-10-13
+> 版本：v3.0　最后修改：2026-10-14
 > 状态：v3.0 重新聚焦支付、退款、转账三条资金链路（变更见 §8.2），2026-10-13 已确认为开发基线；开发按 §3 功能点总表逐项推进
 > 上游：`PROJECT_GOALS.md`（目标与约束）、`docs/01-tech-decisions.md`（技术选型与版本）
 > 关联：`docs/03-conventions.md`（编号、错误码、命名等全局约定）、`docs/05-api.md`（接口文档）、`docs/database.md`（表结构）、`docs/04-dev-plan.md`（周计划）、`docs/06-flows.md`（流程图）
@@ -339,7 +339,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | BASE-02 | 本地环境编排 | P0 | M1 | BASE-01 | DONE |
 | BASE-03 | 数据库迁移与种子数据 | P0 | M1 | BASE-02 | DONE |
 | BASE-04 | 金额工具 | P0 | M1 | BASE-01 | DONE |
-| BASE-05 | ID 生成 | P0 | M1 | BASE-01 | TODO |
+| BASE-05 | ID 生成 | P0 | M1 | BASE-01 | DONE |
 | BASE-06 | 错误码 | P0 | M1 | BASE-01 | TODO |
 | BASE-07 | 时钟 | P0 | M1 | BASE-01 | TODO |
 | BASE-08 | 数据库访问与事务 | P0 | M1 | BASE-06 | TODO |
@@ -560,18 +560,20 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 
 规则：
 
-1. 64 位布局：1 位符号 + 41 位毫秒时间戳（纪元 `2026-01-01T00:00:00+08:00`）+ 10 位 worker ID + 12 位序列号。
-2. worker ID 来自环境变量 `WORKER_ID`（0–1023），超出范围启动失败；docker-compose 为每个实例分配固定值。
-3. 同一毫秒序列号用尽时等待下一毫秒。
-4. 时钟回拨 ≤ 5ms 时等待追平；> 5ms 时返回错误，调用方返回 `10004`。
-5. `NewNo(prefix)` 返回 `prefix + 19 位左补零十进制`；前缀必须是 `docs/03-conventions.md` §2.2 中登记的值。
-6. 提供 `Parse(no)` 解析出时间戳和 worker ID，便于排查。
+1. 64 位布局：1 位符号（恒为 0）+ 41 位毫秒时间戳（纪元 `2026-01-01T00:00:00+08:00`）+ 10 位 worker ID + 12 位序列号。时间早于纪元，或毫秒时间戳放不进 41 位时返回错误，不回绕。
+2. worker ID 来自环境变量 `WORKER_ID`（0–1023）。`WorkerIDFromEnv` 在缺失、非整数或超出范围时返回错误，不调用 `os.Exit`；进程在启动装配时失败，本功能点不改 `cmd/*/main.go`。docker-compose 为每个会发号的实例写死互不相同的字面量，分配见 `docs/03-conventions.md` §2.5。
+3. 同一毫秒序列号用尽（0–4095）时等待下一毫秒。等待观察注入的时钟，并且可以被取消。
+4. 时钟回拨 ≤ 5ms 时等待追平；> 5ms 时返回本包错误 `ErrClockRollback`（可用 `errors.Is` 识别）。本包不返回数字码，也不包装 Kitex 错误。调用方（以后的服务）把该错误映射为已有的 `10004` / `UNAVAILABLE`，不新增错误码。
+5. `Generator.NewNo(ctx, prefix)` 返回 `prefix + 19 位左补零十进制`。`ctx` 是实现约束：等下一毫秒或追平回拨时必须能取消，避免假时钟把调用挂死。前缀规则不变，必须是 `docs/03-conventions.md` §2.2 中已登记的值，未登记的拒绝。
+6. `Parse(no)` 不阻塞、不带 context，解析出时间戳和 worker ID，便于排查。
+
+本包自己定义只含 `Now() time.Time` 的时钟接口，测试注入它；生产路径使用真实时间。不实现 `pkg/clock`（BASE-07），也不实现 `pkg/errno`（BASE-06）。
 
 验收：
 
-- [ ] 64 个 goroutine 共生成 100 万个 ID，无重复，单个 goroutine 内严格递增。
-- [ ] 注入回拨 3ms 的时钟，生成成功且耗时 ≥ 3ms；回拨 10ms 返回错误。
-- [ ] `NewNo("PA")` 长度 21，`Parse` 结果与生成时间误差 < 1ms。
+- [x] 64 个 goroutine 共生成 100 万个 ID，无重复，单个 goroutine 内严格递增。
+- [x] 注入回拨 3ms 的时钟，生成成功且耗时 ≥ 3ms；回拨 10ms 返回错误。
+- [x] `NewNo("PA")` 长度 21，`Parse` 结果与生成时间误差 < 1ms。
 
 #### BASE-06 错误码（pkg/errno）
 
@@ -2626,3 +2628,4 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 | 2026-10-14 | v3.0 | BASE-03 口径澄清：种子按 BASE-14 已写明的密文格式用标准库加密，不实现 `pkg/secretbox`、不把 BASE-14 加入依赖、不把 `app_secret_cipher` 改为可空。`make seed-load` 只创建 100 个零余额压测商户，`scripts/load-fund.sh` 留给 QA-02，不直接写余额。`make migrate` / `make seed` 不并入默认 `make up`。不改资金规则、接口、表结构和错误码 |
 | 2026-10-14 | v3.0 | BASE-03 补充 §2.3：`cmd/bootstrap`、`cmd/seed` 与 `internal/` 是初始化工具，不进 `make build` 的 7 个二进制，只经 Dockerfile 构建。`service/`、`gateway/`、`job/`、`pkg/` 不得 import `internal/`。运行镜像不安装 tzdata，时区数据用 `-tags timetzdata` 编进二进制。不改资金规则、接口、表结构和错误码 |
 | 2026-10-14 | v3.0 | BASE-04 口径澄清：`Add` / `Sub` 的溢出含负数与 `MinInt64`，返回普通 error 而不回绕。`Fee` 的 `rateBP` 越界返回错误；负金额且费率非 0 返回错误（四舍五入加数只对非负金额成立），费率为 0 时结果为 0。`ValidatePayAmount` 越界返回错误。不新增错误码，不实现 `pkg/errno`。不改资金流向、接口和表结构 |
+| 2026-10-14 | v3.0 | BASE-05 口径澄清：发号入口是 `Generator.NewNo(ctx, prefix)`，`ctx` 只用于取消等待，前缀规则不变。时间早于纪元或超出 41 位时返回错误，不回绕。回拨超过 5ms 时本包返回 `ErrClockRollback`，不返回数字码、不包装 Kitex 错误；调用方以后映射为已有的 `10004`。`WorkerIDFromEnv` 只返回错误，不 `os.Exit`。不实现 `pkg/clock` 和 `pkg/errno`。不改资金流向、接口、表结构和已登记错误码 |

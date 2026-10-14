@@ -1,6 +1,6 @@
 # pay-system 全局约定与编号规范
 
-> 版本：v2.4　最后修改：2026-10-14
+> 版本：v2.5　最后修改：2026-10-14
 > 适用：全部代码、文档、配置。需求见 `docs/02-requirements.md`，接口见 `docs/05-api.md`，表结构见 `docs/database.md`。
 
 本文集中登记会被多个功能点共用的约定：编号体系、业务单号、金额、时间、错误码、幂等与事务规则、命名规范、配置项。新增或修改这些内容时，先改本文并在 §9 记录，再改代码。
@@ -65,6 +65,13 @@
 | 21–12 | 10 | worker ID（环境变量 `WORKER_ID`，0–1023） |
 | 11–0 | 12 | 毫秒内序列号 |
 
+发号由 `pkg/idgen` 完成（BASE-05）：
+
+- `Generator.NewNo(ctx, prefix)` 返回前缀加 19 位左补零十进制。`ctx` 可取消等下一毫秒和追平回拨。`Parse` 不带 context。
+- 同一 worker 并发安全。同一毫秒序列号 0–4095 用尽后等到下一毫秒。
+- 比较回拨用墙上时间，不用单调钟。不超过 5ms 时等待追平，超过 5ms 时返回 `ErrClockRollback`。数字码 `10004` 由调用方映射，不在本包返回（见 §5.3）。
+- 时间早于纪元或超出 41 位时返回错误，不回绕。符号位恒为 0。
+
 ### 2.2 前缀登记
 
 | 前缀 | 对象 | 所在表 | 生成方 |
@@ -81,7 +88,7 @@
 | `RD` | 对账差错 | `recon_diff.diff_no` | recon |
 | `MC` | 模拟渠道流水 | `mock_txn.channel_txn_no` | channel-mock |
 
-新增前缀必须先在此表登记；`idgen.NewNo` 拒绝未登记的前缀。
+新增前缀必须先在此表登记；`idgen.Generator.NewNo` 拒绝未登记的前缀。
 
 ### 2.3 其他标识
 
@@ -111,6 +118,21 @@
 | 商户通知生成 | `event_id` |
 | 对账批次 | `(channel, bill_date)` |
 | 对账差错 | `(batch_no, txn_type, biz_no)` |
+
+### 2.5 worker 分配
+
+`WORKER_ID` 每个发号进程一个，范围 0–1023。`deploy/.env.example` 里的 `WORKER_ID=1` 只给单进程本机运行，不要删。
+
+docker-compose 给将来会跑业务进程的 6 个占位服务写死互不相同的字面量，不用 `${WORKER_ID}`，否则每个实例都是 1。mysql、redis、kafka、prometheus、jaeger、bootstrap、migrate、seed 不发号，不分配。
+
+| 进程 | `WORKER_ID` |
+|---|---|
+| gateway | 1 |
+| payment | 2 |
+| account | 3 |
+| recon | 4 |
+| channel-mock | 5 |
+| merchant-demo | 6 |
 
 ## 3. 金额
 
@@ -186,6 +208,7 @@
 4. 鉴权失败不说明具体原因（例如不区分“密钥错误”和“body 被篡改”）。
 5. 错误响应的 `data` 默认为空；本表“说明”中注明携带对象的，`data` 为该对象。Kitex 的 `BizStatusError` 不能同时返回响应体，因此携带对象的错误（如退款、转账的 `40002`，`30006`）在 RPC 层按正常响应返回：响应结构体带 `biz_code` 字段（`idl/base.thrift`）和该对象，网关看到非 0 的 `biz_code` 时按本表映射 HTTP 状态码并把对象放入 `data`。其他错误一律用 `BizStatusError`。
 6. 新增错误码：先登记到本表（码段内递增，不复用），再在 `pkg/errno` 实现，并同步 `docs/05-api.md` 中受影响的接口。
+7. `pkg/idgen` 在时钟回拨超过 5ms 时返回 `ErrClockRollback`，不携带数字码，也不包装 Kitex 错误。业务调用方将该错误映射为已有的 `10004`，不新增错误码。
 
 ### 5.4 失败原因码（fail_code）
 
@@ -291,7 +314,7 @@
 
 | 变量 | 程序 | 默认值 | 说明 |
 |---|---|---|---|
-| `WORKER_ID` | 全部服务 | 无（必填） | 0–1023，每个实例唯一 |
+| `WORKER_ID` | 全部服务 | 无（必填） | 0–1023，每个实例唯一。compose 的 6 个业务进程用字面量，见 §2.5。`deploy/.env.example` 的 `1` 只给单进程本机运行 |
 | `MYSQL_DSN` | payment、recon、channel-mock | 无（必填，secret） | 各服务使用自己的数据库账号；recon 用它访问 `pay_recon` 与只读的 `pay_payment` |
 | `ACCOUNT_DB_DSN_0`、`ACCOUNT_DB_DSN_1` | account、recon | 无（必填，secret） | 两个账户分片的 DSN；recon 使用只读账号 |
 | `ACCOUNT_SHARD_COUNT` | payment、account、recon | `2` | 固定值，不支持修改（D17） |
@@ -340,3 +363,4 @@
 | v2.2 | 2026-10-13 | BASE-02 增加 compose 专用配置 `MYSQL_ROOT_PASSWORD`；`deploy/.env.example` 写入本表演示值 |
 | v2.3 | 2026-10-14 | BASE-03 增加 `MYSQL_RECON_PASSWORD`、`MYSQL_CHANNEL_MOCK_PASSWORD`、`MYSQL_MIGRATOR_PASSWORD`、`DEMO_APP_SECRET_FORMAT`、`SEED_LOAD`；`MYSQL_HOST` / `MYSQL_PORT` 只给 bootstrap，不进 `.env.example`。`svc_account`、`svc_payment` 口令仍从已有 DSN 解析 |
 | v2.4 | 2026-10-14 | BASE-04：§3 明确 `money.Fee` 在费率越界、以及负金额且费率非 0 时返回错误，费率为 0 时结果为 0。不新增错误码 |
+| v2.5 | 2026-10-14 | BASE-05：§2.1 写明发号入口、回拨和 41 位溢出的口径；§2.5 登记 compose 中 6 个业务进程的 `WORKER_ID` 字面量；§5.3 写明 `ErrClockRollback` 由调用方映射为已有的 `10004`，不新增错误码；§8 的 `WORKER_ID` 说明指向 §2.5 |
