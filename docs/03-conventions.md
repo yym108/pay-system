@@ -1,6 +1,6 @@
 # pay-system 全局约定与编号规范
 
-> 版本：v2.7　最后修改：2026-10-15
+> 版本：v2.8　最后修改：2026-10-15
 > 适用：全部代码、文档、配置。需求见 `docs/02-requirements.md`，接口见 `docs/05-api.md`，表结构见 `docs/database.md`。
 
 本文集中登记会被多个功能点共用的约定：编号体系、业务单号、金额、时间、错误码、幂等与事务规则、命名规范、配置项。新增或修改这些内容时，先改本文并在 §9 记录，再改代码。
@@ -315,15 +315,15 @@ docker-compose 给将来会跑业务进程的 6 个占位服务写死互不相�
 
 ## 8. 配置项
 
-配置只来自环境变量（D12）。变量名大写下划线；渠道相关以 `CHANNEL_<渠道>_` 开头，模拟渠道自身以 `MOCK_` 开头。带 secret 标记的项启动日志输出为 `***`。
+配置只来自环境变量（D12）。变量名大写下划线；渠道相关以 `CHANNEL_<渠道>_` 开头，模拟渠道自身以 `MOCK_` 开头。配置结构体用 `secret:"true"` 标记敏感字段，`pkg/config` 在生效配置里把这些字段输出为 `***`，不扫描卡号或手机号。
 
-只列跨功能点的关键项，完整清单以各程序配置结构体为准（BASE-09）。
+只列跨功能点的关键项，完整清单以各程序配置结构体为准（BASE-09）。加载时不合并进程里已有的环境，调用方传入哪一份就解析哪一份。
 
 | 变量 | 程序 | 默认值 | 说明 |
 |---|---|---|---|
-| `WORKER_ID` | 全部服务 | 无（必填） | 0–1023，每个实例唯一。compose 的 6 个业务进程用字面量，见 §2.5。`deploy/.env.example` 的 `1` 只给单进程本机运行 |
-| `MYSQL_DSN` | payment、recon、channel-mock | 无（必填，secret） | 各服务使用自己的数据库账号；recon 用它访问 `pay_recon` 与只读的 `pay_payment` |
-| `ACCOUNT_DB_DSN_0`、`ACCOUNT_DB_DSN_1` | account、recon | 无（必填，secret） | 两个账户分片的 DSN；recon 使用只读账号 |
+| `WORKER_ID` | gateway、payment、account、recon、channel-mock、merchant-demo | 无（必填） | 0–1023，每个实例唯一。compose 的 6 个业务进程用字面量，见 §2.5。`deploy/.env.example` 的 `1` 只给单进程本机运行。seed、bootstrap、paycli、migrate 不发号，不读取 |
+| `MYSQL_DSN` | payment、seed、bootstrap | 无（必填，secret） | payment、seed 原样使用，不改用户和口令。bootstrap 只从中解析 `svc_payment` 的口令。recon、channel-mock 不读此变量 |
+| `ACCOUNT_DB_DSN_0`、`ACCOUNT_DB_DSN_1` | account、recon、seed、bootstrap | 无（必填，secret） | account、seed 原样使用。bootstrap 只解析 `svc_account` 的口令。recon 只用它们解析地址和分片库名，生效连接由下面的装配换成 `svc_recon` |
 | `ACCOUNT_SHARD_COUNT` | payment、account、recon | `2` | 固定值，不支持修改（D17） |
 | `PLATFORM_SUB_ACCOUNTS` | account、seed | `8` | 平台账户子账户数，基线对比时为 `1`（OPT-03），只允许调大 |
 | `LEDGER_BATCH_ENABLED`、`LEDGER_BATCH_SIZE` | account | `true`、`100` | 批量记账开关与单组上限（OPT-02） |
@@ -335,7 +335,7 @@ docker-compose 给将来会跑业务进程的 6 个占位服务写死互不相�
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | 全部服务 | `jaeger:4317` | 为空时关闭 trace |
 | `SECRET_MASTER_KEY` | payment、seed | 无（必填，secret） | 32 字节 base64 |
 | `CHANNEL_MOCKPAY_KEY` | payment、gateway、channel-mock | 无（必填，secret） | 渠道签名密钥 |
-| `CHANNEL_MOCKPAY_URL` | payment、recon | `http://channel-mock:9080` | |
+| `CHANNEL_MOCKPAY_URL` | payment | `http://channel-mock:9080` | BASE-09 的 recon 不读取。对账要访问渠道时再加到 recon |
 | `CHANNEL_NOTIFY_URL` | payment | `http://gateway:8080/callback/mockpay` | 交给渠道的回调地址 |
 | `ADMIN_TOKEN` | gateway | 无（必填，secret，≥ 32 字符） | 管理接口 Token |
 | `NOTIFY_URL_ALLOW_HOSTS` | payment | `merchant-demo` | 商户通知地址主机白名单，逗号分隔 |
@@ -347,16 +347,26 @@ docker-compose 给将来会跑业务进程的 6 个占位服务写死互不相�
 | `MOCK_ALLOW_PARTIAL_BILL` | channel-mock | `false` | 允许下载当天账单（测试与演练） |
 | `FAULT_POINTS` | 全部服务 | 空 | 故障注入点（QA-01） |
 | `FAIL_FIRST_N` | merchant-demo | `0` | 每个单号前 N 次通知返回失败（TL-02） |
-| `MYSQL_ROOT_PASSWORD` | compose / MySQL | 无（必填，secret） | 仅本地 MySQL root。应用不使用 root；最小权限账号由 BASE-03 创建 |
-| `MYSQL_HOST` | bootstrap | `127.0.0.1` | 建库授权时的 MySQL 地址。不写入 `deploy/.env.example`：写进去会被 compose 插值覆盖容器内地址。compose 的 bootstrap 容器固定为 `mysql` |
-| `MYSQL_PORT` | bootstrap | `3306` | 建库授权时的端口 |
-| `MYSQL_RECON_PASSWORD` | bootstrap、recon | 无（必填，secret） | `svc_recon` 口令。对账进程的 DSN 由 BASE-09 装配，口令必须与此一致 |
-| `MYSQL_CHANNEL_MOCK_PASSWORD` | bootstrap、channel-mock | 无（必填，secret） | `svc_channel_mock` 口令。channel-mock 的 DSN 由 BASE-09 装配 |
+| `MYSQL_ROOT_PASSWORD` | compose / MySQL、bootstrap | 无（必填，secret） | 仅本地 MySQL root。业务服务不使用 root；bootstrap 用它建库。最小权限账号由 BASE-03 创建 |
+| `MYSQL_HOST` | bootstrap、channel-mock | bootstrap `127.0.0.1`；channel-mock `mysql` | 不写入 `deploy/.env.example`：写进去会被 compose 插值覆盖容器内地址。bootstrap 在宿主机上建库，默认 `127.0.0.1`；compose 里的 bootstrap 容器仍固定为 `mysql`。channel-mock 跑在 compose 网络里，默认 `mysql` |
+| `MYSQL_PORT` | bootstrap、channel-mock | `3306` | 建库授权和 channel-mock 装配 DSN 时的端口 |
+| `MYSQL_RECON_PASSWORD` | bootstrap、recon | 无（必填，secret） | `svc_recon` 口令。recon 装配出的四条 DSN 都用这个口令，必须与 bootstrap 创建的账号一致 |
+| `MYSQL_CHANNEL_MOCK_PASSWORD` | bootstrap、channel-mock | 无（必填，secret） | `svc_channel_mock` 口令。channel-mock 装配出的 DSN 用这个口令，必须与 bootstrap 创建的账号一致 |
 | `MYSQL_MIGRATOR_PASSWORD` | bootstrap、migrate | 无（必填，secret） | `migrator` 口令，只给迁移容器做 DDL |
 | `DEMO_APP_SECRET_FORMAT` | seed | `demo_secret_%s_0123456789ab` | 种子商户明文，`%s` 为商户号。种子加密后写入，明文只出现在环境文件。secret |
 | `SEED_LOAD` | seed | `0` | `1` 时额外创建 `M200000`–`M200099`。不入账 |
 
-新增配置项：先登记到本表（或在对应功能点中说明并归入此表），再加入配置结构体和 `deploy/.env.example`。`deploy/.env.example` 已包含本表演示值；`MYSQL_ROOT_PASSWORD` 只给 compose 的 MySQL 容器做插值，不进入应用配置结构体。`MYSQL_HOST`、`MYSQL_PORT` 有默认值，故意不写入 example，避免 compose 把宿主机地址插进容器。
+### 8.1 DSN 装配
+
+BASE-09 只拼 DSN 文本，不连接数据库，也不调用驱动的 `ParseDSN`（那个函数会 `LoadLocation`）。文本规则与 go-sql-driver 一致：`user:password@tcp(host:port)/dbname?query`。
+
+- payment、account、seed 保存调用方传入的 DSN，用户和口令都不改。
+- recon 不读 `MYSQL_DSN`。从 `ACCOUNT_DB_DSN_0` 取 host、port 和 query，分片库名必须分别是 `pay_account_0`、`pay_account_1`。然后生成四条 secret DSN，用户都是 `svc_recon`，口令都是 `MYSQL_RECON_PASSWORD`：`pay_recon`、`pay_payment`、`pay_account_0`、`pay_account_1`。`ACCOUNT_DB_DSN_1` 只提供第二个分片的库名；即使它的 host 不同，四条 DSN 仍用 `ACCOUNT_DB_DSN_0` 的地址和 query。
+- channel-mock 不读 `MYSQL_DSN`。主机是 `MYSQL_HOST`（默认 `mysql`，不是 bootstrap 的 `127.0.0.1`），端口是 `MYSQL_PORT`（默认 `3306`）。用户 `svc_channel_mock`，库 `pay_channel_mock`，查询参数固定为 `parseTime=true&loc=Asia%2FShanghai&charset=utf8mb4`。
+
+这四条 recon DSN 和 channel-mock 的 DSN 都是 secret，启动输出里只有 `***`。
+
+新增配置项：先登记到本表（或在对应功能点中说明并归入此表），再加入配置结构体和 `deploy/.env.example`。`deploy/.env.example` 已包含本表演示值；`MYSQL_ROOT_PASSWORD` 只给 compose 的 MySQL 容器做插值，不进入业务服务的配置结构体，只进入 bootstrap。`MYSQL_HOST`、`MYSQL_PORT` 有默认值，故意不写入 example，避免 compose 把宿主机地址插进容器。bootstrap 的 `MYSQL_HOST` 默认 `127.0.0.1`；channel-mock 的 `MYSQL_HOST` 默认 `mysql`。
 
 ## 9. 变更记录
 
@@ -373,3 +383,4 @@ docker-compose 给将来会跑业务进程的 6 个占位服务写死互不相�
 | v2.5 | 2026-10-14 | BASE-05：§2.1 写明发号入口、回拨和 41 位溢出的口径；§2.5 登记 compose 中 6 个业务进程的 `WORKER_ID` 字面量；§5.3 写明 `ErrClockRollback` 由调用方映射为已有的 `10004`，不新增错误码；§8 的 `WORKER_ID` 说明指向 §2.5 |
 | v2.6 | 2026-10-14 | BASE-06：§5.2 增加“对外 msg”列，登记除 `30002` 外各码的稳定英文；§5.3 写明 nil 为成功码 `0` / `ok` / HTTP 200，`Error()` 只返回对外 msg、原因只在 `Unwrap`，`10001` 的 `HTTPStatus` 为 400（413 由网关返回，不另造码），`30002` 与未登记码不是可用错误、按 `10003` 处理，Kitex 用 `BizStatusError` 传码和对外 msg、客户端用 `FromBizStatusError` 还原且不采用与本表不一致的对端文本。不改码的数字、HTTP 语义和可重试含义，不实现 `ErrDuplicate` |
 | v2.7 | 2026-10-15 | BASE-07：§4 第 1 条写明 `pkg/clock` 的 `Real` 用 `time.FixedZone("Asia/Shanghai", 8*60*60)`，不调用 `time.LoadLocation`，不依赖 zoneinfo，也不 import `time/tzdata`。中国自 1991 年起没有夏令时，固定 +8 与当前民用时间一致。DSN 的 `LoadLocation` 仍用 `-tags timetzdata`，本功能点不改 Dockerfile |
+| v2.8 | 2026-10-15 | BASE-09：§8 写明配置从调用方传入的环境解析；`secret:"true"` 输出 `***`。`WORKER_ID` 只属于 6 个发号进程。`MYSQL_DSN` 不再交给 recon、channel-mock；`CHANNEL_MOCKPAY_URL` 本功能点只给 payment。`MYSQL_ROOT_PASSWORD` 只进入 bootstrap，不进业务服务。新增 §8.1：recon 用 `ACCOUNT_DB_DSN_0` 的 host、port、query 和 `MYSQL_RECON_PASSWORD` 装配四条 `svc_recon` DSN；channel-mock 的 `MYSQL_HOST` 默认 `mysql`（bootstrap 仍是 `127.0.0.1`），`MYSQL_PORT` 默认 `3306`，装配 `svc_channel_mock` 到 `pay_channel_mock`。不新增变量名 |

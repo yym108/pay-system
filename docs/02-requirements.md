@@ -343,7 +343,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | BASE-06 | 错误码 | P0 | M1 | BASE-01 | DONE |
 | BASE-07 | 时钟 | P0 | M1 | BASE-01 | DONE |
 | BASE-08 | 数据库访问与事务 | P0 | M1 | BASE-06 | TODO |
-| BASE-09 | 配置 | P0 | M1 | BASE-01 | TODO |
+| BASE-09 | 配置 | P0 | M1 | BASE-01 | DONE |
 | BASE-10 | 日志与脱敏 | P0 | M1 | BASE-01 | TODO |
 | BASE-11 | 集成测试基座 | P0 | M1 | BASE-03、BASE-08 | TODO |
 | BASE-12 | IDL 与代码生成 | P0 | M1 | BASE-01 | TODO |
@@ -672,15 +672,22 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 
 规则：
 
-1. 每个程序一个配置结构体，字段来自环境变量（caarlos0/env），带默认值。
-2. 启动时校验必填项和取值范围，失败即退出（非 0 退出码），并输出缺失项名称。
-3. 启动日志打印生效配置，带 `secret:"true"` 标签的字段输出为 `***`。
+1. 每个程序一个配置结构体，字段来自环境变量（caarlos0/env v11.4.1），带默认值。环境只来自调用方传入的列表（`Options.Environment`），不合并进程环境。
+2. 启动时校验必填项和取值范围。失败返回错误，错误文本包含缺失或非法变量的名字。各业务入口加载失败则把错误写到 stderr 并以非 0 退出；成功则把脱敏后的生效配置写到 stdout 后返回。不监听端口，不连接数据库，不启动 HTTP/RPC。
+3. 生效配置里，带 `secret:"true"` 标签的字段输出为 `***`，没打这个标签的字段按原值输出。脱敏是 `pkg/config` 自己的反射，不实现 `pkg/logx`，也不扫描卡号或手机号。
 4. 所有补偿任务间隔、重试计划、超时时间均可配置，测试可整体缩短。
+
+DSN 只按驱动的文本规则装配，不连接数据库：
+
+- payment、account、seed 的 DSN 原样保存，不改用户和口令。
+- recon 不读取 `MYSQL_DSN`，避免把 payment 的口令放进对账进程。必填 `MYSQL_RECON_PASSWORD`、`ACCOUNT_DB_DSN_0`、`ACCOUNT_DB_DSN_1`。从 `ACCOUNT_DB_DSN_0` 解析 host、port、query，生成四条 secret DSN：用户都是 `svc_recon`，口令都是 `MYSQL_RECON_PASSWORD`，库名是 `pay_recon`、`pay_payment`，以及原来的分片库 `pay_account_0`、`pay_account_1`。
+- channel-mock 不读取 `MYSQL_DSN`。必填 `MYSQL_CHANNEL_MOCK_PASSWORD`。`MYSQL_HOST` 默认 `mysql`（渠道进程在 compose 网络里；bootstrap 的默认仍是 `127.0.0.1`），`MYSQL_PORT` 默认 `3306`。查询参数固定为 `parseTime=true&loc=Asia%2FShanghai&charset=utf8mb4`。用户 `svc_channel_mock`，库 `pay_channel_mock`。
+- seed、bootstrap 只提供配置结构体，不改现有加密、写库和建号流程。paycli 没有专属变量，结构体为空，不要求 `WORKER_ID`。不新建 `cmd/migrate`。
 
 验收：
 
-- [ ] 缺少 `SECRET_MASTER_KEY` 时 payment 启动失败并提示该变量名。
-- [ ] 启动日志中不出现密钥明文。
+- [x] 缺少 `SECRET_MASTER_KEY` 时 payment 启动失败并提示该变量名。
+- [x] 启动日志中不出现密钥明文。
 
 #### BASE-10 日志与脱敏（pkg/logx）
 
@@ -2678,3 +2685,4 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 | 2026-10-14 | v3.0 | BASE-05 口径澄清：发号入口是 `Generator.NewNo(ctx, prefix)`，`ctx` 只用于取消等待，前缀规则不变。时间早于纪元或超出 41 位时返回错误，不回绕。回拨超过 5ms 时本包返回 `ErrClockRollback`，不返回数字码、不包装 Kitex 错误；调用方以后映射为已有的 `10004`。`WorkerIDFromEnv` 只返回错误，不 `os.Exit`。不实现 `pkg/clock` 和 `pkg/errno`。不改资金流向、接口、表结构和已登记错误码 |
 | 2026-10-14 | v3.0 | BASE-06 口径澄清：`pkg/errno` 定义约定 §5.2 除 `30002` 外的全部码。`30002` 保留不用、没有名称，不提供可用错误。`nil` 是成功（码 `0`，msg `ok`，HTTP 200），不是 `10003`。未知非 nil 错误和未登记码视为 `10003`，对外消息固定 `internal error`，不含底层文本。`Error()` 只返回 `Msg`，底层错误只通过 `Unwrap` 取得。对外 msg 是稳定短英文，表见本节 BASE-06，并登记到约定 §5.2。`10001` 的 `HTTPStatus` 是 400；请求体超过 64KB 返回 413 是网关行为，本包不实现网关，也不另造码。Kitex 只用 `kerrors.BizStatusError` 双向转换，不生成 IDL。不实现 `errno.ErrDuplicate`（BASE-08）。不改资金流向、接口字段、表结构和已有码的含义 |
 | 2026-10-15 | v3.0 | BASE-07 口径澄清：`Clock.Now` 返回 `time.Time`。`Real` 用 `time.FixedZone("Asia/Shanghai", 8*60*60)`，不调用 `time.LoadLocation`，因此不依赖 zoneinfo；中国自 1991 年起没有夏令时，固定 +8 与当前民用时间一致。运行镜像不安装 tzdata，本功能点不改 Dockerfile。`Fake` 的 `Set`、`Advance` 并发安全，`Advance(10s)` 后 `Now()` 精确前进 10 秒。`biz` 和 `job` 只通过 `Clock` 取时间，不新建空包，也不把 `pkg/idgen` 改成依赖 `pkg/clock`。不实现配置、日志和数据库。不改资金流向、接口、表结构和错误码 |
+| 2026-10-15 | v3.0 | BASE-09 口径澄清：缺少或非法的环境变量，错误文本包含变量名。`secret:"true"` 的字段输出 `***`，不实现 `pkg/logx`。recon 不读 `MYSQL_DSN`，用 `ACCOUNT_DB_DSN_0` 的 host、port、query 和 `MYSQL_RECON_PASSWORD` 装配四条 `svc_recon` DSN（`pay_recon`、`pay_payment`、`pay_account_0`、`pay_account_1`）。channel-mock 不读 `MYSQL_DSN`，`MYSQL_HOST` 默认 `mysql`、`MYSQL_PORT` 默认 `3306`，装配 `svc_channel_mock` 到 `pay_channel_mock`。payment、account、seed 的 DSN 原样保存。装配不连接数据库。seed、bootstrap 只增加配置结构体，不改建号和种子流程。不改资金流向、接口、表结构和错误码 |

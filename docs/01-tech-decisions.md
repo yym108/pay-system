@@ -58,6 +58,8 @@ BASE-06（2026-10-14）：`go.mod` 直接依赖已锁定的 `github.com/cloudweg
 
 BASE-07（2026-10-15）：`pkg/clock` 的生产时钟用 `time.FixedZone("Asia/Shanghai", 8*60*60)`，不调用 `time.LoadLocation`，也不新增依赖。中国自 1991 年起没有夏令时，固定偏移与当前东八区民用时间一致，所以时钟不读 zoneinfo，也不 import `time/tzdata`。这不撤销 BASE-03：MySQL 驱动解析 `loc=Asia/Shanghai` 仍会 `LoadLocation`，构建继续使用 `-tags timetzdata`，Dockerfile 不改。`pkg/idgen` 仍使用自己的窄时钟，不改为依赖 `pkg/clock`。
 
+BASE-09（2026-10-15）：`go.mod` 已直接依赖 `github.com/caarlos0/env/v11 v11.4.1`，版本与本表相同，没有升级其他已锁定依赖。配置用 `Options.Environment` 解析调用方给出的环境，测试不继承进程环境。DSN 装配不连接数据库，也不调用驱动的 `ParseDSN`（该函数会 `LoadLocation`）。recon 不使用 `MYSQL_DSN`，由 `ACCOUNT_DB_DSN_0` 的 host、port、query 和 `MYSQL_RECON_PASSWORD` 装配四条 `svc_recon` DSN（`pay_recon`、`pay_payment`、`pay_account_0`、`pay_account_1`）。channel-mock 不使用 `MYSQL_DSN`，由 `MYSQL_HOST`（默认 `mysql`）、`MYSQL_PORT`（默认 `3306`）和 `MYSQL_CHANNEL_MOCK_PASSWORD` 装配 `svc_channel_mock` 到 `pay_channel_mock`。payment、account、seed 的 DSN 原样保存。
+
 ### 2.2 容器镜像（均已确认提供 arm64 与 amd64）
 
 | 组件 | 镜像 |
@@ -182,6 +184,7 @@ BASE-01（2026-10-13）：根据本机实际安装版本，将本表 Go 本机�
 
 - 决策：只用环境变量配置（caarlos0/env），每个服务提供带默认值的配置结构体，仓库提供 `deploy/.env.example`。
 - 理由：与 docker-compose 天然配合；测试中可以直接构造配置结构体，把补偿间隔调短。
+- BASE-09：直接依赖锁定为 v11.4.1。recon 与 channel-mock 的生效 DSN 由本功能点按 §2.1 的口径装配，不把 `MYSQL_DSN` 里的 payment 口令放进这两个进程。
 
 ### D13 日志
 

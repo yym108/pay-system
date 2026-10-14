@@ -2,6 +2,11 @@
 
 随手记录踩坑、数据和取舍。不替代需求与技术决策文档。
 
+## BASE-09 配置
+
+- caarlos0/env 在变量被显式设成空字符串、同时字段又有 `envDefault` 时，会改回默认值。`OTEL_EXPORTER_OTLP_ENDPOINT` 的空字符串表示关闭 trace，所以不能写 `envDefault`：键不在环境里才填 `jaeger:4317`，键在且值为空就保持关闭。`QUERY_BACKOFF` 也一样，显式空串是非法（至少一段时长），不能被默认计划悄悄盖住。
+- 装配 DSN 不调用 `mysql.ParseDSN`。驱动解析 `loc=Asia/Shanghai` 会 `LoadLocation`，配置加载就会依赖 zoneinfo。这里只按 `user:password@tcp(host:port)/dbname?query` 切文本，不连接数据库。测试再用驱动解析装配结果，核对用户、库名和口令，失败信息里不打印口令。
+
 ## BASE-07 时钟
 
 - 不要用 `time.LoadLocation("Asia/Shanghai")` 做业务时钟。运行镜像是没有 tzdata 的 Alpine，容器里这个调用会得到 `unknown time zone Asia/Shanghai`。中国自 1991 年起没有夏令时，`time.FixedZone("Asia/Shanghai", 8*60*60)` 的地点名和 +8 偏移都固定，不读 zoneinfo。

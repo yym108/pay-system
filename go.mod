@@ -4,6 +4,7 @@ go 1.27.0
 
 require (
 	github.com/bytedance/sonic v1.15.4
+	github.com/caarlos0/env/v11 v11.4.1
 	github.com/cloudwego/kitex v0.16.3
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/golang-migrate/migrate/v4 v4.20.1
