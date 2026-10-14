@@ -344,7 +344,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | BASE-07 | 时钟 | P0 | M1 | BASE-01 | DONE |
 | BASE-08 | 数据库访问与事务 | P0 | M1 | BASE-06 | TODO |
 | BASE-09 | 配置 | P0 | M1 | BASE-01 | DONE |
-| BASE-10 | 日志与脱敏 | P0 | M1 | BASE-01 | TODO |
+| BASE-10 | 日志与脱敏 | P0 | M1 | BASE-01 | DONE |
 | BASE-11 | 集成测试基座 | P0 | M1 | BASE-03、BASE-08 | TODO |
 | BASE-12 | IDL 与代码生成 | P0 | M1 | BASE-01 | TODO |
 | BASE-13 | 签名库 | P0 | M3 | BASE-01 | TODO |
@@ -695,25 +695,26 @@ DSN 只按驱动的文本规则装配，不连接数据库：
 
 规则：
 
-1. 使用 `log/slog` JSON 输出，固定字段：`time`、`level`、`msg`、`service`、`trace_id`、`span_id`、`request_id`。
-2. 脱敏 Handler 按字段名处理：
+1. 使用 `log/slog` JSON 输出，固定字段：`time`、`level`、`msg`、`service`、`trace_id`、`span_id`、`request_id`。没有值时后三个是空字符串，字段仍在。`trace_id` 和 `span_id` 来自 `go.opentelemetry.io/otel/trace` 的 `SpanContextFromContext`（只要 trace API，不引入 sdk 或 exporter）。`request_id` 来自 `logx.WithRequestID`。这三个关联字段按原值写入，不做兜底扫描，避免 span id 里的连续数字被改成卡号。
+2. 脱敏 Handler 按字段名处理。不区分大小写，名字包含片段即匹配。同时命中多条时，整段替换优先；否则按下表顺序用先命中的一条。长度按 Unicode 码点计。卡号短于 10、手机号短于 7、证件号短于 2 时，整段换成 `***`，避免前后重叠把原文露出来。
 
    | 字段名（不区分大小写，包含即匹配） | 处理 |
    |---|---|
    | `secret`、`password`、`token`、`signature`、`master_key` | 整体替换为 `***` |
-   | `card_no`、`bank_card` | 保留前 6 后 4 位 |
-   | `phone`、`mobile` | 保留前 3 后 4 位 |
-   | `id_card` | 保留前 1 后 1 位 |
+   | `card_no`、`bank_card` | 保留前 6 后 4 位；短于 10 则整段 `***` |
+   | `phone`、`mobile` | 保留前 3 后 4 位；短于 7 则整段 `***` |
+   | `id_card` | 保留前 1 后 1 位；短于 2 则整段 `***` |
 
-3. 对字符串值做兜底扫描：13–19 位连续数字按卡号脱敏，11 位 `1` 开头数字按手机号脱敏。
-4. Hertz `hlog`、Kitex `klog` 通过适配器输出到同一个 slog。
-5. 访问日志不记录请求体原文，只记录路径、状态码、耗时、商户号、错误码。
+   分组的键同样匹配。键需要整段替换，或者值是分组而键属于卡号、手机号、证件号时，整个分组换成 `***`，不展开子字段。`error` 先转成 `Error()` 的字符串，再按字段名或兜底规则处理。
+3. 对字符串值做兜底扫描，包括字段名不敏感的字段和 `msg`：连续 13–19 位 ASCII 数字按卡号脱敏，正好 11 位且以 `1` 开头的按手机号脱敏。11 位不是卡号。更短的数字（例如金额 `100`）、12 位、长于 19 位，以及中间被非数字断开的数字，都不脱敏。非字符串不做兜底扫描。
+4. Hertz `hlog`、Kitex `klog` 通过适配器输出到同一个 slog。不在本包启动 HTTP 或 RPC。
+5. 访问日志不记录请求体原文，只记录路径、状态码、耗时、商户号、错误码。不改 `pkg/config` 的脱敏。
 
 验收：
 
-- [ ] `slog.Info("x", "app_secret", "abc")` 输出 `***`。
-- [ ] `slog.Info("x", "memo", "card 6222020200112233445")` 输出 `622202*********3445`。
-- [ ] 上下文中带 trace 时，日志包含对应 `trace_id`。
+- [x] `slog.Info("x", "app_secret", "abc")` 输出 `***`。
+- [x] `slog.Info("x", "memo", "card 6222020200112233445")` 输出 `622202*********3445`。
+- [x] 上下文中带 trace 时，日志包含对应 `trace_id`。
 
 #### BASE-11 集成测试基座
 
@@ -2686,3 +2687,4 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 | 2026-10-14 | v3.0 | BASE-06 口径澄清：`pkg/errno` 定义约定 §5.2 除 `30002` 外的全部码。`30002` 保留不用、没有名称，不提供可用错误。`nil` 是成功（码 `0`，msg `ok`，HTTP 200），不是 `10003`。未知非 nil 错误和未登记码视为 `10003`，对外消息固定 `internal error`，不含底层文本。`Error()` 只返回 `Msg`，底层错误只通过 `Unwrap` 取得。对外 msg 是稳定短英文，表见本节 BASE-06，并登记到约定 §5.2。`10001` 的 `HTTPStatus` 是 400；请求体超过 64KB 返回 413 是网关行为，本包不实现网关，也不另造码。Kitex 只用 `kerrors.BizStatusError` 双向转换，不生成 IDL。不实现 `errno.ErrDuplicate`（BASE-08）。不改资金流向、接口字段、表结构和已有码的含义 |
 | 2026-10-15 | v3.0 | BASE-07 口径澄清：`Clock.Now` 返回 `time.Time`。`Real` 用 `time.FixedZone("Asia/Shanghai", 8*60*60)`，不调用 `time.LoadLocation`，因此不依赖 zoneinfo；中国自 1991 年起没有夏令时，固定 +8 与当前民用时间一致。运行镜像不安装 tzdata，本功能点不改 Dockerfile。`Fake` 的 `Set`、`Advance` 并发安全，`Advance(10s)` 后 `Now()` 精确前进 10 秒。`biz` 和 `job` 只通过 `Clock` 取时间，不新建空包，也不把 `pkg/idgen` 改成依赖 `pkg/clock`。不实现配置、日志和数据库。不改资金流向、接口、表结构和错误码 |
 | 2026-10-15 | v3.0 | BASE-09 口径澄清：缺少或非法的环境变量，错误文本包含变量名。`secret:"true"` 的字段输出 `***`，不实现 `pkg/logx`。recon 不读 `MYSQL_DSN`，用 `ACCOUNT_DB_DSN_0` 的 host、port、query 和 `MYSQL_RECON_PASSWORD` 装配四条 `svc_recon` DSN（`pay_recon`、`pay_payment`、`pay_account_0`、`pay_account_1`）。channel-mock 不读 `MYSQL_DSN`，`MYSQL_HOST` 默认 `mysql`、`MYSQL_PORT` 默认 `3306`，装配 `svc_channel_mock` 到 `pay_channel_mock`。payment、account、seed 的 DSN 原样保存。装配不连接数据库。seed、bootstrap 只增加配置结构体，不改建号和种子流程。不改资金流向、接口、表结构和错误码 |
+| 2026-10-15 | v3.0 | BASE-10 口径澄清：字段名不区分大小写，包含片段即匹配。卡号短于 10、手机号短于 7、证件号短于 2 时整段换成 `***`。分组键和 error 走同一套规则，error 先转成字符串。兜底扫描只认 ASCII 连续数字；正好 11 位且以 1 开头的按手机号，不当卡号；更短的数字（如金额）和长于 19 位的不脱敏。`trace_id`、`span_id` 来自 otel trace API 的 `SpanContextFromContext`，不引入 sdk。`request_id` 来自 `WithRequestID`。这三个关联字段按原值写入。访问日志只有路径、状态码、耗时、商户号、错误码，不记录请求体。不改 `pkg/config` 的脱敏。不改资金流向、接口、表结构和错误码 |

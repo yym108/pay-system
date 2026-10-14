@@ -1,6 +1,6 @@
 # pay-system 全局约定与编号规范
 
-> 版本：v2.8　最后修改：2026-10-15
+> 版本：v2.9　最后修改：2026-10-15
 > 适用：全部代码、文档、配置。需求见 `docs/02-requirements.md`，接口见 `docs/05-api.md`，表结构见 `docs/database.md`。
 
 本文集中登记会被多个功能点共用的约定：编号体系、业务单号、金额、时间、错误码、幂等与事务规则、命名规范、配置项。新增或修改这些内容时，先改本文并在 §9 记录，再改代码。
@@ -305,8 +305,42 @@ docker-compose 给将来会跑业务进程的 6 个占位服务写死互不相�
 
 ### 7.5 日志字段
 
-- `msg` 用简短英文动宾短语，如 `payment status changed`。
-- 字段名 snake_case，使用固定名称：`pay_no`、`refund_no`、`transfer_no`、`merchant_id`、`shard`、`biz_type`、`biz_no`、`from_status`、`to_status`、`source`（NOTIFY / QUERY / CLOSE / JOB / ADMIN）、`err_code`、`elapsed_ms`。
+日志用标准库 `log/slog`，JSON，一行一条。实现在 `pkg/logx`。配置加载的脱敏在 `pkg/config`，只认 `secret:"true"`，不扫描卡号或手机号，也不调用本包。
+
+每条日志都有这些字段，顺序固定。没有值时后三个是空字符串，键仍然输出：
+
+`time`、`level`、`msg`、`service`、`trace_id`、`span_id`、`request_id`
+
+- `time` 用东八区固定偏移 `time.FixedZone("Asia/Shanghai", 8*60*60)`，不调用 `time.LoadLocation`，不引入 `time/tzdata`。
+- `service` 是创建 logger 时传入的服务名。
+- `trace_id` 和 `span_id` 来自 `go.opentelemetry.io/otel/trace` 的 `SpanContextFromContext`。只用 trace API，不引入 otel sdk 或 exporter。上下文里没有 span 时为空字符串。
+- `request_id` 来自 `logx.WithRequestID`。没有时为空字符串。
+- 根上的 `trace_id`、`span_id`、`request_id` 按原值写入，不参与兜底扫描。span id 是 16 位十六进制，连续数字若按卡号改写，链路就对不上。调用方再传同名的 `service`、`trace_id`、`span_id`、`request_id` 时丢掉，避免盖住这四个字段。
+- `msg` 用简短英文动宾短语，如 `payment status changed`。消息文本同样做兜底扫描。
+
+业务字段名 snake_case，使用固定名称：`pay_no`、`refund_no`、`transfer_no`、`merchant_id`、`shard`、`biz_type`、`biz_no`、`from_status`、`to_status`、`source`（NOTIFY / QUERY / CLOSE / JOB / ADMIN）、`err_code`、`elapsed_ms`。
+
+脱敏按字段名，不区分大小写，名字包含下列片段即匹配。同时命中多条时，整段替换优先；否则按下表从上到下先命中的一条。长度按 Unicode 码点计。
+
+| 片段 | 处理 |
+|---|---|
+| `secret`、`password`、`token`、`signature`、`master_key` | 整个值换成 `***` |
+| `card_no`、`bank_card` | 保留前 6 后 4。短于 10 时整个换成 `***`，避免前后重叠露出原文 |
+| `phone`、`mobile` | 保留前 3 后 4。短于 7 时整个换成 `***` |
+| `id_card` | 保留前 1 后 1。短于 2 时整个换成 `***` |
+
+分组的键同样匹配。键属于整段替换，或者值本身是分组而键属于卡号、手机号、证件号时，整个分组换成 `***`，不展开子字段。分组里的普通字段继续按自己的名字脱敏。`error` 先取 `Error()` 的文本，再按字段名或兜底规则处理。
+
+字段名不敏感时，对字符串值（含已经转成字符串的 error，也含 `msg`）做兜底扫描，只认 ASCII 连续数字：
+
+- 连续 13–19 位按卡号保留前 6 后 4。
+- 正好 11 位且以 `1` 开头按手机号保留前 3 后 4。11 位不是卡号。
+- 更短的数字不脱敏，例如金额 `100`。12 位和长于 19 位的连续数字不脱敏。数字中间有非数字（如 `-`）则不算连续。
+- 非字符串（例如 int64 金额）不扫描。
+
+访问日志不记录请求体。字段只有 `path`、`status`、`elapsed_ms`、`merchant_id`、`err_code`，再加上面的固定字段。`elapsed_ms` 是耗时的整毫秒数。
+
+Hertz `hlog` 和 Kitex `klog` 经适配器写入同一个 slog handler。`SetDefault` 同时替换这三处。不在日志包里启动 HTTP 或 RPC。
 
 ### 7.6 Git
 
@@ -384,3 +418,4 @@ BASE-09 只拼 DSN 文本，不连接数据库，也不调用驱动的 `ParseDSN
 | v2.6 | 2026-10-14 | BASE-06：§5.2 增加“对外 msg”列，登记除 `30002` 外各码的稳定英文；§5.3 写明 nil 为成功码 `0` / `ok` / HTTP 200，`Error()` 只返回对外 msg、原因只在 `Unwrap`，`10001` 的 `HTTPStatus` 为 400（413 由网关返回，不另造码），`30002` 与未登记码不是可用错误、按 `10003` 处理，Kitex 用 `BizStatusError` 传码和对外 msg、客户端用 `FromBizStatusError` 还原且不采用与本表不一致的对端文本。不改码的数字、HTTP 语义和可重试含义，不实现 `ErrDuplicate` |
 | v2.7 | 2026-10-15 | BASE-07：§4 第 1 条写明 `pkg/clock` 的 `Real` 用 `time.FixedZone("Asia/Shanghai", 8*60*60)`，不调用 `time.LoadLocation`，不依赖 zoneinfo，也不 import `time/tzdata`。中国自 1991 年起没有夏令时，固定 +8 与当前民用时间一致。DSN 的 `LoadLocation` 仍用 `-tags timetzdata`，本功能点不改 Dockerfile |
 | v2.8 | 2026-10-15 | BASE-09：§8 写明配置从调用方传入的环境解析；`secret:"true"` 输出 `***`。`WORKER_ID` 只属于 6 个发号进程。`MYSQL_DSN` 不再交给 recon、channel-mock；`CHANNEL_MOCKPAY_URL` 本功能点只给 payment。`MYSQL_ROOT_PASSWORD` 只进入 bootstrap，不进业务服务。新增 §8.1：recon 用 `ACCOUNT_DB_DSN_0` 的 host、port、query 和 `MYSQL_RECON_PASSWORD` 装配四条 `svc_recon` DSN；channel-mock 的 `MYSQL_HOST` 默认 `mysql`（bootstrap 仍是 `127.0.0.1`），`MYSQL_PORT` 默认 `3306`，装配 `svc_channel_mock` 到 `pay_channel_mock`。不新增变量名 |
+| v2.9 | 2026-10-15 | BASE-10：§7.5 写明每条日志的固定字段，以及按字段名脱敏、太短整段 `***`、字符串兜底扫描的规则。`trace_id` / `span_id` 来自 otel trace API，`request_id` 来自 `WithRequestID`，三者按原值写入。访问日志不记录请求体。不改 v2.7、v2.8 |

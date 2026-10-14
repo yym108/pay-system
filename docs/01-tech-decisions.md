@@ -60,6 +60,8 @@ BASE-07（2026-10-15）：`pkg/clock` 的生产时钟用 `time.FixedZone("Asia/S
 
 BASE-09（2026-10-15）：`go.mod` 已直接依赖 `github.com/caarlos0/env/v11 v11.4.1`，版本与本表相同，没有升级其他已锁定依赖。配置用 `Options.Environment` 解析调用方给出的环境，测试不继承进程环境。DSN 装配不连接数据库，也不调用驱动的 `ParseDSN`（该函数会 `LoadLocation`）。recon 不使用 `MYSQL_DSN`，由 `ACCOUNT_DB_DSN_0` 的 host、port、query 和 `MYSQL_RECON_PASSWORD` 装配四条 `svc_recon` DSN（`pay_recon`、`pay_payment`、`pay_account_0`、`pay_account_1`）。channel-mock 不使用 `MYSQL_DSN`，由 `MYSQL_HOST`（默认 `mysql`）、`MYSQL_PORT`（默认 `3306`）和 `MYSQL_CHANNEL_MOCK_PASSWORD` 装配 `svc_channel_mock` 到 `pay_channel_mock`。payment、account、seed 的 DSN 原样保存。
 
+BASE-10（2026-10-15）：新增直接依赖 `github.com/cloudwego/hertz v0.10.6`（只 import `pkg/common/hlog`，不启动 HTTP）和 `go.opentelemetry.io/otel/trace v1.47.0`（`SpanContextFromContext`）。trace API 在独立模块 `go.opentelemetry.io/otel/trace`，业务代码不 import `go.opentelemetry.io/otel` 根包；`go mod tidy` 把根模块、`otel/metric`、`otel/log` 标为间接依赖，版本都是 v1.47.0。没有加入 `otel/sdk` 或 exporter。`go get` 把 testcontainers 原先带入的 otel v1.44.0 升到本表锁定的 v1.47.0。连带把间接的 `github.com/go-logr/logr` 从 v1.4.3 升到 v1.4.4（otel v1.47.0 的 go.mod 要求这一版），`github.com/stretchr/testify` 从 v1.11.1 升到本表锁定的 v1.12.1。`gopkg.in/yaml.v3 v3.0.1` 不再被构建引用，改为间接的 `go.yaml.in/yaml/v3 v3.0.5`。hertz v0.10.6 的 go.mod 写 sonic v1.15.0；本模块已有的显式 require 和 `tools/tools.go` 让 tidy 仍选择 sonic v1.15.4，kitex 仍是 v0.16.3。本表锁定版本没有改。
+
 ### 2.2 容器镜像（均已确认提供 arm64 与 amd64）
 
 | 组件 | 镜像 |
@@ -189,6 +191,7 @@ BASE-01（2026-10-13）：根据本机实际安装版本，将本表 Go 本机�
 ### D13 日志
 
 - 决策：标准库 `log/slog`，JSON 输出；`pkg/logx` 提供脱敏 Handler，按字段名（`card_no`、`phone`、`id_card`、`app_secret`、`signature` 等）自动脱敏；Hertz 的 hlog 和 Kitex 的 klog 通过适配器写入同一个 slog。每条日志带 `trace_id`。
+- 补充（2026-10-15，BASE-10）：固定字段还有 `service`、`span_id`、`request_id`。`trace_id` / `span_id` 只读 otel trace API，不引入 sdk。`request_id` 由 `WithRequestID` 放入上下文。字段规则、太短整段 `***` 和兜底扫描见约定 §7.5。配置脱敏仍在 `pkg/config`，两套互不调用。直接依赖的实际版本见 §2.1。
 
 ### D14 可观测
 

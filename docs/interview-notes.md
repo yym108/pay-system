@@ -2,6 +2,12 @@
 
 随手记录踩坑、数据和取舍。不替代需求与技术决策文档。
 
+## BASE-10 日志
+
+- slog 的 `ReplaceAttr` 不会在分组键上调用。字段名是 `password`，值如果先 `Resolve` 成 group，子字段只按自己的名字处理，普通字符串就漏出去。整段替换要在 `Resolve` 之前做完。
+- 兜底扫描不能打在 `trace_id`、`span_id`、`request_id` 上。span id 是 16 位十六进制，全是数字时正好落进 13–19 位卡号规则，改写之后链路对不上。这三个字段按 otel 或 `WithRequestID` 的原值写。
+- hertz v0.10.6 的 go.mod 依赖 sonic v1.15.0。只 import `hlog` 时，tidy 不会把 sonic 拉回去：根模块已经显式 require v1.15.4，`tools/tools.go` 还引用着它。kitex 保持 v0.16.3。trace API 是独立模块 `go.opentelemetry.io/otel/trace`，不要为了“用一下 trace”把 `otel/sdk` 加进来。
+
 ## BASE-09 配置
 
 - caarlos0/env 在变量被显式设成空字符串、同时字段又有 `envDefault` 时，会改回默认值。`OTEL_EXPORTER_OTLP_ENDPOINT` 的空字符串表示关闭 trace，所以不能写 `envDefault`：键不在环境里才填 `jaeger:4317`，键在且值为空就保持关闭。`QUERY_BACKOFF` 也一样，显式空串是非法（至少一段时长），不能被默认计划悄悄盖住。
