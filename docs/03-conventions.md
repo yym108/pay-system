@@ -1,6 +1,6 @@
 # pay-system 全局约定与编号规范
 
-> 版本：v2.9　最后修改：2026-10-15
+> 版本：v2.10　最后修改：2026-10-15
 > 适用：全部代码、文档、配置。需求见 `docs/02-requirements.md`，接口见 `docs/05-api.md`，表结构见 `docs/database.md`。
 
 本文集中登记会被多个功能点共用的约定：编号体系、业务单号、金额、时间、错误码、幂等与事务规则、命名规范、配置项。新增或修改这些内容时，先改本文并在 §9 记录，再改代码。
@@ -251,9 +251,9 @@ docker-compose 给将来会跑业务进程的 6 个占位服务写死互不相�
 ### 6.3 事务
 
 1. 隔离级别 READ COMMITTED；正确性依赖条件更新和唯一索引，不依赖间隙锁。余额核对使用一致性快照（ACC-10）。
-2. 事务内禁止调用 RPC、HTTP、MQ；事务时长上限 3 秒。
+2. 事务内禁止调用 RPC、HTTP、MQ。事务总时长默认 3 秒：`dbx.WithTx` 用父 ctx 派生超时，先到期的那个生效；超时后取消并回滚，不留下已提交的数据。
 3. 同一事务锁多行时按主键升序。
-4. 死锁（1213）和锁等待超时（1205）由 `dbx.WithTx` 整体重试，最多 3 次，退避 10ms、20ms、40ms。
+4. 死锁（1213）和锁等待超时（1205）由 `dbx.WithTx` 整体重试。含第一次在内最多执行 4 次；三次重试前分别等待 10ms、20ms、40ms。这里的 3 是重试次数，不是含首次的总次数。
 5. 需要“业务写入 + 发事件”时，事件通过 `outbox.Add(tx, ...)` 在同一事务写入。
 6. 一个事务只访问一个账户分片；跨分片一致性只能通过协调者 + 幂等分支实现（不变量 10），禁止使用 XA。
 
@@ -419,3 +419,4 @@ BASE-09 只拼 DSN 文本，不连接数据库，也不调用驱动的 `ParseDSN
 | v2.7 | 2026-10-15 | BASE-07：§4 第 1 条写明 `pkg/clock` 的 `Real` 用 `time.FixedZone("Asia/Shanghai", 8*60*60)`，不调用 `time.LoadLocation`，不依赖 zoneinfo，也不 import `time/tzdata`。中国自 1991 年起没有夏令时，固定 +8 与当前民用时间一致。DSN 的 `LoadLocation` 仍用 `-tags timetzdata`，本功能点不改 Dockerfile |
 | v2.8 | 2026-10-15 | BASE-09：§8 写明配置从调用方传入的环境解析；`secret:"true"` 输出 `***`。`WORKER_ID` 只属于 6 个发号进程。`MYSQL_DSN` 不再交给 recon、channel-mock；`CHANNEL_MOCKPAY_URL` 本功能点只给 payment。`MYSQL_ROOT_PASSWORD` 只进入 bootstrap，不进业务服务。新增 §8.1：recon 用 `ACCOUNT_DB_DSN_0` 的 host、port、query 和 `MYSQL_RECON_PASSWORD` 装配四条 `svc_recon` DSN；channel-mock 的 `MYSQL_HOST` 默认 `mysql`（bootstrap 仍是 `127.0.0.1`），`MYSQL_PORT` 默认 `3306`，装配 `svc_channel_mock` 到 `pay_channel_mock`。不新增变量名 |
 | v2.9 | 2026-10-15 | BASE-10：§7.5 写明每条日志的固定字段，以及按字段名脱敏、太短整段 `***`、字符串兜底扫描的规则。`trace_id` / `span_id` 来自 otel trace API，`request_id` 来自 `WithRequestID`，三者按原值写入。访问日志不记录请求体。不改 v2.7、v2.8 |
+| v2.10 | 2026-10-15 | BASE-08：§6.3 写明 1213/1205 含第一次在内最多执行 4 次，三次重试前等待 10ms、20ms、40ms；事务总时长默认 3 秒，用父 ctx 派生，先到期的取消并回滚。不新增错误码 |

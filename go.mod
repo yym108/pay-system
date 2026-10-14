@@ -9,6 +9,7 @@ require (
 	github.com/cloudwego/kitex v0.16.3
 	github.com/go-sql-driver/mysql v1.10.1
 	github.com/golang-migrate/migrate/v4 v4.20.1
+	github.com/jmoiron/sqlx v1.4.0
 	github.com/testcontainers/testcontainers-go v0.44.0
 	github.com/testcontainers/testcontainers-go/modules/mysql v0.44.0
 	go.opentelemetry.io/otel/trace v1.47.0

@@ -62,6 +62,8 @@ BASE-09（2026-10-15）：`go.mod` 已直接依赖 `github.com/caarlos0/env/v11 
 
 BASE-10（2026-10-15）：新增直接依赖 `github.com/cloudwego/hertz v0.10.6`（只 import `pkg/common/hlog`，不启动 HTTP）和 `go.opentelemetry.io/otel/trace v1.47.0`（`SpanContextFromContext`）。trace API 在独立模块 `go.opentelemetry.io/otel/trace`，业务代码不 import `go.opentelemetry.io/otel` 根包；`go mod tidy` 把根模块、`otel/metric`、`otel/log` 标为间接依赖，版本都是 v1.47.0。没有加入 `otel/sdk` 或 exporter。`go get` 把 testcontainers 原先带入的 otel v1.44.0 升到本表锁定的 v1.47.0。连带把间接的 `github.com/go-logr/logr` 从 v1.4.3 升到 v1.4.4（otel v1.47.0 的 go.mod 要求这一版），`github.com/stretchr/testify` 从 v1.11.1 升到本表锁定的 v1.12.1。`gopkg.in/yaml.v3 v3.0.1` 不再被构建引用，改为间接的 `go.yaml.in/yaml/v3 v3.0.5`。hertz v0.10.6 的 go.mod 写 sonic v1.15.0；本模块已有的显式 require 和 `tools/tools.go` 让 tidy 仍选择 sonic v1.15.4，kitex 仍是 v0.16.3。本表锁定版本没有改。
 
+BASE-08（2026-10-15）：新增直接依赖 `github.com/jmoiron/sqlx v1.4.0`，版本与上表相同，不升级。`github.com/go-sql-driver/mysql` 仍是已在 `go.mod` 的 v1.10.1，不升级。没有升级 kitex、sonic、hertz、otel。
+
 ### 2.2 容器镜像（均已确认提供 arm64 与 amd64）
 
 | 组件 | 镜像 |
@@ -126,9 +128,10 @@ BASE-01（2026-10-13）：根据本机实际安装版本，将本表 Go 本机�
 - 代价：sqlx 最近一次发版是 2024-04（v1.4.0），API 稳定但更新慢。它只是 `database/sql` 的薄封装，必要时可替换成原生 `database/sql`，repository 接口不变。
 - 约定：
   - 事务统一走 `pkg/dbx.WithTx(ctx, db, func(tx *sqlx.Tx) error)`，禁止在事务中调用 RPC 或 MQ。
-  - MySQL 唯一键冲突（错误号 1062）统一转换为 `errno.ErrDuplicate`，由业务层决定是否当作幂等成功。
-- 补充（2026-10-14，BASE-06）：`errno.ErrDuplicate` 与 MySQL 1062 映射仍留给 BASE-08，本功能点不实现。`pkg/errno` 只定义约定 §5.2 的业务码（跳过保留的 `30002`），并直接依赖 kitex v0.16.3 的 `BizStatusError` 做双向转换。
+  - MySQL 唯一键冲突（错误号 1062）由 `dbx.IsDuplicate` 识别，不转换成 `errno.ErrDuplicate`，也不新增业务码。业务层以后自己决定是不是幂等成功。
   - 隔离级别统一 READ COMMITTED（DSN 设置 `transaction_isolation='READ-COMMITTED'`）。正确性依赖条件更新和唯一索引，不依赖 RR 的间隙锁；RC 可以减少间隙锁导致的死锁。这是一个面试讲解点。
+- 补充（2026-10-14，BASE-06）：`errno.ErrDuplicate` 与 MySQL 1062 映射仍留给 BASE-08，本功能点不实现。`pkg/errno` 只定义约定 §5.2 的业务码（跳过保留的 `30002`），并直接依赖 kitex v0.16.3 的 `BizStatusError` 做双向转换。
+- 补充（2026-10-15，BASE-08）：不实现 `errno.ErrDuplicate`，只提供 `IsDuplicate`。`github.com/jmoiron/sqlx v1.4.0` 已作为直接依赖写入 `go.mod`，版本与 §2.1 锁定表相同，不升级。`github.com/go-sql-driver/mysql` 仍是 v1.10.1。
 
 ### D5 自研雪花 ID
 

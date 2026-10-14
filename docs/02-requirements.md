@@ -342,7 +342,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | BASE-05 | ID 生成 | P0 | M1 | BASE-01 | DONE |
 | BASE-06 | 错误码 | P0 | M1 | BASE-01 | DONE |
 | BASE-07 | 时钟 | P0 | M1 | BASE-01 | DONE |
-| BASE-08 | 数据库访问与事务 | P0 | M1 | BASE-06 | TODO |
+| BASE-08 | 数据库访问与事务 | P0 | M1 | BASE-06 | DONE |
 | BASE-09 | 配置 | P0 | M1 | BASE-01 | DONE |
 | BASE-10 | 日志与脱敏 | P0 | M1 | BASE-01 | DONE |
 | BASE-11 | 集成测试基座 | P0 | M1 | BASE-03、BASE-08 | TODO |
@@ -660,11 +660,19 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 4. `MustAffectOne(result)` 用于 CAS 场景的影响行数判断。
 5. 所有 SQL 参数化，禁止字符串拼接用户输入。
 
+口径澄清（2026-10-15）：不改资金流向、接口、表结构和已有错误码。不新增错误码，不实现 `errno.ErrDuplicate`，不注册 `30002`。
+
+- 1213、1205：含第一次在内最多执行 4 次 `fn`；三次重试前分别等待 10ms、20ms、40ms。约定 §6.3 的“最多 3 次”是重试次数。
+- 事务总时长默认 3 秒。用父 ctx 派生超时，先到期的那个生效；超时后取消并回滚，不能留下已提交的数据。
+- `IsDuplicate` 只识别 MySQL 1062（含包装）。业务层以后自己决定是不是幂等成功，本包不转换成业务码。`MustAffectOne` 在影响行数不是 1 时返回普通错误，不映射为 `40002` 或其他业务码；错误文本不带 SQL 或参数。
+- 连接池的 0 表示默认（50、10、30 分钟），负数返回错误。默认写在 `Open` 的参数里，不新增环境变量。
+- 规则 1 的 DSN 参数在连接前强制覆盖，调用方写了别的值也要覆盖。已废弃的 `tx_isolation` 会去掉，避免和 `transaction_isolation` 互相覆盖。不在 `Open` 里执行业务 SQL。
+
 验收：
 
-- [ ] `fn` 返回错误时数据未写入；`fn` panic 时回滚并重新抛出。
-- [ ] 构造两个事务交叉加锁触发死锁，`WithTx` 重试后成功。
-- [ ] 重复插入唯一键，`IsDuplicate` 返回 true。
+- [x] `fn` 返回错误时数据未写入；`fn` panic 时回滚并重新抛出。
+- [x] 构造两个事务交叉加锁触发死锁，`WithTx` 重试后成功。
+- [x] 重复插入唯一键，`IsDuplicate` 返回 true。
 
 #### BASE-09 配置（pkg/config）
 
@@ -2688,3 +2696,4 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 | 2026-10-15 | v3.0 | BASE-07 口径澄清：`Clock.Now` 返回 `time.Time`。`Real` 用 `time.FixedZone("Asia/Shanghai", 8*60*60)`，不调用 `time.LoadLocation`，因此不依赖 zoneinfo；中国自 1991 年起没有夏令时，固定 +8 与当前民用时间一致。运行镜像不安装 tzdata，本功能点不改 Dockerfile。`Fake` 的 `Set`、`Advance` 并发安全，`Advance(10s)` 后 `Now()` 精确前进 10 秒。`biz` 和 `job` 只通过 `Clock` 取时间，不新建空包，也不把 `pkg/idgen` 改成依赖 `pkg/clock`。不实现配置、日志和数据库。不改资金流向、接口、表结构和错误码 |
 | 2026-10-15 | v3.0 | BASE-09 口径澄清：缺少或非法的环境变量，错误文本包含变量名。`secret:"true"` 的字段输出 `***`，不实现 `pkg/logx`。recon 不读 `MYSQL_DSN`，用 `ACCOUNT_DB_DSN_0` 的 host、port、query 和 `MYSQL_RECON_PASSWORD` 装配四条 `svc_recon` DSN（`pay_recon`、`pay_payment`、`pay_account_0`、`pay_account_1`）。channel-mock 不读 `MYSQL_DSN`，`MYSQL_HOST` 默认 `mysql`、`MYSQL_PORT` 默认 `3306`，装配 `svc_channel_mock` 到 `pay_channel_mock`。payment、account、seed 的 DSN 原样保存。装配不连接数据库。seed、bootstrap 只增加配置结构体，不改建号和种子流程。不改资金流向、接口、表结构和错误码 |
 | 2026-10-15 | v3.0 | BASE-10 口径澄清：字段名不区分大小写，包含片段即匹配。卡号短于 10、手机号短于 7、证件号短于 2 时整段换成 `***`。分组键和 error 走同一套规则，error 先转成字符串。兜底扫描只认 ASCII 连续数字；正好 11 位且以 1 开头的按手机号，不当卡号；更短的数字（如金额）和长于 19 位的不脱敏。`trace_id`、`span_id` 来自 otel trace API 的 `SpanContextFromContext`，不引入 sdk。`request_id` 来自 `WithRequestID`。这三个关联字段按原值写入。访问日志只有路径、状态码、耗时、商户号、错误码，不记录请求体。不改 `pkg/config` 的脱敏。不改资金流向、接口、表结构和错误码 |
+| 2026-10-15 | v3.0 | BASE-08 口径澄清：`WithTx` 对 1213、1205 含第一次在内最多执行 4 次，三次重试前等待 10ms、20ms、40ms（约定 §6.3 的 3 是重试次数）。事务总时长默认 3 秒，用父 ctx 派生，先到期的生效，超时取消并回滚。`IsDuplicate` 只识别 1062，不实现 `errno.ErrDuplicate`，不注册 `30002`。`MustAffectOne` 不映射业务码。不改资金流向、接口、表结构和已有错误码 |

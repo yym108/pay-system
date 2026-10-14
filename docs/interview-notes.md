@@ -2,6 +2,12 @@
 
 随手记录踩坑、数据和取舍。不替代需求与技术决策文档。
 
+## BASE-08 数据库访问
+
+- `transaction_isolation` 的值必须自己带单引号。驱动连接后执行 `SET transaction_isolation = 'READ-COMMITTED'`，引号是值的一部分。不带引号时 MySQL 会把它当成标识符。`tx_isolation` 如果留在参数里，和 `transaction_isolation` 一起进 map，`SET` 的顺序不固定，隔离级别可能被改回去。强制参数时把这个旧名字删掉。
+- 死锁牺牲者不是抛硬币。InnoDB 回滚权重更小的事务。对侧先多更新几行（结束时仍回滚），`WithTx` 更容易变成牺牲者。回调在重试时不能再等已经 close 过的 channel，否则第二次执行会卡死。2026-10-15 本机这一轮交叉 `FOR UPDATE` 在 0.05 秒内看到 1213 并提交了两行的最终值。
+- `BeginTxx` 的 ctx 到期后，`database/sql` 会在旁边把事务回滚。回调看不到那个派生 ctx，超时后仍可能返回 nil。接着 `Commit` 会失败，不能把它当成提交成功。回滚错误也不要盖住这次失败。
+
 ## BASE-10 日志
 
 - slog 的 `ReplaceAttr` 不会在分组键上调用。字段名是 `password`，值如果先 `Resolve` 成 group，子字段只按自己的名字处理，普通字符串就漏出去。整段替换要在 `Resolve` 之前做完。

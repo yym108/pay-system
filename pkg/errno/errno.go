@@ -1,6 +1,6 @@
 // Package errno 是业务错误码的唯一定义处。
 // 对外消息是稳定的短英文。底层原因只通过 Unwrap 取得，不进入 Error 的文本。
-// MySQL 1062 与 ErrDuplicate 属于 BASE-08，不在本包实现。
+// MySQL 1062 不在本包映射。dbx.IsDuplicate 只识别错误号，不定义 ErrDuplicate。
 package errno
 
 import (
