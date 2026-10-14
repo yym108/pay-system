@@ -25,7 +25,7 @@
 
 - [x] BASE-01 工程骨架
 - [x] BASE-02 本地环境（基础设施与 kafka-init；应用与 migrate/seed 仍是 profile `apps` 占位）
-- [ ] BASE-03 迁移与种子（两个账户分片、平台子账户、3 个演示商户）
+- [x] BASE-03 迁移与种子（两个账户分片、平台子账户、3 个演示商户）
 - [ ] BASE-04 金额、BASE-05 ID、BASE-06 错误码、BASE-07 时钟、BASE-09 配置、BASE-10 日志
 - [ ] BASE-08 数据库访问 → BASE-11 集成测试基座
 - [ ] BASE-12 IDL 与代码生成

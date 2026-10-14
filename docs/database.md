@@ -1,10 +1,10 @@
 # Database Schema
 
-> **Last updated:** 2026-10-12
+> **Last updated:** 2026-10-14
 > **Database engine/version:** MySQL 8.4.11（InnoDB，utf8mb4 / utf8mb4_bin）
-> **Schema sources:** `docs/schema/schema_draft.sql`（设计稿）。第 1 周拆分为 `migrations/<schema>/000001_init.up.sql` 后，以迁移文件为准；两个账户分片共用 `migrations/account/`。
+> **Schema sources:** `migrations/account/000001_init.up.sql`（`pay_account_0` 与 `pay_account_1` 各执行一次）、`migrations/payment/000001_init.up.sql`、`migrations/recon/000001_init.up.sql`、`migrations/channel_mock/000001_init.up.sql`。设计稿 `docs/schema/schema_draft.sql` 已在 BASE-03 删除。golang-migrate 还会在每个 schema 创建工具表 `schema_migrations`（`version`、`dirty`），不在业务清单里。
 > **Owner:** pay-system 项目作者
-> **Status:** 设计稿 v3.0（对应需求 `docs/02-requirements.md` v3.0），尚无应用代码。DDL 已在一次性容器中执行验证（见 §5）。
+> **Status:** BASE-03 已把设计稿拆成迁移并在 MySQL 8.4.11 上执行 up/down。账号由 `cmd/bootstrap` 创建，不在迁移 DDL 中。
 
 ## 1. Scope and Conventions
 
@@ -19,7 +19,7 @@
 | Time convention | 数据库与连接时区均为 `+08:00`；毫秒精度；账期按东八区自然日 |
 | Money convention | 金额统一 `BIGINT`，单位分，币种仅 `CNY`（CHECK 约束） |
 | Sensitive data convention | 不存储卡号、手机号、身份证等个人信息；商户签名密钥以 AES-256-GCM 密文存储；日志按字段名脱敏（`docs/01-tech-decisions.md` D13） |
-| Access control | 账号与权限由迁移与种子脚本创建，不在设计稿 DDL 中（BASE-03）：`svc_account` 读写 `pay_account_0.*`、`pay_account_1.*`；`svc_payment` 读写 `pay_payment.*`；`svc_recon` 读写 `pay_recon.*`，只读 `pay_payment.*`、`pay_account_0.*`、`pay_account_1.*`；`svc_channel_mock` 读写 `pay_channel_mock.*`；`migrator` 仅迁移容器使用 |
+| Access control | 账号与权限由 `cmd/bootstrap` 创建，不在迁移 DDL 中（BASE-03）：`svc_account` 读写 `pay_account_0.*`、`pay_account_1.*`；`svc_payment` 读写 `pay_payment.*`；`svc_recon` 读写 `pay_recon.*`，只读 `pay_payment.*`、`pay_account_0.*`、`pay_account_1.*`；`svc_channel_mock` 读写 `pay_channel_mock.*`；`migrator` 仅迁移容器使用 |
 | Isolation level | 各服务连接统一 READ COMMITTED；余额核对（ACC-10）单独使用 REPEATABLE READ 一致性快照 |
 
 ## 2. Relationship Overview
@@ -30,7 +30,7 @@
 
 | Child table.column | Parent table.column | Cardinality | Delete/update behavior | Constraint | Source |
 | --- | --- | --- | --- | --- | --- |
-| 无 | — | — | — | — | `docs/schema/schema_draft.sql` |
+| 无 | — | — | — | — | 迁移文件未声明物理外键 |
 
 ### 2.2 Logical Business Relationships
 
@@ -68,22 +68,22 @@
 
 | Table | Business name | Module/domain | Purpose | Lifecycle/sensitivity | Source |
 | --- | --- | --- | --- | --- | --- |
-| `pay_account_{0,1}.account` | 账户 | account | 余额与冻结金额；平台账户按子账户拆分 | 长期；内部 | schema_draft.sql |
-| `pay_account_{0,1}.ledger_txn` | 记账凭证 | account | 一次记账的头记录，幂等键 | 只追加，永久；内部 | schema_draft.sql |
-| `pay_account_{0,1}.ledger_entry` | 记账分录 | account | 借贷明细 | 只追加，永久；内部 | schema_draft.sql |
-| `pay_account_{0,1}.account_freeze` | 冻结单 | account | 退款冻结、跨分片转账付款方分支 | 长期；内部 | schema_draft.sql |
-| `pay_account_{0,1}.transfer_branch` | 转账分支 | account | 同分片转账结果、跨分片转账收款方分支 | 长期；内部 | schema_draft.sql |
-| `pay_payment.merchant` | 商户 | payment | 商户配置与密钥 | 长期；含高敏密文 | schema_draft.sql |
-| `pay_payment.payment_order` | 支付单 | payment | 支付状态机 | 长期；内部 | schema_draft.sql |
-| `pay_payment.refund_order` | 退款单 | payment | 退款状态机 | 长期；内部 | schema_draft.sql |
-| `pay_payment.transfer_order` | 转账单 | payment | 转账状态机，跨分片 TCC 协调者 | 长期；内部 | schema_draft.sql |
-| `pay_payment.channel_txn` | 渠道交互流水 | payment | 与渠道的交易、查单调度 | 长期；内部 | schema_draft.sql |
-| `pay_payment.outbox` | 本地消息表 | payment | 事务性事件投递 | SENT 保留 7 天；内部 | schema_draft.sql |
-| `pay_payment.merchant_notify` | 商户通知 | payment | 异步通知与重试 | 长期；内部 | schema_draft.sql |
-| `pay_recon.recon_batch` | 对账批次 | recon | 每渠道每日一批 | 长期；内部 | schema_draft.sql |
-| `pay_recon.recon_channel_bill` | 渠道账单明细 | recon | 导入的账单行 | 长期，可归档；内部 | schema_draft.sql |
-| `pay_recon.recon_diff` | 对账差错 | recon | 差错与自动处理记录 | 长期；内部 | schema_draft.sql |
-| `pay_channel_mock.mock_txn` | 模拟渠道交易 | channel_mock | 外部渠道自身数据 | 测试数据；无敏感 | schema_draft.sql |
+| `pay_account_{0,1}.account` | 账户 | account | 余额与冻结金额；平台账户按子账户拆分 | 长期；内部 | `migrations/account/000001_init.up.sql` |
+| `pay_account_{0,1}.ledger_txn` | 记账凭证 | account | 一次记账的头记录，幂等键 | 只追加，永久；内部 | `migrations/account/000001_init.up.sql` |
+| `pay_account_{0,1}.ledger_entry` | 记账分录 | account | 借贷明细 | 只追加，永久；内部 | `migrations/account/000001_init.up.sql` |
+| `pay_account_{0,1}.account_freeze` | 冻结单 | account | 退款冻结、跨分片转账付款方分支 | 长期；内部 | `migrations/account/000001_init.up.sql` |
+| `pay_account_{0,1}.transfer_branch` | 转账分支 | account | 同分片转账结果、跨分片转账收款方分支 | 长期；内部 | `migrations/account/000001_init.up.sql` |
+| `pay_payment.merchant` | 商户 | payment | 商户配置与密钥 | 长期；含高敏密文 | `migrations/payment/000001_init.up.sql` |
+| `pay_payment.payment_order` | 支付单 | payment | 支付状态机 | 长期；内部 | `migrations/payment/000001_init.up.sql` |
+| `pay_payment.refund_order` | 退款单 | payment | 退款状态机 | 长期；内部 | `migrations/payment/000001_init.up.sql` |
+| `pay_payment.transfer_order` | 转账单 | payment | 转账状态机，跨分片 TCC 协调者 | 长期；内部 | `migrations/payment/000001_init.up.sql` |
+| `pay_payment.channel_txn` | 渠道交互流水 | payment | 与渠道的交易、查单调度 | 长期；内部 | `migrations/payment/000001_init.up.sql` |
+| `pay_payment.outbox` | 本地消息表 | payment | 事务性事件投递 | SENT 保留 7 天；内部 | `migrations/payment/000001_init.up.sql` |
+| `pay_payment.merchant_notify` | 商户通知 | payment | 异步通知与重试 | 长期；内部 | `migrations/payment/000001_init.up.sql` |
+| `pay_recon.recon_batch` | 对账批次 | recon | 每渠道每日一批 | 长期；内部 | `migrations/recon/000001_init.up.sql` |
+| `pay_recon.recon_channel_bill` | 渠道账单明细 | recon | 导入的账单行 | 长期，可归档；内部 | `migrations/recon/000001_init.up.sql` |
+| `pay_recon.recon_diff` | 对账差错 | recon | 差错与自动处理记录 | 长期；内部 | `migrations/recon/000001_init.up.sql` |
+| `pay_channel_mock.mock_txn` | 模拟渠道交易 | channel_mock | 外部渠道自身数据 | 测试数据；无敏感 | `migrations/channel_mock/000001_init.up.sql` |
 
 ## 4. Table Details
 
@@ -94,7 +94,7 @@
 - **Purpose:** 保存账户余额和冻结金额，是余额的物化结果；真相来源是 `ledger_entry`。商户账户只有一行（`sub_no = 0`）；平台账户在每个分片各开 `PLATFORM_SUB_ACCOUNTS` 个子账户，记账时按 `crc32(biz_no) % N` 选择（D19、OPT-03）。
 - **Lifecycle:** 开户后长期存在，状态 ACTIVE / FROZEN / CLOSED。
 - **Sensitivity:** 内部财务数据。
-- **Authoritative source:** `docs/schema/schema_draft.sql`。
+- **Authoritative source:** `migrations/account/000001_init.up.sql`。
 - **Write owners/read consumers:** account 服务写；recon 只读。
 - **Retention/archival:** 不归档。
 
@@ -122,16 +122,16 @@
 
 | Name | Type | Columns/order/predicate | Purpose | Source |
 | --- | --- | --- | --- | --- |
-| `PRIMARY` | PK | `id` | 主键 | schema_draft.sql |
-| `uk_account_no` | UNIQUE | `account_no` | 对外编号唯一 | schema_draft.sql |
-| `uk_owner_account_type_sub` | UNIQUE | `owner_type, owner_id, account_type, currency, sub_no` | 开户幂等（ACC-01）；替代 v2 的 `uk_owner_account_type`，增加 `sub_no` 以容纳平台子账户 | schema_draft.sql |
-| `ck_account_frozen` | CHECK | `frozen_amount >= 0` | 冻结非负 | schema_draft.sql |
-| `ck_account_available` | CHECK | `allow_overdraft = 1 OR balance - frozen_amount >= 0` | 可用余额非负的最后防线（不变量 5） | schema_draft.sql |
-| `ck_account_currency` | CHECK | `currency = 'CNY'` | 单币种 | schema_draft.sql |
-| `ck_account_direction` | CHECK | `balance_direction IN ('DEBIT','CREDIT')` | 枚举 | schema_draft.sql |
-| `ck_account_status` | CHECK | `status IN ('ACTIVE','FROZEN','CLOSED')` | 枚举 | schema_draft.sql |
-| `ck_account_type_rule` | CHECK | MERCHANT_SETTLE ⇒ MERCHANT、CREDIT、不透支；CHANNEL_RECEIVABLE ⇒ PLATFORM、DEBIT、透支；FEE_INCOME / TRANSIT ⇒ PLATFORM、CREDIT、透支 | 账户类型决定所有者类型、余额方向与透支（§2.5.1、ACC-01 第 1 条），同时限定 `account_type` 枚举 | schema_draft.sql |
-| `ck_account_merchant_sub` | CHECK | `owner_type <> 'MERCHANT' OR sub_no = 0` | 商户账户不拆子账户（D19） | schema_draft.sql |
+| `PRIMARY` | PK | `id` | 主键 | migrations/account/000001_init.up.sql |
+| `uk_account_no` | UNIQUE | `account_no` | 对外编号唯一 | migrations/account/000001_init.up.sql |
+| `uk_owner_account_type_sub` | UNIQUE | `owner_type, owner_id, account_type, currency, sub_no` | 开户幂等（ACC-01）；替代 v2 的 `uk_owner_account_type`，增加 `sub_no` 以容纳平台子账户 | migrations/account/000001_init.up.sql |
+| `ck_account_frozen` | CHECK | `frozen_amount >= 0` | 冻结非负 | migrations/account/000001_init.up.sql |
+| `ck_account_available` | CHECK | `allow_overdraft = 1 OR balance - frozen_amount >= 0` | 可用余额非负的最后防线（不变量 5） | migrations/account/000001_init.up.sql |
+| `ck_account_currency` | CHECK | `currency = 'CNY'` | 单币种 | migrations/account/000001_init.up.sql |
+| `ck_account_direction` | CHECK | `balance_direction IN ('DEBIT','CREDIT')` | 枚举 | migrations/account/000001_init.up.sql |
+| `ck_account_status` | CHECK | `status IN ('ACTIVE','FROZEN','CLOSED')` | 枚举 | migrations/account/000001_init.up.sql |
+| `ck_account_type_rule` | CHECK | MERCHANT_SETTLE ⇒ MERCHANT、CREDIT、不透支；CHANNEL_RECEIVABLE ⇒ PLATFORM、DEBIT、透支；FEE_INCOME / TRANSIT ⇒ PLATFORM、CREDIT、透支 | 账户类型决定所有者类型、余额方向与透支（§2.5.1、ACC-01 第 1 条），同时限定 `account_type` 枚举 | migrations/account/000001_init.up.sql |
+| `ck_account_merchant_sub` | CHECK | `owner_type <> 'MERCHANT' OR sub_no = 0` | 商户账户不拆子账户（D19） | migrations/account/000001_init.up.sql |
 
 #### Relationships
 
@@ -148,7 +148,7 @@
 - **Purpose:** 一次记账的头记录；`uk_biz` 是记账幂等的数据库兜底。
 - **Lifecycle:** 只追加，不更新、不删除。
 - **Sensitivity:** 内部财务数据。
-- **Authoritative source:** schema_draft.sql。
+- **Authoritative source:** `migrations/account/000001_init.up.sql。
 - **Write owners/read consumers:** account 写；recon 只读（内部对账）。
 - **Retention/archival:** 永久保留。
 
@@ -171,15 +171,15 @@
 
 | Name | Type | Columns/order/predicate | Purpose | Source |
 | --- | --- | --- | --- | --- |
-| `PRIMARY` | PK | `id` | | schema_draft.sql |
-| `uk_txn_no` | UNIQUE | `txn_no` | | schema_draft.sql |
-| `uk_biz` | UNIQUE | `biz_type, biz_no` | 同一业务在分片内只记账一次（不变量 6）；跨分片转账的两段凭证 `biz_type` 不同，分别落在两个分片 | schema_draft.sql |
-| `uk_reversal_of` | UNIQUE | `reversal_of`（NULL 不参与唯一） | 同一凭证只能冲正一次 | schema_draft.sql |
-| `idx_created_at` | INDEX | `created_at` | 按日核对、对账 | schema_draft.sql |
-| `ck_ledger_txn_amount` | CHECK | `amount > 0` | | schema_draft.sql |
-| `ck_ledger_txn_entries` | CHECK | `entry_count >= 2` | 复式记账 | schema_draft.sql |
-| `ck_ledger_txn_biz_type` | CHECK | `biz_type IN ('PAY','REFUND','TRANSFER','TRANSFER_OUT','TRANSFER_IN','REVERSAL')` | 凭证类型枚举（ACC-03 第 1 条） | schema_draft.sql |
-| `ck_ledger_txn_reversal` | CHECK | `(biz_type = 'REVERSAL') = (reversal_of IS NOT NULL)` | 冲正凭证必须指向原凭证，其他凭证不得填写（ACC-08） | schema_draft.sql |
+| `PRIMARY` | PK | `id` | | migrations/account/000001_init.up.sql |
+| `uk_txn_no` | UNIQUE | `txn_no` | | migrations/account/000001_init.up.sql |
+| `uk_biz` | UNIQUE | `biz_type, biz_no` | 同一业务在分片内只记账一次（不变量 6）；跨分片转账的两段凭证 `biz_type` 不同，分别落在两个分片 | migrations/account/000001_init.up.sql |
+| `uk_reversal_of` | UNIQUE | `reversal_of`（NULL 不参与唯一） | 同一凭证只能冲正一次 | migrations/account/000001_init.up.sql |
+| `idx_created_at` | INDEX | `created_at` | 按日核对、对账 | migrations/account/000001_init.up.sql |
+| `ck_ledger_txn_amount` | CHECK | `amount > 0` | | migrations/account/000001_init.up.sql |
+| `ck_ledger_txn_entries` | CHECK | `entry_count >= 2` | 复式记账 | migrations/account/000001_init.up.sql |
+| `ck_ledger_txn_biz_type` | CHECK | `biz_type IN ('PAY','REFUND','TRANSFER','TRANSFER_OUT','TRANSFER_IN','REVERSAL')` | 凭证类型枚举（ACC-03 第 1 条） | migrations/account/000001_init.up.sql |
+| `ck_ledger_txn_reversal` | CHECK | `(biz_type = 'REVERSAL') = (reversal_of IS NOT NULL)` | 冲正凭证必须指向原凭证，其他凭证不得填写（ACC-08） | migrations/account/000001_init.up.sql |
 
 #### Relationships
 
@@ -196,7 +196,7 @@
 - **Purpose:** 借贷明细，账户余额的真相来源（不变量 2、3、4）。
 - **Lifecycle:** 只追加。
 - **Sensitivity:** 内部财务数据。
-- **Authoritative source:** schema_draft.sql。
+- **Authoritative source:** `migrations/account/000001_init.up.sql。
 - **Write owners/read consumers:** account 写；account 核对任务、recon 只读。
 - **Retention/archival:** 永久保留。
 
@@ -218,12 +218,12 @@
 
 | Name | Type | Columns/order/predicate | Purpose | Source |
 | --- | --- | --- | --- | --- |
-| `PRIMARY` | PK | `id` | | schema_draft.sql |
-| `uk_txn_account_direction` | UNIQUE | `txn_no, account_id, direction` | 同一凭证中同一账户同一方向只出现一次 | schema_draft.sql |
-| `idx_account_id_id` | INDEX | `account_id, id` | 按账户分页、核对汇总 | schema_draft.sql |
-| `idx_created_at` | INDEX | `created_at` | 按日统计 | schema_draft.sql |
-| `ck_ledger_entry_amount` | CHECK | `amount > 0` | | schema_draft.sql |
-| `ck_ledger_entry_direction` | CHECK | `direction IN ('DEBIT','CREDIT')` | | schema_draft.sql |
+| `PRIMARY` | PK | `id` | | migrations/account/000001_init.up.sql |
+| `uk_txn_account_direction` | UNIQUE | `txn_no, account_id, direction` | 同一凭证中同一账户同一方向只出现一次 | migrations/account/000001_init.up.sql |
+| `idx_account_id_id` | INDEX | `account_id, id` | 按账户分页、核对汇总 | migrations/account/000001_init.up.sql |
+| `idx_created_at` | INDEX | `created_at` | 按日统计 | migrations/account/000001_init.up.sql |
+| `ck_ledger_entry_amount` | CHECK | `amount > 0` | | migrations/account/000001_init.up.sql |
+| `ck_ledger_entry_direction` | CHECK | `direction IN ('DEBIT','CREDIT')` | | migrations/account/000001_init.up.sql |
 
 #### Relationships
 
@@ -240,7 +240,7 @@
 - **Purpose:** 记录商户账户的资金冻结，支撑 Freeze / ConfirmFreeze / ReleaseFreeze 幂等。两种用途：退款（`biz_type = REFUND`，biz_no = refund_no）和跨分片转账付款方分支（`biz_type = TRANSFER`，biz_no = transfer_no，位于付款方分片）。
 - **Lifecycle:** FROZEN → CONFIRMED / RELEASED，终态不可变。另有一种直接以 RELEASED 插入的“墓碑记录”：ReleaseFreeze 找不到冻结单时（空回滚）插入，不改变账户 `frozen_amount`，用于占住 `uk_biz`，让迟到的 Freeze 冲突并返回 `40004`（防悬挂，需求 ACC-05）。因此 RELEASED 记录不一定对应过一次真实冻结。
 - **Sensitivity:** 内部财务数据。
-- **Authoritative source:** schema_draft.sql。
+- **Authoritative source:** `migrations/account/000001_init.up.sql。
 - **Write owners/read consumers:** account 写；recon 只读（REC-05 检查 TRANSFER 冻结单）。
 - **Retention/archival:** 长期保留。
 
@@ -264,13 +264,13 @@
 
 | Name | Type | Columns/order/predicate | Purpose | Source |
 | --- | --- | --- | --- | --- |
-| `PRIMARY` | PK | `id` | | schema_draft.sql |
-| `uk_freeze_no` | UNIQUE | `freeze_no` | | schema_draft.sql |
-| `uk_biz` | UNIQUE | `biz_type, biz_no` | 冻结幂等；墓碑占位实现防悬挂 | schema_draft.sql |
-| `idx_account_status` | INDEX | `account_id, status` | 核对 `frozen_amount` | schema_draft.sql |
-| `ck_freeze_amount` | CHECK | `amount > 0` | | schema_draft.sql |
-| `ck_freeze_status` | CHECK | `status IN ('FROZEN','CONFIRMED','RELEASED')` | | schema_draft.sql |
-| `ck_freeze_biz_type` | CHECK | `biz_type IN ('REFUND','TRANSFER')` | 冻结用途枚举（ACC-04 第 1 条） | schema_draft.sql |
+| `PRIMARY` | PK | `id` | | migrations/account/000001_init.up.sql |
+| `uk_freeze_no` | UNIQUE | `freeze_no` | | migrations/account/000001_init.up.sql |
+| `uk_biz` | UNIQUE | `biz_type, biz_no` | 冻结幂等；墓碑占位实现防悬挂 | migrations/account/000001_init.up.sql |
+| `idx_account_status` | INDEX | `account_id, status` | 核对 `frozen_amount` | migrations/account/000001_init.up.sql |
+| `ck_freeze_amount` | CHECK | `amount > 0` | | migrations/account/000001_init.up.sql |
+| `ck_freeze_status` | CHECK | `status IN ('FROZEN','CONFIRMED','RELEASED')` | | migrations/account/000001_init.up.sql |
+| `ck_freeze_biz_type` | CHECK | `biz_type IN ('REFUND','TRANSFER')` | 冻结用途枚举（ACC-04 第 1 条） | migrations/account/000001_init.up.sql |
 
 #### Relationships
 
@@ -289,7 +289,7 @@
   - `PAYEE`：跨分片转账收款方分支（ACC-14），位于收款方分片。Try 写入 TRIED（不动余额），Confirm CAS 为 CONFIRMED 并记 TRANSFER_IN 凭证，Cancel CAS 为 CANCELLED；Cancel 先到时直接插入 CANCELLED 墓碑（空回滚），迟到的 Try 在唯一索引上冲突并返回 `40004`（防悬挂）。
 - **Lifecycle:** LOCAL：直接写入 SUCCESS / FAILED，不再变化。PAYEE：TRIED → CONFIRMED / CANCELLED；空回滚时直接写入 CANCELLED。终态不可变（§2.7）。
 - **Sensitivity:** 内部财务数据。
-- **Authoritative source:** schema_draft.sql。
+- **Authoritative source:** `migrations/account/000001_init.up.sql。
 - **Write owners/read consumers:** account 写；account 核对任务（ACC-10 在途守恒）、recon 只读（REC-05）。
 - **Retention/archival:** 永久保留（§5.10）。
 
@@ -314,14 +314,14 @@
 
 | Name | Type | Columns/order/predicate | Purpose | Source |
 | --- | --- | --- | --- | --- |
-| `PRIMARY` | PK | `id` | | schema_draft.sql |
-| `uk_transfer_role` | UNIQUE | `transfer_no, role` | 分支幂等、失败墓碑与空回滚墓碑的占位（`docs/03-conventions.md` §2.4）；REC-05 按 `transfer_no` 前缀查询 | schema_draft.sql |
-| `ck_branch_amount` | CHECK | `amount > 0` | | schema_draft.sql |
-| `ck_branch_role` | CHECK | `role IN ('LOCAL','PAYEE')` | | schema_draft.sql |
-| `ck_branch_status` | CHECK | `(role = 'LOCAL' AND status IN ('SUCCESS','FAILED')) OR (role = 'PAYEE' AND status IN ('TRIED','CONFIRMED','CANCELLED'))` | 角色与状态组合 | schema_draft.sql |
-| `ck_branch_payer` | CHECK | `(role = 'LOCAL') = (payer_merchant_id IS NOT NULL)` | LOCAL 记录双方，PAYEE 只记收款方 | schema_draft.sql |
-| `ck_branch_self` | CHECK | `payer_merchant_id IS NULL OR payer_merchant_id <> payee_merchant_id` | 不允许转给自己（ACC-07 第 1 条） | schema_draft.sql |
-| `ck_branch_fail_code` | CHECK | `(role = 'LOCAL' AND status = 'FAILED') = (fail_code IS NOT NULL)` | 失败墓碑必须带原因码，其他记录不带 | schema_draft.sql |
+| `PRIMARY` | PK | `id` | | migrations/account/000001_init.up.sql |
+| `uk_transfer_role` | UNIQUE | `transfer_no, role` | 分支幂等、失败墓碑与空回滚墓碑的占位（`docs/03-conventions.md` §2.4）；REC-05 按 `transfer_no` 前缀查询 | migrations/account/000001_init.up.sql |
+| `ck_branch_amount` | CHECK | `amount > 0` | | migrations/account/000001_init.up.sql |
+| `ck_branch_role` | CHECK | `role IN ('LOCAL','PAYEE')` | | migrations/account/000001_init.up.sql |
+| `ck_branch_status` | CHECK | `(role = 'LOCAL' AND status IN ('SUCCESS','FAILED')) OR (role = 'PAYEE' AND status IN ('TRIED','CONFIRMED','CANCELLED'))` | 角色与状态组合 | migrations/account/000001_init.up.sql |
+| `ck_branch_payer` | CHECK | `(role = 'LOCAL') = (payer_merchant_id IS NOT NULL)` | LOCAL 记录双方，PAYEE 只记收款方 | migrations/account/000001_init.up.sql |
+| `ck_branch_self` | CHECK | `payer_merchant_id IS NULL OR payer_merchant_id <> payee_merchant_id` | 不允许转给自己（ACC-07 第 1 条） | migrations/account/000001_init.up.sql |
+| `ck_branch_fail_code` | CHECK | `(role = 'LOCAL' AND status = 'FAILED') = (fail_code IS NOT NULL)` | 失败墓碑必须带原因码，其他记录不带 | migrations/account/000001_init.up.sql |
 
 #### Relationships
 
@@ -338,7 +338,7 @@
 - **Purpose:** 商户基础信息、签名密钥、通知地址、费率。
 - **Lifecycle:** 种子数据创建，ACTIVE / DISABLED。
 - **Sensitivity:** `app_secret_cipher` 为高敏数据（密文）。
-- **Authoritative source:** schema_draft.sql。
+- **Authoritative source:** `migrations/payment/000001_init.up.sql。
 - **Write owners/read consumers:** payment 写；网关经 RPC 读取解密后的密钥并在进程内缓存。
 - **Retention/archival:** 长期。
 
@@ -362,11 +362,11 @@
 
 | Name | Type | Columns/order/predicate | Purpose | Source |
 | --- | --- | --- | --- | --- |
-| `PRIMARY` | PK | `id` | | schema_draft.sql |
-| `uk_merchant_id` | UNIQUE | `merchant_id` | | schema_draft.sql |
-| `uk_app_id` | UNIQUE | `app_id` | 验签时按 app_id 查找 | schema_draft.sql |
-| `ck_merchant_fee_rate` | CHECK | `fee_rate_bp BETWEEN 0 AND 10000` | | schema_draft.sql |
-| `ck_merchant_status` | CHECK | 枚举 | | schema_draft.sql |
+| `PRIMARY` | PK | `id` | | migrations/payment/000001_init.up.sql |
+| `uk_merchant_id` | UNIQUE | `merchant_id` | | migrations/payment/000001_init.up.sql |
+| `uk_app_id` | UNIQUE | `app_id` | 验签时按 app_id 查找 | migrations/payment/000001_init.up.sql |
+| `ck_merchant_fee_rate` | CHECK | `fee_rate_bp BETWEEN 0 AND 10000` | | migrations/payment/000001_init.up.sql |
+| `ck_merchant_status` | CHECK | 枚举 | | migrations/payment/000001_init.up.sql |
 
 #### Relationships
 
@@ -375,7 +375,7 @@
 
 #### Operational Notes
 
-- **Backfill/migration considerations:** 种子数据中的密钥由初始化脚本用主密钥加密后写入，明文只出现在 `deploy/.env.example` 的演示值中。
+- **Backfill/migration considerations:** BASE-03 种子按 BASE-14 的密文格式（`version(1B)+nonce(12B)+ciphertext+tag`，version=1）用标准库加密后写入。明文格式是 `DEMO_APP_SECRET_FORMAT`，只出现在环境文件。重复执行不覆盖已有密文。`pkg/secretbox` 仍由 BASE-14 实现，且必须能解密这些种子密文。
 - **Compatibility/deprecation notes:** 密钥轮换（双密钥并行）为 P2。
 
 ### 4.7 `payment_order` — 支付单
@@ -383,7 +383,7 @@
 - **Purpose:** 支付状态机（`docs/02-requirements.md` PAY-04）。
 - **Lifecycle:** INIT → PAYING → SUCCESS / FAILED / CLOSED；INIT → CLOSED。
 - **Sensitivity:** 内部交易数据，`subject` 不得包含个人信息。
-- **Authoritative source:** schema_draft.sql。
+- **Authoritative source:** `migrations/payment/000001_init.up.sql。
 - **Write owners/read consumers:** payment 写；recon 只读。
 - **Retention/archival:** 长期。
 
@@ -416,11 +416,11 @@
 
 | Name | Type | Columns/order/predicate | Purpose | Source |
 | --- | --- | --- | --- | --- |
-| `PRIMARY` | PK | `id` | | schema_draft.sql |
-| `uk_pay_no` | UNIQUE | `pay_no` | | schema_draft.sql |
-| `uk_merchant_out_trade_no` | UNIQUE | `merchant_id, out_trade_no` | 下单幂等兜底（已验证重复插入报 1062） | schema_draft.sql |
-| `idx_status_expire_at` | INDEX | `status, expire_at` | 超时关单扫描 | schema_draft.sql |
-| `ck_pay_amount` / `ck_pay_fee` / `ck_pay_refunded` / `ck_pay_currency` / `ck_pay_status` | CHECK | 见 DDL | 金额边界与枚举 | schema_draft.sql |
+| `PRIMARY` | PK | `id` | | migrations/payment/000001_init.up.sql |
+| `uk_pay_no` | UNIQUE | `pay_no` | | migrations/payment/000001_init.up.sql |
+| `uk_merchant_out_trade_no` | UNIQUE | `merchant_id, out_trade_no` | 下单幂等兜底（已验证重复插入报 1062） | migrations/payment/000001_init.up.sql |
+| `idx_status_expire_at` | INDEX | `status, expire_at` | 超时关单扫描 | migrations/payment/000001_init.up.sql |
+| `ck_pay_amount` / `ck_pay_fee` / `ck_pay_refunded` / `ck_pay_currency` / `ck_pay_status` | CHECK | 见 DDL | 金额边界与枚举 | migrations/payment/000001_init.up.sql |
 
 #### Relationships
 
@@ -437,7 +437,7 @@
 - **Purpose:** 退款状态机（`docs/02-requirements.md` §4.5）。
 - **Lifecycle:** INIT → PROCESSING → SUCCESS / FAILED；INIT → FAILED。
 - **Sensitivity:** 内部交易数据。
-- **Authoritative source:** schema_draft.sql。
+- **Authoritative source:** `migrations/payment/000001_init.up.sql。
 - **Write owners/read consumers:** payment 写；recon 只读。
 - **Retention/archival:** 长期。
 
@@ -466,12 +466,12 @@
 
 | Name | Type | Columns/order/predicate | Purpose | Source |
 | --- | --- | --- | --- | --- |
-| `PRIMARY` | PK | `id` | | schema_draft.sql |
-| `uk_refund_no` | UNIQUE | `refund_no` | | schema_draft.sql |
-| `uk_merchant_out_refund_no` | UNIQUE | `merchant_id, out_refund_no` | 退款幂等兜底 | schema_draft.sql |
-| `idx_pay_no` | INDEX | `pay_no` | 查订单下的退款 | schema_draft.sql |
-| `idx_status_updated_at` | INDEX | `status, updated_at` | 卡单恢复扫描 INIT | schema_draft.sql |
-| `ck_refund_*` | CHECK | 见 DDL | | schema_draft.sql |
+| `PRIMARY` | PK | `id` | | migrations/payment/000001_init.up.sql |
+| `uk_refund_no` | UNIQUE | `refund_no` | | migrations/payment/000001_init.up.sql |
+| `uk_merchant_out_refund_no` | UNIQUE | `merchant_id, out_refund_no` | 退款幂等兜底 | migrations/payment/000001_init.up.sql |
+| `idx_pay_no` | INDEX | `pay_no` | 查订单下的退款 | migrations/payment/000001_init.up.sql |
+| `idx_status_updated_at` | INDEX | `status, updated_at` | 卡单恢复扫描 INIT | migrations/payment/000001_init.up.sql |
+| `ck_refund_*` | CHECK | 见 DDL | | migrations/payment/000001_init.up.sql |
 
 #### Relationships
 
@@ -488,7 +488,7 @@
 - **Purpose:** 商户间转账的状态机与跨分片 TCC 协调者的持久化状态（`docs/02-requirements.md` §4.6、D18）。`mode` 在创建时由双方分片决定：同分片 LOCAL，由 account 一个本地事务完成；跨分片 TCC，由 payment 驱动付款方冻结分支与收款方 `transfer_branch` 分支。
 - **Lifecycle:** LOCAL：TRYING → SUCCESS / FAILED。TCC：TRYING → CONFIRMING → SUCCESS；TRYING → CANCELLING → FAILED。TRYING 是唯一可以改变决策的状态；CONFIRMING、CANCELLING 落盘后只能前进，由恢复任务（TRF-04）重试到终态。
 - **Sensitivity:** 内部交易数据，`remark` 不得包含个人信息。
-- **Authoritative source:** schema_draft.sql。
+- **Authoritative source:** `migrations/payment/000001_init.up.sql。
 - **Write owners/read consumers:** payment 写（TRF-01~04）；recon 只读（REC-05）。
 - **Retention/archival:** 永久保留（§5.10）。
 
@@ -522,22 +522,22 @@
 
 | Name | Type | Columns/order/predicate | Purpose | Source |
 | --- | --- | --- | --- | --- |
-| `PRIMARY` | PK | `id` | | schema_draft.sql |
-| `uk_transfer_no` | UNIQUE | `transfer_no` | | schema_draft.sql |
-| `uk_merchant_out_transfer_no` | UNIQUE | `merchant_id, out_transfer_no` | 创建幂等兜底（TRF-01 第 3 条），按商户单号查询（TRF-05） | schema_draft.sql |
-| `idx_status_next_retry_at` | INDEX | `status, next_retry_at` | 恢复任务扫描（TRF-04，`FOR UPDATE SKIP LOCKED`）；已验证 EXPLAIN 走此索引（覆盖索引） | schema_draft.sql |
-| `idx_finished_at` | INDEX | `finished_at` | 内部对账按日扫描终态转账（REC-05） | schema_draft.sql |
-| `ck_transfer_amount` | CHECK | `amount > 0` | | schema_draft.sql |
-| `ck_transfer_currency` | CHECK | `currency = 'CNY'` | | schema_draft.sql |
-| `ck_transfer_status` | CHECK | `status IN ('TRYING','CONFIRMING','CANCELLING','SUCCESS','FAILED')` | | schema_draft.sql |
-| `ck_transfer_mode` | CHECK | `mode IN ('LOCAL','TCC')` | | schema_draft.sql |
-| `ck_transfer_shard` | CHECK | `payer_shard < 2 AND payee_shard < 2` | 分片数固定为 2（D17） | schema_draft.sql |
-| `ck_transfer_mode_shard` | CHECK | `(mode = 'LOCAL') = (payer_shard = payee_shard)` | 同分片才走本地事务（TRF-01 第 4 条） | schema_draft.sql |
-| `ck_transfer_self` | CHECK | `merchant_id <> payee_merchant_id` | 不允许转给自己 | schema_draft.sql |
-| `ck_transfer_local_status` | CHECK | `mode = 'TCC' OR status IN ('TRYING','SUCCESS','FAILED')` | LOCAL 没有两阶段状态 | schema_draft.sql |
-| `ck_transfer_fail_code` | CHECK | `(status IN ('CANCELLING','FAILED')) = (fail_code IS NOT NULL)` | 取消与失败必须带原因码；TRYING → CANCELLING 的 CAS 必须同时写 `fail_code` | schema_draft.sql |
-| `ck_transfer_finished` | CHECK | `(status IN ('SUCCESS','FAILED')) = (finished_at IS NOT NULL)` | 终态必须写 `finished_at`，否则 REC-05 漏检 | schema_draft.sql |
-| `ck_transfer_txn_no` | CHECK | `(mode = 'LOCAL' AND status = 'SUCCESS') = (txn_no IS NOT NULL)` | LOCAL 成功必须回写凭证号，其他情况不填 | schema_draft.sql |
+| `PRIMARY` | PK | `id` | | migrations/payment/000001_init.up.sql |
+| `uk_transfer_no` | UNIQUE | `transfer_no` | | migrations/payment/000001_init.up.sql |
+| `uk_merchant_out_transfer_no` | UNIQUE | `merchant_id, out_transfer_no` | 创建幂等兜底（TRF-01 第 3 条），按商户单号查询（TRF-05） | migrations/payment/000001_init.up.sql |
+| `idx_status_next_retry_at` | INDEX | `status, next_retry_at` | 恢复任务扫描（TRF-04，`FOR UPDATE SKIP LOCKED`）；已验证 EXPLAIN 走此索引（覆盖索引） | migrations/payment/000001_init.up.sql |
+| `idx_finished_at` | INDEX | `finished_at` | 内部对账按日扫描终态转账（REC-05） | migrations/payment/000001_init.up.sql |
+| `ck_transfer_amount` | CHECK | `amount > 0` | | migrations/payment/000001_init.up.sql |
+| `ck_transfer_currency` | CHECK | `currency = 'CNY'` | | migrations/payment/000001_init.up.sql |
+| `ck_transfer_status` | CHECK | `status IN ('TRYING','CONFIRMING','CANCELLING','SUCCESS','FAILED')` | | migrations/payment/000001_init.up.sql |
+| `ck_transfer_mode` | CHECK | `mode IN ('LOCAL','TCC')` | | migrations/payment/000001_init.up.sql |
+| `ck_transfer_shard` | CHECK | `payer_shard < 2 AND payee_shard < 2` | 分片数固定为 2（D17） | migrations/payment/000001_init.up.sql |
+| `ck_transfer_mode_shard` | CHECK | `(mode = 'LOCAL') = (payer_shard = payee_shard)` | 同分片才走本地事务（TRF-01 第 4 条） | migrations/payment/000001_init.up.sql |
+| `ck_transfer_self` | CHECK | `merchant_id <> payee_merchant_id` | 不允许转给自己 | migrations/payment/000001_init.up.sql |
+| `ck_transfer_local_status` | CHECK | `mode = 'TCC' OR status IN ('TRYING','SUCCESS','FAILED')` | LOCAL 没有两阶段状态 | migrations/payment/000001_init.up.sql |
+| `ck_transfer_fail_code` | CHECK | `(status IN ('CANCELLING','FAILED')) = (fail_code IS NOT NULL)` | 取消与失败必须带原因码；TRYING → CANCELLING 的 CAS 必须同时写 `fail_code` | migrations/payment/000001_init.up.sql |
+| `ck_transfer_finished` | CHECK | `(status IN ('SUCCESS','FAILED')) = (finished_at IS NOT NULL)` | 终态必须写 `finished_at`，否则 REC-05 漏检 | migrations/payment/000001_init.up.sql |
+| `ck_transfer_txn_no` | CHECK | `(mode = 'LOCAL' AND status = 'SUCCESS') = (txn_no IS NOT NULL)` | LOCAL 成功必须回写凭证号，其他情况不填 | migrations/payment/000001_init.up.sql |
 
 #### Relationships
 
@@ -554,7 +554,7 @@
 - **Purpose:** 与渠道的一次交易，记录渠道流水号、回调次数和查单调度。转账不经过渠道，不写本表。
 - **Lifecycle:** PROCESSING → SUCCESS / FAILED / CLOSED。
 - **Sensitivity:** 内部。
-- **Authoritative source:** schema_draft.sql。
+- **Authoritative source:** `migrations/payment/000001_init.up.sql。
 - **Write owners/read consumers:** payment 写；recon 只读（外部对账的本地侧）。
 - **Retention/archival:** 长期。
 
@@ -583,12 +583,12 @@
 
 | Name | Type | Columns/order/predicate | Purpose | Source |
 | --- | --- | --- | --- | --- |
-| `PRIMARY` | PK | `id` | | schema_draft.sql |
-| `uk_biz_no` | UNIQUE | `biz_no` | 一笔订单一次渠道交易 | schema_draft.sql |
-| `uk_channel_txn_no` | UNIQUE | `channel, channel_txn_no` | 原草案约束，防止同一渠道流水关联两笔订单 | schema_draft.sql |
-| `idx_status_next_query_at` | INDEX | `status, next_query_at` | 查单补偿扫描 | schema_draft.sql |
-| `idx_channel_finished_at` | INDEX | `channel, channel_finished_at` | 对账按日扫描 | schema_draft.sql |
-| `ck_ctxn_*` | CHECK | 见 DDL | | schema_draft.sql |
+| `PRIMARY` | PK | `id` | | migrations/payment/000001_init.up.sql |
+| `uk_biz_no` | UNIQUE | `biz_no` | 一笔订单一次渠道交易 | migrations/payment/000001_init.up.sql |
+| `uk_channel_txn_no` | UNIQUE | `channel, channel_txn_no` | 原草案约束，防止同一渠道流水关联两笔订单 | migrations/payment/000001_init.up.sql |
+| `idx_status_next_query_at` | INDEX | `status, next_query_at` | 查单补偿扫描 | migrations/payment/000001_init.up.sql |
+| `idx_channel_finished_at` | INDEX | `channel, channel_finished_at` | 对账按日扫描 | migrations/payment/000001_init.up.sql |
+| `ck_ctxn_*` | CHECK | 见 DDL | | migrations/payment/000001_init.up.sql |
 
 #### Relationships
 
@@ -605,7 +605,7 @@
 - **Purpose:** 与业务状态同事务写入的待投递事件（`docs/02-requirements.md` MQ-01、MQ-02）。事件类型：`payment.succeeded`、`refund.succeeded`、`refund.failed`、`transfer.succeeded`、`transfer.failed`。
 - **Lifecycle:** PENDING → SENT / DEAD；重放时回到 PENDING。
 - **Sensitivity:** payload 只含单号与金额，无个人信息。
-- **Authoritative source:** schema_draft.sql。
+- **Authoritative source:** `migrations/payment/000001_init.up.sql。
 - **Write owners/read consumers:** payment 业务事务与投递器。
 - **Retention/archival:** SENT 保留 7 天（P1 清理任务）。
 
@@ -632,11 +632,11 @@
 
 | Name | Type | Columns/order/predicate | Purpose | Source |
 | --- | --- | --- | --- | --- |
-| `PRIMARY` | PK | `id` | | schema_draft.sql |
-| `uk_event_id` | UNIQUE | `event_id` | | schema_draft.sql |
-| `idx_status_next_retry_at` | INDEX | `status, next_retry_at` | 投递扫描；已验证 `FOR UPDATE SKIP LOCKED` 查询走此索引（覆盖索引） | schema_draft.sql |
-| `idx_biz_no_event_type` | INDEX | `biz_no, event_type` | MQ-05 按业务单号重放 | schema_draft.sql |
-| `ck_outbox_status` | CHECK | 枚举 | | schema_draft.sql |
+| `PRIMARY` | PK | `id` | | migrations/payment/000001_init.up.sql |
+| `uk_event_id` | UNIQUE | `event_id` | | migrations/payment/000001_init.up.sql |
+| `idx_status_next_retry_at` | INDEX | `status, next_retry_at` | 投递扫描；已验证 `FOR UPDATE SKIP LOCKED` 查询走此索引（覆盖索引） | migrations/payment/000001_init.up.sql |
+| `idx_biz_no_event_type` | INDEX | `biz_no, event_type` | MQ-05 按业务单号重放 | migrations/payment/000001_init.up.sql |
+| `ck_outbox_status` | CHECK | 枚举 | | migrations/payment/000001_init.up.sql |
 
 #### Relationships
 
@@ -653,7 +653,7 @@
 - **Purpose:** 商户异步通知与重试（`docs/02-requirements.md` NTF-01、NTF-02）。
 - **Lifecycle:** PENDING → SUCCESS / DEAD。
 - **Sensitivity:** 内部。
-- **Authoritative source:** schema_draft.sql。
+- **Authoritative source:** `migrations/payment/000001_init.up.sql。
 - **Write owners/read consumers:** payment 的 `payment-notify` 消费者与通知任务。
 - **Retention/archival:** 长期，P2 归档。
 
@@ -682,12 +682,12 @@
 
 | Name | Type | Columns/order/predicate | Purpose | Source |
 | --- | --- | --- | --- | --- |
-| `PRIMARY` | PK | `id` | | schema_draft.sql |
-| `uk_notify_no` | UNIQUE | `notify_no` | | schema_draft.sql |
-| `uk_event_id` | UNIQUE | `event_id` | 同一事件只生成一条通知 | schema_draft.sql |
-| `idx_status_next_attempt_at` | INDEX | `status, next_attempt_at` | 通知任务扫描 | schema_draft.sql |
-| `idx_biz_no` | INDEX | `biz_no` | 按单据排查 | schema_draft.sql |
-| `ck_notify_status` | CHECK | 枚举 | | schema_draft.sql |
+| `PRIMARY` | PK | `id` | | migrations/payment/000001_init.up.sql |
+| `uk_notify_no` | UNIQUE | `notify_no` | | migrations/payment/000001_init.up.sql |
+| `uk_event_id` | UNIQUE | `event_id` | 同一事件只生成一条通知 | migrations/payment/000001_init.up.sql |
+| `idx_status_next_attempt_at` | INDEX | `status, next_attempt_at` | 通知任务扫描 | migrations/payment/000001_init.up.sql |
+| `idx_biz_no` | INDEX | `biz_no` | 按单据排查 | migrations/payment/000001_init.up.sql |
+| `ck_notify_status` | CHECK | 枚举 | | migrations/payment/000001_init.up.sql |
 
 #### Relationships
 
@@ -704,7 +704,7 @@
 - **Purpose:** 每渠道每账期一个批次及汇总结果。
 - **Lifecycle:** INIT → DOWNLOADED → CHECKING → DONE；任一步 → FAILED；FAILED、DONE（force）可重跑。
 - **Sensitivity:** 内部。
-- **Authoritative source:** schema_draft.sql。
+- **Authoritative source:** `migrations/recon/000001_init.up.sql。
 - **Write owners/read consumers:** recon 写；管理接口读。
 - **Retention/archival:** 长期。
 
@@ -734,10 +734,10 @@
 
 | Name | Type | Columns/order/predicate | Purpose | Source |
 | --- | --- | --- | --- | --- |
-| `PRIMARY` | PK | `id` | | schema_draft.sql |
-| `uk_batch_no` | UNIQUE | `batch_no` | | schema_draft.sql |
-| `uk_channel_bill_date` | UNIQUE | `channel, bill_date` | 同一账期只有一个批次，防止并发重复对账 | schema_draft.sql |
-| `ck_batch_status` | CHECK | 枚举 | | schema_draft.sql |
+| `PRIMARY` | PK | `id` | | migrations/recon/000001_init.up.sql |
+| `uk_batch_no` | UNIQUE | `batch_no` | | migrations/recon/000001_init.up.sql |
+| `uk_channel_bill_date` | UNIQUE | `channel, bill_date` | 同一账期只有一个批次，防止并发重复对账 | migrations/recon/000001_init.up.sql |
+| `ck_batch_status` | CHECK | 枚举 | | migrations/recon/000001_init.up.sql |
 
 #### Relationships
 
@@ -754,7 +754,7 @@
 - **Purpose:** 导入的渠道账单行，记录匹配结果。
 - **Lifecycle:** 导入后只更新 `match_status`；重跑时按批次删除重导。
 - **Sensitivity:** 内部。
-- **Authoritative source:** schema_draft.sql。
+- **Authoritative source:** `migrations/recon/000001_init.up.sql。
 - **Write owners/read consumers:** recon。
 - **Retention/archival:** 可按月归档。
 
@@ -779,10 +779,10 @@
 
 | Name | Type | Columns/order/predicate | Purpose | Source |
 | --- | --- | --- | --- | --- |
-| `PRIMARY` | PK | `id` | | schema_draft.sql |
-| `uk_batch_type_channel_txn_no` | UNIQUE | `batch_no, txn_type, channel_txn_no` | 防止重复导入 | schema_draft.sql |
-| `idx_batch_biz_no` | INDEX | `batch_no, biz_no` | 按业务单号匹配 | schema_draft.sql |
-| `ck_bill_type` / `ck_bill_match` | CHECK | 枚举 | | schema_draft.sql |
+| `PRIMARY` | PK | `id` | | migrations/recon/000001_init.up.sql |
+| `uk_batch_type_channel_txn_no` | UNIQUE | `batch_no, txn_type, channel_txn_no` | 防止重复导入 | migrations/recon/000001_init.up.sql |
+| `idx_batch_biz_no` | INDEX | `batch_no, biz_no` | 按业务单号匹配 | migrations/recon/000001_init.up.sql |
+| `ck_bill_type` / `ck_bill_match` | CHECK | 枚举 | | migrations/recon/000001_init.up.sql |
 
 #### Relationships
 
@@ -799,7 +799,7 @@
 - **Purpose:** 差错明细与自动处理记录（REC-03、REC-05、REC-06）。人工处理与挂账已砍掉（REC-07 CUT），未自动解决的差错保持 PENDING，出现在对账报告和 ERROR 日志中。
 - **Lifecycle:** PENDING → RESOLVED / IGNORED，只由自动处理推进（§2.7）。批次重跑时删除该批次的 PENDING 差错，保留 RESOLVED、IGNORED。
 - **Sensitivity:** 内部，`handler` 为处理方标识（目前只有 `system`）。
-- **Authoritative source:** schema_draft.sql。
+- **Authoritative source:** `migrations/recon/000001_init.up.sql。
 - **Write owners/read consumers:** recon；管理接口（触发对账的响应）只读。
 - **Retention/archival:** 长期，作为审计记录。
 
@@ -832,14 +832,14 @@
 
 | Name | Type | Columns/order/predicate | Purpose | Source |
 | --- | --- | --- | --- | --- |
-| `PRIMARY` | PK | `id` | | schema_draft.sql |
-| `uk_diff_no` | UNIQUE | `diff_no` | | schema_draft.sql |
-| `uk_batch_type_biz_no` | UNIQUE | `batch_no, txn_type, biz_no` | 同一批次同一交易只记一条差错 | schema_draft.sql |
-| `idx_status_bill_date` | INDEX | `status, bill_date` | 待处理列表、LEDGER_MISSING 跨批次复核（`status = 'PENDING'` 前缀） | schema_draft.sql |
-| `ck_diff_type` | CHECK | `diff_type IN ('LOCAL_MISSING','CHANNEL_MISSING','AMOUNT_MISMATCH','STATUS_MISMATCH','LEDGER_MISSING','TRANSFER_MISMATCH')` | | schema_draft.sql |
-| `ck_diff_txn_type` | CHECK | `txn_type IN ('PAY','REFUND','TRANSFER')` | | schema_draft.sql |
-| `ck_diff_status` | CHECK | `status IN ('PENDING','RESOLVED','IGNORED')` | | schema_draft.sql |
-| `ck_diff_action` | CHECK | `handle_action IS NULL OR handle_action IN ('REQUERY','REPLAY')` | 只允许自动处理动作 | schema_draft.sql |
+| `PRIMARY` | PK | `id` | | migrations/recon/000001_init.up.sql |
+| `uk_diff_no` | UNIQUE | `diff_no` | | migrations/recon/000001_init.up.sql |
+| `uk_batch_type_biz_no` | UNIQUE | `batch_no, txn_type, biz_no` | 同一批次同一交易只记一条差错 | migrations/recon/000001_init.up.sql |
+| `idx_status_bill_date` | INDEX | `status, bill_date` | 待处理列表、LEDGER_MISSING 跨批次复核（`status = 'PENDING'` 前缀） | migrations/recon/000001_init.up.sql |
+| `ck_diff_type` | CHECK | `diff_type IN ('LOCAL_MISSING','CHANNEL_MISSING','AMOUNT_MISMATCH','STATUS_MISMATCH','LEDGER_MISSING','TRANSFER_MISMATCH')` | | migrations/recon/000001_init.up.sql |
+| `ck_diff_txn_type` | CHECK | `txn_type IN ('PAY','REFUND','TRANSFER')` | | migrations/recon/000001_init.up.sql |
+| `ck_diff_status` | CHECK | `status IN ('PENDING','RESOLVED','IGNORED')` | | migrations/recon/000001_init.up.sql |
+| `ck_diff_action` | CHECK | `handle_action IS NULL OR handle_action IN ('REQUERY','REPLAY')` | 只允许自动处理动作 | migrations/recon/000001_init.up.sql |
 
 #### Relationships
 
@@ -856,7 +856,7 @@
 - **Purpose:** channel_mock 自身的交易记录，用于查单和生成账单；代表外部系统，平台服务不得直接访问。
 - **Lifecycle:** PROCESSING → SUCCESS / FAILED / CLOSED。
 - **Sensitivity:** 测试数据。
-- **Authoritative source:** schema_draft.sql。
+- **Authoritative source:** `migrations/channel_mock/000001_init.up.sql。
 - **Write owners/read consumers:** 仅 channel_mock。
 - **Retention/archival:** 可随时清空。
 
@@ -883,11 +883,11 @@
 
 | Name | Type | Columns/order/predicate | Purpose | Source |
 | --- | --- | --- | --- | --- |
-| `PRIMARY` | PK | `id` | | schema_draft.sql |
-| `uk_channel_txn_no` | UNIQUE | `channel_txn_no` | | schema_draft.sql |
-| `uk_type_req_no` | UNIQUE | `txn_type, req_no` | 渠道侧受理幂等 | schema_draft.sql |
-| `idx_bill_date` | INDEX | `bill_date` | 生成账单 | schema_draft.sql |
-| `ck_mock_type` / `ck_mock_status` | CHECK | 枚举 | | schema_draft.sql |
+| `PRIMARY` | PK | `id` | | migrations/channel_mock/000001_init.up.sql |
+| `uk_channel_txn_no` | UNIQUE | `channel_txn_no` | | migrations/channel_mock/000001_init.up.sql |
+| `uk_type_req_no` | UNIQUE | `txn_type, req_no` | 渠道侧受理幂等 | migrations/channel_mock/000001_init.up.sql |
+| `idx_bill_date` | INDEX | `bill_date` | 生成账单 | migrations/channel_mock/000001_init.up.sql |
+| `ck_mock_type` / `ck_mock_status` | CHECK | 枚举 | | migrations/channel_mock/000001_init.up.sql |
 
 #### Relationships
 
@@ -908,6 +908,7 @@
 | 2026-10-12 | 无（仅文档） | `payment_order`、`refund_order` | 无 DDL 变化。`fail_code` 明确为字符串原因码，取值统一登记在 `docs/03-conventions.md` §5.4，修正退款单中写成错误码 `40002` 的描述 | 无 SQL 变更，未执行数据库 |
 | 2026-10-12 | `docs/schema/schema_draft.sql` | `outbox`、`recon_diff` | `outbox` 新增 `biz_no VARCHAR(32) NOT NULL` 与 `idx_biz_no_event_type (biz_no, event_type)`，支持按业务单号重放（R9）；`recon_diff.ck_diff_status` 新增 `HANDLING`，人工挂账先占位再记账（R11）；FIX_ORDER 后保持 PENDING 等待复核（R10） | 尚无数据，直接改设计稿；在一次性 `mysql:8.4.11` 容器上重新执行 DDL。HANDLING 已在 v3.0 移除（下一行） |
 | 2026-10-12 | `docs/schema/schema_draft.sql`（v3.0，对应需求 v3.0、D17–D20） | schema `pay_account` → `pay_account_0` / `pay_account_1`；`account`、`ledger_txn`、`account_freeze`、`outbox`、`merchant_notify`、`recon_diff`；新增 `transfer_branch`、`transfer_order` | 账户分片：删除 `pay_account`，在 `pay_account_0` 完整定义 5 张表，`pay_account_1` 用 `CREATE TABLE ... LIKE` 复制。`account` 新增 `sub_no INT UNSIGNED`，唯一键 `uk_owner_account_type` 改为 `uk_owner_account_type_sub (owner_type, owner_id, account_type, currency, sub_no)`；账户类型改为 MERCHANT_SETTLE / CHANNEL_RECEIVABLE / FEE_INCOME / TRANSIT（删除 SUSPENSE），新增 `ck_account_type_rule`、`ck_account_merchant_sub`。`ledger_txn` 新增 `ck_ledger_txn_biz_type`（PAY / REFUND / TRANSFER / TRANSFER_OUT / TRANSFER_IN / REVERSAL，删除 ADJUST）与 `ck_ledger_txn_reversal`。`account_freeze` 新增 `ck_freeze_biz_type`（REFUND / TRANSFER）。新增分片表 `transfer_branch`（ACC-07 失败墓碑、ACC-14 收款方分支与 CANCELLED 墓碑）与 `pay_payment.transfer_order`（TRF-01~05）。`outbox`、`merchant_notify` 只改注释，允许转账事件（`msg_key` / `biz_no` = transfer_no，`biz_type` = TRANSFER）。`recon_diff`：`ck_diff_status` 只保留 PENDING / RESOLVED / IGNORED（删除 SUSPENDED、HANDLING），`diff_type` 新增 TRANSFER_MISMATCH，新增 `ck_diff_txn_type`（含 TRANSFER）与 `ck_diff_action`（REQUERY / REPLAY；FIX_ORDER 改名 REPLAY，删除 SUSPENSE、IGNORE、REFUND 人工动作），删除 `recheck_count`。DDL 开头增加 `SET NAMES utf8mb4` | 尚无数据，直接改设计稿。验证：`docker exec -i paysys-ddl-check mysql -uroot -proot < docs/schema/schema_draft.sql`，目标为一次性容器 `mysql:8.4.11`，执行成功，5 个 schema 共 21 张表、79 个 CHECK 约束（每个分片 22 个）；对比 `information_schema` 的列、索引、CHECK 表达式和表注释，两个分片一致，只有复制出的 CHECK 名称变为 `<表名>_chk_<n>`。负向测试：LOCAL + TRIED、PAYEE 带付款方、商户 `sub_no = 1`、TRANSIT 不透支、ADJUST 凭证、`recon_diff` HANDLING / SUSPENDED / FIX_ORDER、LOCAL 跨分片、LOCAL CONFIRMING、转给自己、FAILED 无 `finished_at` 均报 ERROR 3819；重复 `(transfer_no, role)`、`uk_owner_account_type_sub`、`uk_merchant_out_transfer_no` 报 ERROR 1062；TRF-04 扫描 EXPLAIN 使用 `idx_status_next_retry_at`。未加 `SET NAMES` 时管道执行按 latin1 解析，中文注释乱码，已修复。容器已删除 |
+| 2026-10-14 | `migrations/*/000001_init.{up,down}.sql`；`cmd/bootstrap` | 全部业务表；新增工具表 `schema_migrations` | 设计稿拆成四个迁移目录。账户分片共用 `migrations/account/`，对 `pay_account_0`、`pay_account_1` 各执行一次，CHECK 约束名不再被 `LIKE` 重命名。删除 `docs/schema/schema_draft.sql`。bootstrap 创建五个 schema 和最小权限账号，不放进迁移文件 | 验证：compose 的 `mysql:8.4.11`（`SELECT VERSION()` = 8.4.11）上 `make migrate`、`make migrate DIR=down`、再 `make migrate` 均成功。表数：分片各 6（含 `schema_migrations`）、`pay_payment` 8、`pay_recon` 4、`pay_channel_mock` 2。CHECK：分片各 22、payment 26、recon 7、channel_mock 2，合计 79。两个分片没有 `%_chk_%` 约束名。`scripts/compare-account-shards.sh` 报告结构一致。集成测试用 testcontainers 的 `mysql:8.4.11` 复跑了同一批文件 |
 
 ## 6. Open Questions
 
@@ -919,4 +920,4 @@
 | ACC-10 在途守恒汇总 `account_freeze(TRANSFER, CONFIRMED)`、`transfer_branch(PAYEE, CONFIRMED)` 是否需要 `(biz_type, status)` / `(role, status)` 索引 | ACC-10 第 2 条只在全量模式、手动触发 | 全量核对时全表扫描，压测数据量下耗时待测 | 第 7 周压测后决定，待确认 |
 | 转账差错归属哪个对账批次 | REC-01 批次按渠道建立，REC-05 第 4 条按 `finished_at` 检查转账；转账与渠道无关 | 目前只有 `mockpay` 一个渠道，TRANSFER_MISMATCH 写入当日该渠道批次；渠道增加后会在每个批次重复检查 | 待确认（需求未定义） |
 | TRANSFER_MISMATCH 的 `local_amount` / `local_status` 取值 | REC-05 只规定 `handle_note` 记录各分片情况 | 报告展示口径 | 待确认；建议取转账单金额与状态 |
-| 设计稿中 `pay_account_1` 的 CHECK 约束名与分片 0 不同 | 本次容器验证（§5） | 只影响设计稿；迁移文件对每个分片各执行一次后名称一致。若在设计稿阶段按约束名匹配 3819 错误会不一致 | BASE-03 拆分迁移后自然消除 |
+| 设计稿中 `pay_account_1` 的 CHECK 约束名与分片 0 不同 | BASE-03 在 MySQL 8.4.11 上对两个分片各执行 `migrations/account/000001_init.up.sql`，`%_chk_%` 计数为 0，比较脚本无差异 | 已消除 | 已关闭（2026-10-14） |

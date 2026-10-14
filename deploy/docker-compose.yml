@@ -1,6 +1,6 @@
 # 本地环境。make up 只启动基础设施和 kafka-init，以及 profile obs。
-# 应用容器、migrate、seed 在 profile apps 中占位：入口还是空 main，健康检查属于 OPS-01，
-# 迁移和种子属于 BASE-03。占位命令以非 0 退出，make up / make up-lite 不启用该 profile。
+# 应用容器仍在 profile apps 中占位，健康检查属于 OPS-01，make up / make up-lite 不启用该 profile。
+# BASE-03 替换了 migrate / seed 的命令，并用 bootstrap 建库授权；它们仍不随 make up 启动。
 name: pay-system
 
 x-app-depends: &app-depends
@@ -11,6 +11,8 @@ x-app-depends: &app-depends
   kafka:
     condition: service_healthy
   kafka-init:
+    condition: service_completed_successfully
+  bootstrap:
     condition: service_completed_successfully
   migrate:
     condition: service_completed_successfully
@@ -142,24 +144,68 @@ services:
       start_period: 10s
     restart: unless-stopped
 
+  bootstrap:
+    profiles:
+      - apps
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      args:
+        APP: bootstrap
+    image: pay-system-bootstrap:local
+    restart: "no"
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?set MYSQL_ROOT_PASSWORD}
+      ACCOUNT_DB_DSN_0: ${ACCOUNT_DB_DSN_0:?set ACCOUNT_DB_DSN_0}
+      ACCOUNT_DB_DSN_1: ${ACCOUNT_DB_DSN_1:?set ACCOUNT_DB_DSN_1}
+      MYSQL_DSN: ${MYSQL_DSN:?set MYSQL_DSN}
+      MYSQL_RECON_PASSWORD: ${MYSQL_RECON_PASSWORD:?set MYSQL_RECON_PASSWORD}
+      MYSQL_CHANNEL_MOCK_PASSWORD: ${MYSQL_CHANNEL_MOCK_PASSWORD:?set MYSQL_CHANNEL_MOCK_PASSWORD}
+      MYSQL_MIGRATOR_PASSWORD: ${MYSQL_MIGRATOR_PASSWORD:?set MYSQL_MIGRATOR_PASSWORD}
+    depends_on:
+      mysql:
+        condition: service_healthy
+
   migrate:
     profiles:
       - apps
     image: migrate/migrate:v4.20.1
     restart: "no"
-    entrypoint: ["/bin/sh", "-c"]
-    command: ["echo 'migrate is implemented by BASE-03' >&2; exit 1"]
+    environment:
+      MYSQL_MIGRATOR_PASSWORD: ${MYSQL_MIGRATOR_PASSWORD:?set MYSQL_MIGRATOR_PASSWORD}
+      MYSQL_HOST: mysql
+    volumes:
+      # 相对仓库根：compose.sh 把 project directory 设为仓库根。
+      - ./migrations:/migrations:ro
+      - ./deploy/migrate/run.sh:/run.sh:ro
+    entrypoint: ["/bin/sh", "/run.sh"]
+    command: ["up"]
     depends_on:
       mysql:
         condition: service_healthy
+      bootstrap:
+        condition: service_completed_successfully
 
   seed:
     profiles:
       - apps
-    image: alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+      args:
+        APP: seed
+    image: pay-system-seed:local
     restart: "no"
-    entrypoint: ["/bin/sh", "-c"]
-    command: ["echo 'seed is implemented by BASE-03' >&2; exit 1"]
+    environment:
+      SECRET_MASTER_KEY: ${SECRET_MASTER_KEY:?set SECRET_MASTER_KEY}
+      PLATFORM_SUB_ACCOUNTS: ${PLATFORM_SUB_ACCOUNTS:-8}
+      ACCOUNT_DB_DSN_0: ${ACCOUNT_DB_DSN_0:?set ACCOUNT_DB_DSN_0}
+      ACCOUNT_DB_DSN_1: ${ACCOUNT_DB_DSN_1:?set ACCOUNT_DB_DSN_1}
+      MYSQL_DSN: ${MYSQL_DSN:?set MYSQL_DSN}
+      DEMO_APP_SECRET_FORMAT: ${DEMO_APP_SECRET_FORMAT:-demo_secret_%s_0123456789ab}
+      SEED_LOAD: ${SEED_LOAD:-0}
     depends_on:
       mysql:
         condition: service_healthy

@@ -11,7 +11,7 @@
 > - `docs/05-api.md`：接口文档（带版本号与修改时间）
 > - `docs/06-flows.md`：状态机、泳道图、控制流图，以及绘图中发现的问题记录（R 编号）
 > - `docs/07-module-plan.md`：一页纸模块规划（整体布局、模块分档、链路与模块对应、包内划分）
-> - `docs/database.md`、`docs/schema/schema_draft.sql`：表结构设计（DDL 已在 MySQL 8.4.11 上验证）
+> - `docs/database.md`、`migrations/`：表结构（DDL 已在 MySQL 8.4.11 上验证；设计稿已于 BASE-03 删除）
 > - `.opencode/skills/pay-feature-dev/`：功能点编码流程，`/feature <功能点编号>` 启动
 
 ## 1. 背景与定位
@@ -106,7 +106,7 @@ pay-system/
 
 ## 6. 数据模型
 
-表结构以 `docs/database.md` 和 `docs/schema/schema_draft.sql` 为准，以下只列三条链路的核心表：
+表结构以 `docs/database.md` 和 `migrations/` 为准，以下只列三条链路的核心表：
 
 | 表 | 所在 schema | 作用 | 关键约束 |
 |---|---|---|---|

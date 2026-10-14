@@ -318,8 +318,15 @@
 | `FAULT_POINTS` | 全部服务 | 空 | 故障注入点（QA-01） |
 | `FAIL_FIRST_N` | merchant-demo | `0` | 每个单号前 N 次通知返回失败（TL-02） |
 | `MYSQL_ROOT_PASSWORD` | compose / MySQL | 无（必填，secret） | 仅本地 MySQL root。应用不使用 root；最小权限账号由 BASE-03 创建 |
+| `MYSQL_HOST` | bootstrap | `127.0.0.1` | 建库授权时的 MySQL 地址。不写入 `deploy/.env.example`：写进去会被 compose 插值覆盖容器内地址。compose 的 bootstrap 容器固定为 `mysql` |
+| `MYSQL_PORT` | bootstrap | `3306` | 建库授权时的端口 |
+| `MYSQL_RECON_PASSWORD` | bootstrap、recon | 无（必填，secret） | `svc_recon` 口令。对账进程的 DSN 由 BASE-09 装配，口令必须与此一致 |
+| `MYSQL_CHANNEL_MOCK_PASSWORD` | bootstrap、channel-mock | 无（必填，secret） | `svc_channel_mock` 口令。channel-mock 的 DSN 由 BASE-09 装配 |
+| `MYSQL_MIGRATOR_PASSWORD` | bootstrap、migrate | 无（必填，secret） | `migrator` 口令，只给迁移容器做 DDL |
+| `DEMO_APP_SECRET_FORMAT` | seed | `demo_secret_%s_0123456789ab` | 种子商户明文，`%s` 为商户号。种子加密后写入，明文只出现在环境文件。secret |
+| `SEED_LOAD` | seed | `0` | `1` 时额外创建 `M200000`–`M200099`。不入账 |
 
-新增配置项：先登记到本表（或在对应功能点中说明并归入此表），再加入配置结构体和 `deploy/.env.example`。`deploy/.env.example` 已包含本表演示值；`MYSQL_ROOT_PASSWORD` 只给 compose 的 MySQL 容器做插值，不进入应用配置结构体。
+新增配置项：先登记到本表（或在对应功能点中说明并归入此表），再加入配置结构体和 `deploy/.env.example`。`deploy/.env.example` 已包含本表演示值；`MYSQL_ROOT_PASSWORD` 只给 compose 的 MySQL 容器做插值，不进入应用配置结构体。`MYSQL_HOST`、`MYSQL_PORT` 有默认值，故意不写入 example，避免 compose 把宿主机地址插进容器。
 
 ## 9. 变更记录
 
@@ -331,3 +338,4 @@
 | v2.0 | 2026-10-13 | §7.6 补充不属于功能点的提交前缀 `[docs]`、`[chore]`；module path 定为 `github.com/yym108/pay-system` |
 | v2.1 | 2026-10-13 | BASE-01 建立根目录单模块工程；Go 版本、依赖和 Docker 镜像版本按 `docs/01-tech-decisions.md` §2 锁定 |
 | v2.2 | 2026-10-13 | BASE-02 增加 compose 专用配置 `MYSQL_ROOT_PASSWORD`；`deploy/.env.example` 写入本表演示值 |
+| v2.3 | 2026-10-14 | BASE-03 增加 `MYSQL_RECON_PASSWORD`、`MYSQL_CHANNEL_MOCK_PASSWORD`、`MYSQL_MIGRATOR_PASSWORD`、`DEMO_APP_SECRET_FORMAT`、`SEED_LOAD`；`MYSQL_HOST` / `MYSQL_PORT` 只给 bootstrap，不进 `.env.example`。`svc_account`、`svc_payment` 口令仍从已有 DSN 解析 |

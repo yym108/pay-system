@@ -6,8 +6,9 @@ WORKDIR /src
 COPY go.mod go.sum* ./
 RUN go mod download
 COPY . .
+# timetzdata 把时区数据编进二进制。运行镜像不安装包，避免破坏 digest 锁定的可复现构建。
 RUN test -n "$APP" \
-	&& CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o "/out/$APP" "./cmd/$APP" \
+	&& CGO_ENABLED=0 go build -tags timetzdata -trimpath -ldflags='-s -w' -o "/out/$APP" "./cmd/$APP" \
 	&& cp "/out/$APP" /out/app
 
 FROM alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1

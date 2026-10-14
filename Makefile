@@ -5,7 +5,7 @@ COMMANDS := gateway payment account recon channel-mock merchant-demo paycli
 # 默认读取 deploy/.env。验证或不落盘密钥时：make up ENV_FILE=deploy/.env.example
 ENV_FILE ?= deploy/.env
 
-.PHONY: gen build lint test test-integration cover up up-lite down migrate seed e2e chaos load
+.PHONY: gen build lint test test-integration cover up up-lite down migrate seed seed-load e2e chaos load
 
 gen:
 	@echo "gen 由 BASE-12 实现"
@@ -45,13 +45,19 @@ down:
 	if [ ! -f "$$env_file" ]; then env_file="deploy/.env.example"; fi; \
 	ENV_FILE="$$env_file" sh deploy/compose.sh --profile obs --profile apps down $(if $(filter 1,$(V)),-v,)
 
+# DIR=down 回滚后可再 make migrate。不启动应用容器。
 migrate:
-	@echo "migrate 由 BASE-03 实现"
-	@exit 1
+	@test -f "$(ENV_FILE)" || { echo "缺少 $(ENV_FILE)，请复制 deploy/.env.example 为 deploy/.env"; exit 1; }
+	ENV_FILE="$(ENV_FILE)" sh deploy/migrate.sh $(if $(DIR),$(DIR),up)
 
 seed:
-	@echo "seed 由 BASE-03 实现"
-	@exit 1
+	@test -f "$(ENV_FILE)" || { echo "缺少 $(ENV_FILE)，请复制 deploy/.env.example 为 deploy/.env"; exit 1; }
+	ENV_FILE="$(ENV_FILE)" sh deploy/seed.sh
+
+# 只创建 M200000–M200099 和零余额账户。入账脚本属于 QA-02，这里不调用。
+seed-load:
+	@test -f "$(ENV_FILE)" || { echo "缺少 $(ENV_FILE)，请复制 deploy/.env.example 为 deploy/.env"; exit 1; }
+	ENV_FILE="$(ENV_FILE)" SEED_LOAD=1 sh deploy/seed.sh
 
 e2e:
 	@echo "e2e 由 QA-04 实现"

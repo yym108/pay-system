@@ -1,6 +1,6 @@
 # 技术路线与决策记录
 
-> 最后更新：2026-10-13
+> 最后更新：2026-10-14
 > 状态：已决策，第 1 周开工即按本文锁定版本。推翻任一决策需在本文追加新记录，写明原因。
 > 2026-10-12：项目聚焦支付、退款、转账三条资金链路，新增 D17–D21（账户分片、跨分片转账 TCC、平台子账户、批量记账、链路延迟优化），调整 D10、D14 与 §4。
 
@@ -69,6 +69,8 @@
 
 BASE-01 镜像 digest 于 2026-10-13 在本机 Docker 29.4.0 执行 `docker pull` 后用 `docker image inspect` 获取并写入 `deploy/Dockerfile`。运行阶段选择 Alpine 是为了减少占用；程序以 `CGO_ENABLED=0` 的静态二进制运行，不需要额外运行时依赖。
 
+BASE-03（2026-10-14）：`go.mod` 首次直接引用已锁定的 `github.com/go-sql-driver/mysql v1.10.1`、`github.com/golang-migrate/migrate/v4 v4.20.1`、`github.com/testcontainers/testcontainers-go v0.44.0` 与 `modules/mysql`。迁移容器仍是 `migrate/migrate:v4.20.1`，集成测试用同版本库执行同一批 SQL。testcontainers 带入的间接依赖（testify v1.11.1、otel v1.44.0）不改变本表对直接依赖的锁定；业务代码以后直接使用时仍按本表版本。`tools/tools.go` 保留 sonic 的显式引用，避免 `go mod tidy` 把它删掉。bootstrap 与 seed 用已有 `deploy/Dockerfile` 构建本地镜像 `pay-system-bootstrap:local`、`pay-system-seed:local`，不新增基础镜像，运行阶段也不 `apk add`。约定里的 DSN 带 `loc=Asia/Shanghai`，Alpine 没有 zoneinfo；构建命令加 `-tags timetzdata`，把时区数据编进二进制，不依赖未锁定版本的运行时包。
+
 BASE-02（2026-10-13）：本地编排使用上表镜像，不新增 Go 依赖。Kafka 4.3.1 单节点必须把 offsets、transaction state、share coordinator 的副本数和 min ISR 设为 1，否则 broker 按默认值 3 拒绝启动；这是锁定镜像的兼容约束，不是新组件。宿主机只发布 `127.0.0.1:9094`，容器网络使用 `kafka:9092`。`CLUSTER_ID` 固定为 `ZyizIAN2R0ad6PqH5Ne0Gw`，避免数据卷复用时因 ID 变化无法启动。日志保留 168 小时，对齐 NFR-CAP。MySQL 额外固定 `utf8mb4`，与设计稿字符集一致。Jaeger 2.22 使用镜像默认 all-in-one；健康检查访问容器内 13133，不映射到宿主机。应用容器在 OPS-01 之前用已锁定的 `alpine:3.22.1` 占位，不构建空 `main`。`deploy/compose.sh` 把 project directory 设为仓库根，是为了不让 Compose 自动读取 `deploy/.env`；因此 bind mount 相对仓库根，而不是 compose 文件所在目录。
 
 BASE-01（2026-10-13）：根据本机实际安装版本，将本表 Go 本机版本从 1.27.1 更正为 1.27.2；模块语言版本仍按需求锁定为 `go 1.27.0`。
@@ -79,7 +81,7 @@ BASE-01（2026-10-13）：根据本机实际安装版本，将本表 Go 本机�
 - sonic v1.15.0（hertz/kitex 默认拉取的版本）在 Go 1.27 上打印 `sonic/ast only supports go1.20~1.26` 并回退到 `encoding/json`；升级到 v1.15.4 后告警消失。
 - 上表全部 Go 依赖在同一模块中 `go build ./... && go vet ./...` 通过，未出现版本降级或冲突。
 - 仍有一条 `dynamicgo only support amd64 && go1.17~go1.24` 告警。dynamicgo 只用于 Kitex 泛化调用，本项目不使用，可以忽略。
-- 设计稿 DDL `docs/schema/schema_draft.sql` 已在 `mysql:8.4.11` 容器中执行通过，详见 `docs/database.md`。
+- 设计稿 DDL 已拆成 `migrations/` 并删除。`make migrate` 在 compose 的 `mysql:8.4.11` 上 up、down、再 up 成功，详见 `docs/database.md` §5。
 
 未验证项（第 1 周验证）：franz-go 与 Kafka 4.3.1 的实际收发、Hertz/Kitex OTel 中间件的链路串联、testcontainers 在 CI 外环境的启动耗时。
 
@@ -202,8 +204,9 @@ BASE-01（2026-10-13）：根据本机实际安装版本，将本表 Go 本机�
 ### D16 数据库迁移
 
 - 决策：golang-migrate，迁移文件位于 `migrations/<schema>/NNNNNN_<name>.up.sql` / `.down.sql`；docker-compose 中用一次性容器 `migrate/migrate:v4.20.1` 在服务启动前执行。集成测试复用同一批迁移文件。
-- 第 1 周把 `docs/schema/schema_draft.sql` 拆分为各 schema 的 `000001_init.up.sql`，之后删除草稿，以迁移文件为唯一来源。
-- 两个账户分片共用同一套迁移文件（`migrations/account/`），迁移容器对每个分片 DSN 各执行一次。
+- 第 1 周已把设计稿拆成 `migrations/<服务>/000001_init.up.sql` 与 `.down.sql`，并删除草稿。迁移文件是唯一来源。
+- 两个账户分片共用 `migrations/account/`，迁移容器对每个分片 DSN 各执行一次。建库和最小权限账号由 `cmd/bootstrap` 在迁移前执行，不写进迁移文件：golang-migrate 要求目标库已经存在。
+- `down` 使用 CLI 的 `down -all`。不带 `-all` 时镜像会在非交互环境等待确认并失败。
 
 ### D17 账户分片（2026-10-12）
 

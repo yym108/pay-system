@@ -8,11 +8,12 @@ same_service_file="service/account/handler/base01_same_service.go"
 pkg_violation="pkg/base01_verify/base01_service_import.go"
 account_dependency="service/account/base01_verify/base01_dependency.go"
 payment_dependency="service/payment/base01_verify/base01_dependency.go"
+internal_violation="pkg/base03_verify/internal_import.go"
 output="$(mktemp)"
 
 cleanup() {
-	rm -f "$time_violation" "$cross_violation" "$same_service_file" "$pkg_violation" "$account_dependency" "$payment_dependency" "$output"
-	rmdir pkg/base01_verify service/account/base01_verify service/payment/base01_verify 2>/dev/null || true
+	rm -f "$time_violation" "$cross_violation" "$same_service_file" "$pkg_violation" "$account_dependency" "$payment_dependency" "$internal_violation" "$output"
+	rmdir pkg/base01_verify pkg/base03_verify service/account/base01_verify service/payment/base01_verify 2>/dev/null || true
 	rmdir pkg service/account/handler service/account service/payment/handler service/payment/biz service/payment 2>/dev/null || true
 }
 trap cleanup EXIT HUP INT TERM
@@ -103,3 +104,24 @@ if ! grep -q "service/account/base01_verify" "$output"; then
 	exit 1
 fi
 echo "golangci-lint rejected pkg import of service"
+
+mkdir -p pkg/base03_verify
+cat > "$internal_violation" <<'EOF'
+package base03_verify
+
+import seed "github.com/yym108/pay-system/internal/seed"
+
+var _ = seed.CipherVersion
+EOF
+
+if golangci-lint run ./pkg/base03_verify >"$output" 2>&1; then
+	echo "expected pkg import of internal to be rejected" >&2
+	cat "$output" >&2
+	exit 1
+fi
+if ! grep -q "internal/seed" "$output"; then
+	echo "internal import rejection did not identify internal/seed" >&2
+	cat "$output" >&2
+	exit 1
+fi
+echo "golangci-lint rejected pkg import of internal"

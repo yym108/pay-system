@@ -110,6 +110,15 @@ linters:
           deny:
             - pkg: github.com/yym108/pay-system/service/
               desc: 该命令不直接装配 service
+        no_internal:
+          files:
+            - "**/service/**/*.go"
+            - "**/gateway/**/*.go"
+            - "**/job/**/*.go"
+            - "**/pkg/**/*.go"
+          deny:
+            - pkg: github.com/yym108/pay-system/internal/
+              desc: internal 只给 bootstrap、seed、迁移和测试使用
     forbidigo:
       forbid:
         - pattern: time\.Now

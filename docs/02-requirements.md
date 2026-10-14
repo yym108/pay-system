@@ -178,6 +178,8 @@ pay-system/
   idl/            base.thrift account.thrift payment.thrift recon.thrift
   kitex_gen/      生成代码，入库
   cmd/            gateway payment account recon channel-mock merchant-demo paycli
+                  bootstrap seed（初始化工具，不进 make build）
+  internal/       bootstrap/ dbmigrate/ dbschema/ seed/
   gateway/        handler/ middleware/
   service/
     account/      handler/ biz/ dal/ consumer/
@@ -196,6 +198,7 @@ pay-system/
 - `handler` 只做协议转换和参数校验；`biz` 承载业务规则、状态机和事务编排；`dal` 只写 SQL。
 - `biz` 依赖 `dal` 的接口，不依赖具体实现，便于单测替换。
 - 服务之间只能通过 `kitex_gen` 和事件结构交互，禁止 import 其他服务的 `service/<x>/...` 包（golangci-lint `depguard` 检查）。
+- `make build` 只构建树中第一行列出的 7 个业务程序。`cmd/bootstrap`、`cmd/seed` 是运维/初始化工具，不进入这 7 个二进制，只经 `deploy/Dockerfile` 构建。`internal/` 只给 bootstrap、seed、迁移和测试使用，不被 `service/`、`gateway/`、`job/` 引用；`pkg/` 同样不得引用。`depguard` 拦截这些 import。
 - 事务中禁止调用 RPC、HTTP、MQ。
 
 核心服务的包内划分（2026-10-13 确认，来源 `docs/07-module-plan.md` §4）：
@@ -334,7 +337,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 |---|---|---|---|---|---|
 | BASE-01 | 工程骨架与构建 | P0 | M1 | — | DONE |
 | BASE-02 | 本地环境编排 | P0 | M1 | BASE-01 | DONE |
-| BASE-03 | 数据库迁移与种子数据 | P0 | M1 | BASE-02 | TODO |
+| BASE-03 | 数据库迁移与种子数据 | P0 | M1 | BASE-02 | DONE |
 | BASE-04 | 金额工具 | P0 | M1 | BASE-01 | TODO |
 | BASE-05 | ID 生成 | P0 | M1 | BASE-01 | TODO |
 | BASE-06 | 错误码 | P0 | M1 | BASE-01 | TODO |
@@ -517,11 +520,19 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
    - 压测种子 `make seed-load`：额外创建 `M200000`–`M200099` 共 100 个商户（两个分片各 50 个），由 `scripts/load-fund.sh` 通过真实支付链路为每个商户入账，供退款和转账压测使用。
    - 商户密钥使用 `.env` 中的演示明文，经 BASE-14 加密后写入。
 
+口径澄清（2026-10-14）：不改业务规则、资金流向、接口、表结构、错误码，也不改 §3 依赖列。`app_secret_cipher` 保持 NOT NULL。
+
+- 密钥：BASE-14 属于 M3，不是本功能点依赖，本功能点不实现 `pkg/secretbox`。种子按 BASE-14 已写明的算法与密文格式（AES-256-GCM，`version(1B) + nonce(12B) + ciphertext + tag`，version 取值 1，主密钥 `SECRET_MASTER_KEY`）用标准库加密后写入。明文格式为 `DEMO_APP_SECRET_FORMAT`（默认 `demo_secret_%s_0123456789ab`，`%s` 为商户号），因此 `M100001` 的明文与 `docs/05-api.md` §3.7 测试向量一致。重复执行不覆盖已有密文（nonce 随机，覆盖会让密文变化）。BASE-14 实现时必须能解密这些种子密文，不得另起格式。
+- 压测入账：`make seed-load` 在本功能点只幂等创建 `M200000`–`M200099` 及其所属分片的零余额结算账户，费率 0。不写分录、不写非零余额（不变量 3）。`scripts/load-fund.sh` 不在本功能点实现；真实支付链路尚未存在，入账留给 QA-02。本功能点不调用、不伪造该脚本。
+- 启动范围：替换 profile `apps` 中 `migrate` / `seed` 的命令，使 `make migrate`、`make seed` 可单独执行。不把 profile `apps` 并入默认 `make up`（应用容器仍等 OPS-01 的 `/healthz`）。A1 仍由 BASE-02、BASE-03、OPS-01 共同完成。
+- 开户：ACC-01 的 `OpenAccount` 尚不存在。种子直接插入账户行（余额与冻结均为 0，不写分录），余额方向和透支标志按 §2.5.1 由账户类型决定。`docs/06-flows.md` 中“开户只由 seed 调用、不对运营开放”仍是目标态，本功能点不改图。账户号用确定性的 `AC` + 19 位数字，保证重复执行命中同一行，而不是每次新开账户。商户显示名是 `演示商户` 或 `压测商户` 加商户号；`app_id` 按约定 §2.3 取 `app_` + 商户号小写。`notify_url` 留空，不发明通知地址。
+- 账号口令：`svc_account`、`svc_payment` 的口令从已有 `ACCOUNT_DB_DSN_*`、`MYSQL_DSN` 解析，不另设重复配置。`svc_recon`、`svc_channel_mock`、`migrator` 的口令是新增配置，见约定 §8。bootstrap 会删除并重建这五个账号，使授权保持在规则 3 的范围内。
+
 验收：
 
-- [ ] `make migrate` 在空库上执行成功，两个账户分片的表结构一致；`down` 后再次 `up` 成功。
-- [ ] `make seed` 连续执行两次，账户和商户数量不变；每个商户的结算账户只出现在所属分片。
-- [ ] 用 `svc_recon` 账号向 `pay_payment`、`pay_account_0` 写入被拒绝。
+- [x] `make migrate` 在空库上执行成功，两个账户分片的表结构一致；`down` 后再次 `up` 成功。
+- [x] `make seed` 连续执行两次，账户和商户数量不变；每个商户的结算账户只出现在所属分片。
+- [x] 用 `svc_recon` 账号向 `pay_payment`、`pay_account_0` 写入被拒绝。
 
 #### BASE-04 金额工具（pkg/money）
 
@@ -2610,3 +2621,5 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 | 2026-10-13 | v3.0 | §0.2 新增第 6 条：功能点代码提交后在 `docs/reports/` 出具自包含报告，模板见 `.opencode/skills/pay-feature-dev/report-template.md`；流程只增加收尾步骤，不改业务规则 |
 | 2026-10-13 | v3.0 | v3.0 确认为开发基线；§2.3 补充 account、payment 的包内划分，明确转账协调者放在 payment（来源 `docs/07-module-plan.md`）；Q1 关闭，module path 定为 `github.com/yym108/pay-system` |
 | 2026-10-13 | v3.0 | BASE-02 口径澄清：`make up` 的 healthy 范围是 mysql、redis、kafka、prometheus、jaeger，外加 `kafka-init` 退出码 0。应用容器与 migrate/seed 放在 profile `apps` 占位，不启动；健康检查仍属 OPS-01，迁移与种子仍属 BASE-03。不改业务规则、资金流向、接口、表结构、错误码和 §3 依赖。A1 仍由 BASE-02、BASE-03、OPS-01 共同完成。NFR-DEP-01 补上同一范围说明。验收补上 `make up-lite` 与 topic 分区/副本，二者原来只写在规则里 |
+| 2026-10-14 | v3.0 | BASE-03 口径澄清：种子按 BASE-14 已写明的密文格式用标准库加密，不实现 `pkg/secretbox`、不把 BASE-14 加入依赖、不把 `app_secret_cipher` 改为可空。`make seed-load` 只创建 100 个零余额压测商户，`scripts/load-fund.sh` 留给 QA-02，不直接写余额。`make migrate` / `make seed` 不并入默认 `make up`。不改资金规则、接口、表结构和错误码 |
+| 2026-10-14 | v3.0 | BASE-03 补充 §2.3：`cmd/bootstrap`、`cmd/seed` 与 `internal/` 是初始化工具，不进 `make build` 的 7 个二进制，只经 Dockerfile 构建。`service/`、`gateway/`、`job/`、`pkg/` 不得 import `internal/`。运行镜像不安装 tzdata，时区数据用 `-tags timetzdata` 编进二进制。不改资金规则、接口、表结构和错误码 |
