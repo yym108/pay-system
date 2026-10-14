@@ -7,3 +7,4 @@
 | BASE-01 | 工程骨架与构建 | 基础设施 | `85f103d` | 2026-10-13 | [BASE-01-skeleton.md](BASE-01-skeleton.md) |
 | BASE-02 | 本地环境编排 | 基础设施 | `df47a17` | 2026-10-14 | [BASE-02-local-env.md](BASE-02-local-env.md) |
 | BASE-03 | 数据库迁移与种子数据 | 基础设施 | `28061d8` | 2026-10-14 | [BASE-03-migrate-seed.md](BASE-03-migrate-seed.md) |
+| BASE-05 | ID 生成 | 基础设施 | `795cc26` | 2026-10-14 | [BASE-05-idgen.md](BASE-05-idgen.md) |
