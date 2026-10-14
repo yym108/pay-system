@@ -338,7 +338,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | BASE-01 | 工程骨架与构建 | P0 | M1 | — | DONE |
 | BASE-02 | 本地环境编排 | P0 | M1 | BASE-01 | DONE |
 | BASE-03 | 数据库迁移与种子数据 | P0 | M1 | BASE-02 | DONE |
-| BASE-04 | 金额工具 | P0 | M1 | BASE-01 | TODO |
+| BASE-04 | 金额工具 | P0 | M1 | BASE-01 | DONE |
 | BASE-05 | ID 生成 | P0 | M1 | BASE-01 | TODO |
 | BASE-06 | 错误码 | P0 | M1 | BASE-01 | TODO |
 | BASE-07 | 时钟 | P0 | M1 | BASE-01 | TODO |
@@ -541,16 +541,18 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 规则：
 
 1. 金额类型 `type Amount int64`，单位分；只提供整数运算。
-2. `Add`、`Sub` 检测溢出，溢出返回错误而不是回绕。
-3. 手续费 `Fee(amount, rateBP) = (amount × rateBP + 5000) / 10000`，四舍五入；`rateBP` 范围 0–10000。
-4. 校验函数 `ValidatePayAmount`：1 ≤ amount ≤ 10,000,000。
+2. `Add`、`Sub` 检测溢出，溢出返回错误而不是回绕。正溢出和负溢出都要检测，包括 `MinInt64` 参与的运算。
+3. 手续费 `Fee(amount, rateBP) = (amount × rateBP + 5000) / 10000`，四舍五入；`rateBP` 范围 0–10000。`rateBP` 越界返回错误，不计算。`amount` 为负且 `rateBP` 不为 0 时返回错误（加 5000 的四舍五入只对非负金额成立）；`rateBP` 为 0 时结果为 0。
+4. 校验函数 `ValidatePayAmount`：1 ≤ amount ≤ 10,000,000。越界返回错误。
 5. `String()` 输出“元”格式（如 `100.00`），只用于日志和展示。
+
+口径澄清（2026-10-14）：`Add`、`Sub`、`Fee`、`ValidatePayAmount` 的失败都是 `pkg/money` 的普通 `error`，不新增错误码，也不提前实现 `pkg/errno`（BASE-06）。不改资金流向、接口、表结构和已登记错误码。
 
 验收（单元测试向量）：
 
-- [ ] `Fee(1, 60) = 0`；`Fee(10000, 60) = 60`；`Fee(8333, 60) = 50`；`Fee(1, 5000) = 1`（0.5 进位）；`Fee(10000000, 10000) = 10000000`；`Fee(x, 0) = 0`。
-- [ ] `Add(MaxInt64, 1)` 返回溢出错误。
-- [ ] `Amount(1).String() = "0.01"`，`Amount(-150).String() = "-1.50"`。
+- [x] `Fee(1, 60) = 0`；`Fee(10000, 60) = 60`；`Fee(8333, 60) = 50`；`Fee(1, 5000) = 1`（0.5 进位）；`Fee(10000000, 10000) = 10000000`；`Fee(x, 0) = 0`。
+- [x] `Add(MaxInt64, 1)` 返回溢出错误。
+- [x] `Amount(1).String() = "0.01"`，`Amount(-150).String() = "-1.50"`。
 
 #### BASE-05 ID 生成（pkg/idgen）
 
@@ -2623,3 +2625,4 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 | 2026-10-13 | v3.0 | BASE-02 口径澄清：`make up` 的 healthy 范围是 mysql、redis、kafka、prometheus、jaeger，外加 `kafka-init` 退出码 0。应用容器与 migrate/seed 放在 profile `apps` 占位，不启动；健康检查仍属 OPS-01，迁移与种子仍属 BASE-03。不改业务规则、资金流向、接口、表结构、错误码和 §3 依赖。A1 仍由 BASE-02、BASE-03、OPS-01 共同完成。NFR-DEP-01 补上同一范围说明。验收补上 `make up-lite` 与 topic 分区/副本，二者原来只写在规则里 |
 | 2026-10-14 | v3.0 | BASE-03 口径澄清：种子按 BASE-14 已写明的密文格式用标准库加密，不实现 `pkg/secretbox`、不把 BASE-14 加入依赖、不把 `app_secret_cipher` 改为可空。`make seed-load` 只创建 100 个零余额压测商户，`scripts/load-fund.sh` 留给 QA-02，不直接写余额。`make migrate` / `make seed` 不并入默认 `make up`。不改资金规则、接口、表结构和错误码 |
 | 2026-10-14 | v3.0 | BASE-03 补充 §2.3：`cmd/bootstrap`、`cmd/seed` 与 `internal/` 是初始化工具，不进 `make build` 的 7 个二进制，只经 Dockerfile 构建。`service/`、`gateway/`、`job/`、`pkg/` 不得 import `internal/`。运行镜像不安装 tzdata，时区数据用 `-tags timetzdata` 编进二进制。不改资金规则、接口、表结构和错误码 |
+| 2026-10-14 | v3.0 | BASE-04 口径澄清：`Add` / `Sub` 的溢出含负数与 `MinInt64`，返回普通 error 而不回绕。`Fee` 的 `rateBP` 越界返回错误；负金额且费率非 0 返回错误（四舍五入加数只对非负金额成立），费率为 0 时结果为 0。`ValidatePayAmount` 越界返回错误。不新增错误码，不实现 `pkg/errno`。不改资金流向、接口和表结构 |

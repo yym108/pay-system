@@ -1,6 +1,6 @@
 # pay-system 全局约定与编号规范
 
-> 版本：v2.1　最后修改：2026-10-13
+> 版本：v2.4　最后修改：2026-10-14
 > 适用：全部代码、文档、配置。需求见 `docs/02-requirements.md`，接口见 `docs/05-api.md`，表结构见 `docs/database.md`。
 
 本文集中登记会被多个功能点共用的约定：编号体系、业务单号、金额、时间、错误码、幂等与事务规则、命名规范、配置项。新增或修改这些内容时，先改本文并在 §9 记录，再改代码。
@@ -117,7 +117,7 @@
 1. 类型 `money.Amount`（`int64`），单位分；数据库 `BIGINT`；IDL `i64`；JSON 整数。全链路禁止浮点数。
 2. 币种只有 `CNY`，字段保留以便扩展。
 3. 单笔支付、退款、转账 1–10,000,000 分（0.01–100,000.00 元）。
-4. 手续费：`fee = (amount × rate_bp + 5000) / 10000`，四舍五入到分；费率单位为基点（1bp = 0.01%），范围 0–10000。下单时计算并固化到 `fee_amount`。
+4. 手续费：`fee = (amount × rate_bp + 5000) / 10000`，四舍五入到分；费率单位为基点（1bp = 0.01%），范围 0–10000。下单时计算并固化到 `fee_amount`。`money.Fee` 在费率越界时返回错误；金额为负且费率不为 0 时返回错误，费率为 0 时结果为 0。
 5. 退款不退手续费；转账不收手续费。
 6. 只在日志和展示中转换为“元”字符串，转换函数为 `Amount.String()`。
 
@@ -339,3 +339,4 @@
 | v2.1 | 2026-10-13 | BASE-01 建立根目录单模块工程；Go 版本、依赖和 Docker 镜像版本按 `docs/01-tech-decisions.md` §2 锁定 |
 | v2.2 | 2026-10-13 | BASE-02 增加 compose 专用配置 `MYSQL_ROOT_PASSWORD`；`deploy/.env.example` 写入本表演示值 |
 | v2.3 | 2026-10-14 | BASE-03 增加 `MYSQL_RECON_PASSWORD`、`MYSQL_CHANNEL_MOCK_PASSWORD`、`MYSQL_MIGRATOR_PASSWORD`、`DEMO_APP_SECRET_FORMAT`、`SEED_LOAD`；`MYSQL_HOST` / `MYSQL_PORT` 只给 bootstrap，不进 `.env.example`。`svc_account`、`svc_payment` 口令仍从已有 DSN 解析 |
+| v2.4 | 2026-10-14 | BASE-04：§3 明确 `money.Fee` 在费率越界、以及负金额且费率非 0 时返回错误，费率为 0 时结果为 0。不新增错误码 |
