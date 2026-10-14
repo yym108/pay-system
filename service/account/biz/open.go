@@ -1,6 +1,7 @@
-// Package biz 实现账户开户和账户查询。
+// Package biz 实现账户开户、账户查询和通用记账。
 //
-// OpenAccount 供种子和测试调用。GetAccount 只读。二者都不监听 RPC。
+// OpenAccount 供种子和测试调用。GetAccount 只读。Post 在调用方事务里记账。
+// 三者都不监听 RPC。
 package biz
 
 import (
@@ -64,7 +65,7 @@ type Account struct {
 	SubCount         int
 }
 
-// Service 开户和查询。pools、发号器和子账户个数都由调用方注入，本类型不读环境变量。
+// Service 开户、查询和记账。pools、发号器和子账户个数都由调用方注入，本类型不读环境变量。
 type Service struct {
 	pools    *dal.Pools
 	ids      *idgen.Generator

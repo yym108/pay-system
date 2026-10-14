@@ -352,7 +352,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | ACC-13 | 账户分片路由 | P0 | M1 | BASE-08、BASE-09 | DONE |
 | ACC-01 | 开户 | P0 | M1 | ACC-13、BASE-05 | DONE |
 | ACC-02 | 账户查询 | P0 | M1 | ACC-01 | DONE |
-| ACC-03 | 通用记账 | P0 | M1 | ACC-01、BASE-04 | TODO |
+| ACC-03 | 通用记账 | P0 | M1 | ACC-01、BASE-04 | DONE |
 | ACC-04 | 冻结 | P0 | M2 | ACC-03 | TODO |
 | ACC-05 | 解冻（含空回滚、防悬挂） | P0 | M2 | ACC-04 | TODO |
 | ACC-06 | 确认扣款 | P0 | M2 | ACC-04 | TODO |
@@ -856,35 +856,41 @@ DSN 只按驱动的文本规则装配，不连接数据库：
 
 规则：
 
-1. 校验：分录 2–10 条；每条 `amount > 0`；借方合计 = 贷方合计；同一凭证中同一账户只能出现一次；所有账户存在、状态 ACTIVE、币种一致、属于同一分片；`biz_type` 属于 §2.5.2。Post 在调用方传入的分片事务中执行，以便与冻结单、分支状态的变更同事务提交。
-2. 事务步骤：
+1. 校验（失败即 `40003`，不发号、不 INSERT）：分录 2–10 条；每条 `amount > 0`；借方合计 = 贷方合计（`money.Add` 分别累加，溢出视为 `40003`）；同一凭证中同一账户只能出现一次；`direction` 只能是 `DEBIT` 或 `CREDIT`；`biz_type` 只能是 `PAY`、`REFUND`、`TRANSFER`、`TRANSFER_OUT`、`TRANSFER_IN`（`REVERSAL` 由 ACC-08 写入，本方法没有 `reversal_of`，直接拒绝）；`biz_no` 非空且不超过 64 个码点；`memo` 不超过 255 个码点，可以为空。Post 在调用方传入的分片事务中执行，以便与冻结单、分支状态的变更同事务提交。Post 自己不 `BEGIN`、`COMMIT`、`ROLLBACK`，也不调用 `dbx.WithTx`。
+2. 事务步骤（都在调用方事务内；下面的回滚是调用方收到错误后做的，不是 Post 自己回滚）：
 
    ```
-   BEGIN
-     INSERT ledger_txn(txn_no, biz_type, biz_no, amount, entry_count, ...)
-       -- 1062：ROLLBACK，按 (biz_type, biz_no) 读取已有凭证，返回 duplicated = true
-     按 account_id 升序，对每个账户：
-       UPDATE account SET balance = balance ± ?, version = version + 1
-        WHERE id = ? AND status = 'ACTIVE'
-          [AND (allow_overdraft = 1 OR balance - frozen_amount >= ?)]   -- 仅余额减少时
-       -- 影响行数 0：重新读取区分 40005（非 ACTIVE）和 40002（余额不足），ROLLBACK
-       SELECT balance FROM account WHERE id = ?        -- 已持有行锁，读到本事务更新后的值
-     批量 INSERT ledger_entry(... balance_after ...)
-   COMMIT
+   -- 调用方已经 BEGIN。纯校验通过后、拿行锁之前 NewNo(ctx, "TX")
+   INSERT ledger_txn(txn_no, biz_type, biz_no, amount, entry_count, ...)
+     -- 1062：不回滚调用方事务。用 dbx.IsDuplicate 判断后，同一事务按 (biz_type, biz_no)
+     -- 读取已有凭证，返回 duplicated = true 和已有 txn_no。参数不同也返回第一次的结果。
+     -- SELECT 不到则 10003
+   按 account_id 升序 SELECT ... FOR UPDATE
+     -- 本连接没有该行（含只存在于另一分片的账户）→ 40003，不是 40001
+     -- 币种不是 CNY → 40003；status 不是 ACTIVE → 40005
+   按 account_id 升序，对每个账户：
+     UPDATE account SET balance = balance ± ?, version = version + 1
+      WHERE id = ? AND status = 'ACTIVE'
+        [AND balance - frozen_amount >= ?]   -- 仅余额减少且 allow_overdraft = 0
+     -- 影响行数 0：重新读取，区分 40005（非 ACTIVE）、40002（余额不足），查不到则 40003
+     -- 然后把错误返回给调用方，由调用方回滚
+     SELECT balance FROM account WHERE id = ?        -- 已持有行锁，读到本事务更新后的值
+   批量 INSERT ledger_entry(... balance_after ...)
+   -- 成功由调用方 COMMIT。Post 不提交
    ```
 
 3. 重复请求即使参数不同，也返回首次结果；参数是否一致由调用方的业务层保证（支付、退款的 biz_no 唯一对应金额）。
 
-异常：校验失败 → `40003`；账户不存在 → `40001`；非 ACTIVE → `40005`；余额不足 → `40002`。任一异常都不写入任何数据。
+异常：校验失败、本连接查不到 `account_id`（含只存在于另一分片的账户）、币种不是 CNY，或 `biz_type` 为 `REVERSAL` 及其他非法值 → `40003`（对外英文仍是 `unbalanced entries`）；非 ACTIVE → `40005`；余额不足 → `40002`。Post 不回滚。调用方收到错误后回滚，凭证、分录、余额都不会留下。1062 不是失败，不回滚调用方事务。`GetAccount` 仍然用 `40001` 表示账户不存在。
 
 验收：
 
-- [ ] 借贷不平、金额为 0、分录只有 1 条，均返回 `40003`。
-- [ ] 同一 `(biz_type, biz_no)` 并发提交 100 次，只生成 1 张凭证，余额只变动 1 次，其余 99 次 `duplicated = true`。
-- [ ] 1000 个 goroutine 对余额 500 的商户账户各扣 1（贷方为平台账户），恰好 500 次成功、500 次 `40002`，最终余额 0，分录数 = 成功次数 × 2（A2）。
-- [ ] 分录中混入另一分片的账户返回 `40003`。
-- [ ] 余额不足时，凭证、分录、余额均无变化。
-- [ ] 每条分录的 `balance_after` 与按顺序回放的结果一致。
+- [x] 借贷不平、金额为 0、分录只有 1 条，均返回 `40003`。
+- [x] 同一 `(biz_type, biz_no)` 并发提交 100 次，只生成 1 张凭证，余额只变动 1 次，其余 99 次 `duplicated = true`。
+- [x] 1000 个 goroutine 对余额 500 的商户账户各扣 1（贷方为平台账户），恰好 500 次成功、500 次 `40002`，最终余额 0，分录数 = 成功次数 × 2（A2）。
+- [x] 分录中混入另一分片的账户返回 `40003`。
+- [x] 余额不足时，凭证、分录、余额均无变化。
+- [x] 每条分录的 `balance_after` 与按顺序回放的结果一致。
 
 #### ACC-04 冻结
 
@@ -2702,3 +2708,4 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 | 2026-10-15 | v3.0 | ACC-13 口径澄清：`/readyz` 本功能点只提供处理函数，监听、Kafka、SIGTERM 仍属 OPS-01；`Of` 不读环境变量，分片数写死 2；`Sub` 的 N 由调用方传入。不改变资金规则、接口、表结构和错误码 |
 | 2026-10-15 | v3.0 | ACC-01 口径澄清：幂等命中 `uk_owner_account_type_sub` 时返回已有行，不把余额和冻结金额改回 0。PLATFORM 账户 `shard` 只能是 0 或 1；`CHANNEL_RECEIVABLE` 的 `owner_id` 非空且不超过 32 个字符；`FEE_INCOME` 与 `TRANSIT` 的 `owner_id` 必须是 `PLATFORM`。账户号与另一组 owner 冲突时返回已有的 `10003`，对外消息不带 SQL。不改变资金规则、接口、表结构和错误码语义 |
 | 2026-10-15 | v3.0 | ACC-02 口径澄清：平台渠道应收汇总的验收不调用记账。入账本身是 ACC-03，本测试用 SQL 写入余额，不改变资金规则 |
+| 2026-10-15 | v3.0 | ACC-03 口径澄清：需求草稿里的 ROLLBACK 是调用方事务边界，Post 不执行 BEGIN、COMMIT、ROLLBACK，也不调用 `dbx.WithTx`。1062 不回滚调用方事务（MySQL 1062 不会中止 InnoDB 事务），用 `dbx.IsDuplicate` 判断后，在同一事务按 `(biz_type, biz_no)` SELECT 已有凭证，返回 `duplicated = true` 和已有 `txn_no`；即使这次的金额或分录和第一次不同，也返回第一次的结果，不插分录、不改余额；SELECT 不到则 `10003`。本连接查不到的 `account_id`（含只存在于另一分片的账户）返回 `40003`，不是 `40001`，因为本连接分不清“没有这个 id”和“在另一个库”；`GetAccount` 仍然用 `40001`。`biz_type = REVERSAL` 返回 `40003`，不写任何行：Post 没有 `reversal_of` 参数，表约束 `ck_ledger_txn_reversal` 要求 REVERSAL 必须有 `reversal_of`，冲正是 ACC-08，本功能点不加参数、不改表。不新增错误码，`40003` 对外英文仍是 `unbalanced entries`。验收 A2 的 1000 goroutine 不用 `dbx.WithTx`：`WithTx` 把单次事务限制在 3 秒，且包含等行锁的时间，1000 个等待者会被取消，成功和 `40002` 就数不成 500/500。该用例用 `BeginTxx(READ COMMITTED)`，父 ctx 至少 60 秒，Post 返回 nil 才 Commit，否则 Rollback。生产路径的单次记账仍由其他测试用 `dbx.WithTx` 覆盖。不改资金规则、接口、表结构和错误码 |

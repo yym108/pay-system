@@ -1,6 +1,6 @@
 # pay-system 流程图（状态机、泳道图、控制流图）
 
-> 版本：v2.0　最后修改：2026-10-12　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线
+> 版本：v2.2　最后修改：2026-10-15　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13
 > 依据：`docs/02-requirements.md` v3.0、`docs/03-conventions.md` v2.0、`docs/01-tech-decisions.md` D17–D21；`docs/05-api.md`、`docs/database.md` 尚未同步 v3.0，冲突处以需求文档为准
 > 用途：以图的形式确认全部功能性设计。图是需求的视图，规则冲突时以需求文档为准；需求变更后同步修改对应的图。
 
@@ -1373,29 +1373,35 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    S(["Post(tx, biz_type, biz_no, memo, entries)<br/>account 进程内方法，在调用方的分片事务中执行"]) --> V{"分录 2–10 条，每条 amount > 0<br/>借贷平衡，同一账户只出现一次<br/>biz_type 属于 §2.5.2"}
-    V -->|"否"| E40003["40003"]:::err
-    V -->|"是"| AC{"所有账户存在"}
-    AC -->|"否"| E40001["40001"]:::err
-    AC -->|"是"| SH{"全部属于当前分片、币种一致"}
-    SH -->|"否"| E40003b["40003"]:::err
-    SH -->|"是"| I["INSERT ledger_txn"]
-    I -->|"1062"| DUP(["ROLLBACK，读取已有凭证<br/>返回 duplicated = true"]):::ok
-    I -->|"成功"| LK["按 account_id 升序逐个<br/>UPDATE account SET balance ± amount, version + 1<br/>WHERE status = ACTIVE<br/>[AND (allow_overdraft = 1 OR 可用余额 ≥ amount)]（仅余额减少时）"]
-    LK -->|"影响 0 行"| RD{"重新读取账户"}
-    RD -->|"非 ACTIVE"| E40005["ROLLBACK，40005"]:::err
-    RD -->|"余额不足"| E40002["ROLLBACK，40002"]:::err
-    LK -->|"影响 1 行"| BA["SELECT balance（已持有行锁）作为 balance_after"]
+    S(["Post(tx, biz_type, biz_no, memo, entries)<br/>account 进程内方法，在调用方的分片事务中执行<br/>Post 自己不 BEGIN / COMMIT / ROLLBACK"]) --> V{"分录 2–10 条，每条 amount > 0<br/>借贷平衡，同一账户只出现一次<br/>direction 为 DEBIT / CREDIT<br/>biz_type 为 PAY、REFUND、TRANSFER、<br/>TRANSFER_OUT、TRANSFER_IN<br/>biz_no、memo 长度合法"}
+    V -->|"否，含 REVERSAL"| E40003["40003，不发号、不 INSERT"]:::err
+    V -->|"是"| ID["NewNo(TX)，在行锁之前"]
+    ID --> I["INSERT ledger_txn"]
+    I -->|"1062"| SEL{"同一事务 SELECT (biz_type, biz_no)"}
+    SEL -->|"查到"| DUP(["不回滚调用方事务<br/>返回已有 txn_no，duplicated = true<br/>不插分录、不改余额"]):::ok
+    SEL -->|"查不到"| E10003["10003，调用方回滚<br/>不插分录、不改余额"]:::err
+    I -->|"成功"| LK["按 account_id 升序<br/>SELECT ... FOR UPDATE"]
+    LK -->|"本连接缺行，含另一分片"| E40003b["40003，调用方回滚"]:::err
+    LK -->|"都在"| ST{"币种均为 CNY 且 status = ACTIVE"}
+    ST -->|"币种不是"| E40003c["40003，调用方回滚"]:::err
+    ST -->|"非 ACTIVE"| E40005["40005，调用方回滚"]:::err
+    ST -->|"是"| BAL{"减少余额且 allow_overdraft = 0 时<br/>可用余额足够"}
+    BAL -->|"否"| E40002["40002，调用方回滚"]:::err
+    BAL -->|"是"| UP["按 id 升序 UPDATE balance ± amount, version + 1<br/>WHERE status = ACTIVE<br/>减少且不允许透支时再加可用余额条件"]
+    UP -->|"影响 0 行"| RD{"重新读取"}
+    RD -->|"非 ACTIVE"| E40005b["40005，调用方回滚"]:::err
+    RD -->|"余额不足"| E40002b["40002，调用方回滚"]:::err
+    RD -->|"查不到"| E40003d["40003，调用方回滚"]:::err
+    UP -->|"影响 1 行"| BA["仍持有行锁时 SELECT balance 作为 balance_after"]
     BA --> EN["批量 INSERT ledger_entry"]
     EN --> OK(["返回 txn_no、duplicated = false<br/>由调用方提交事务"]):::ok
-    RV(["Reverse(shard, txn_no, reason)（P1）"]) -.-> RVN["在指定分片生成 REVERSAL 凭证，分录方向相反、金额相同<br/>同一凭证只能冲正一次，冲正 REVERSAL 返回 10001<br/>同样受可用余额约束"]
-    RVN -.-> V
+    RV(["Reverse（ACC-08，P1，本方法不做）"]) -.-> RVN["REVERSAL 在 Post 的校验里返回 40003<br/>冲正要另带 reversal_of，不从这里进入"]
     classDef ok fill:#e3f6e8,stroke:#2e7d32
     classDef err fill:#fde4e4,stroke:#c62828
     classDef fault fill:#fff4d6,stroke:#b8860b
 ```
 
-任一异常都不写入任何数据。重复请求即使参数不同也返回首次结果，参数一致性由调用方业务层保证。
+Post 不提交也不回滚。校验失败不发号、不写行。其后的失败把错误交给调用方回滚，因此提交之后不会留下凭证、分录或余额变化。1062 时 Post 仍不回滚：同一事务按 `(biz_type, biz_no)` 查到凭证就返回第一次的 `txn_no`，`duplicated = true`；查不到返回 `10003`，由调用方回滚。重复请求即使参数不同也返回首次结果，参数一致性由调用方业务层保证。`REVERSAL` 不在本方法写入（ACC-08）。
 
 #### CF-14 冻结
 
@@ -2151,3 +2157,5 @@ R1–R14 来自 v1.x 绘图，已落入需求文档 v2.2；R15 起来自 v2.0 �
 | 2026-10-12 | v1.0 | 初版：SM-01~09、SL-01~10、CF-01~31，记录绘图中发现的问题 R1–R14 |
 | 2026-10-12 | v1.1 | R1–R14 落入需求文档 v2.2 后同步更新相关图 |
 | 2026-10-12 | v2.0 | 对齐需求文档 v3.0。新增：SM-10 转账单、SM-11 转账分支、SL-11~15（同分片转账、跨分片成功、跨分片取消、崩溃恢复、批量记账）、CF-32~37（TransferLocal、收款方分支、创建转账单、TCC 协调、恢复任务、批量记账）。修改：覆盖矩阵；SM-04、SM-06、SM-07、SM-08；SL-01、SL-05~10（分片路由、子账户、冻结以商户号为入参、固定间隔通知、管理接口精简）；CF-01（进程内商户限流、去掉全局限流与降级）、CF-03、CF-09~11、CF-13~17（Post 进程内、ACC-10 分片与在途守恒）、CF-19~21、CF-26~29（差错只有 PENDING / RESOLVED / IGNORED、REPLAY、TRANSFER_MISMATCH）、§4.10。砍掉：CF-30（REC-07）、CF-27 中的跨日处理（REC-04）。§5 增加状态列，R10 部分、R11 整体被 v3.0 取代；新增 R15、R16（待确认） |
+| 2026-10-15 | v2.1 | ACC-03：CF-13 改为本连接缺账户（含另一分片）返回 40003，不再画 40001；1062 在同一事务读取已有凭证，Post 不回滚；`txn_no` 在行锁之前生成；`REVERSAL` 在校验阶段拒绝，不进入记账。不改资金流向 |
+| 2026-10-15 | v2.2 | ACC-03：CF-13 的 1062 补上同一事务按 `(biz_type, biz_no)` SELECT 不到时返回 10003、由调用方回滚的出口。不改资金流向 |

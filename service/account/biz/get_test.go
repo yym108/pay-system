@@ -424,6 +424,12 @@ func (f fakeScan) Scan(dest ...any) error {
 				return errors.New("want int64")
 			}
 			*p = n
+		case *uint64:
+			n, ok := f.vals[i].(uint64)
+			if !ok {
+				return errors.New("want uint64")
+			}
+			*p = n
 		default:
 			return errors.New("dest type")
 		}

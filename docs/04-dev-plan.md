@@ -38,7 +38,7 @@
 - [x] ACC-13 分片路由
 - [x] ACC-01 开户
 - [x] ACC-02 账户查询
-- [ ] ACC-03 通用记账
+- [x] ACC-03 通用记账
 
 交付：`make up && make migrate && make test-integration` 跑通；两个分片表结构一致；ACC-03 并发扣款用例通过（A2 的主体）。
 
