@@ -351,7 +351,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | BASE-14 | 密钥加密 | P0 | M3 | BASE-01 | TODO |
 | ACC-13 | 账户分片路由 | P0 | M1 | BASE-08、BASE-09 | DONE |
 | ACC-01 | 开户 | P0 | M1 | ACC-13、BASE-05 | DONE |
-| ACC-02 | 账户查询 | P0 | M1 | ACC-01 | TODO |
+| ACC-02 | 账户查询 | P0 | M1 | ACC-01 | DONE |
 | ACC-03 | 通用记账 | P0 | M1 | ACC-01、BASE-04 | TODO |
 | ACC-04 | 冻结 | P0 | M2 | ACC-03 | TODO |
 | ACC-05 | 解冻（含空回滚、防悬挂） | P0 | M2 | ACC-04 | TODO |
@@ -845,8 +845,8 @@ DSN 只按驱动的文本规则装配，不连接数据库：
 
 验收：
 
-- [ ] 冻结 300 后查询，`available_amount` 减少 300、`balance` 不变。
-- [ ] 支付入账若干笔后，平台渠道应收的汇总余额等于各子账户余额之和。
+- [x] 冻结 300 后查询，`available_amount` 减少 300、`balance` 不变。
+- [x] 支付入账若干笔后，平台渠道应收的汇总余额等于各子账户余额之和。
 
 #### ACC-03 通用记账
 
@@ -2701,3 +2701,4 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 | 2026-10-15 | v3.0 | BASE-12：IDL 为 `idl/base.thrift`、`idl/account.thrift`、`idl/payment.thrift`、`idl/recon.thrift`。记账 `Post` 是 account 进程内方法，不进入 RPC，IDL 里没有这个方法。一致性检查命令是 `make gen && git diff --exit-code kitex_gen`。不改资金流向、接口、表结构和错误码 |
 | 2026-10-15 | v3.0 | ACC-13 口径澄清：`/readyz` 本功能点只提供处理函数，监听、Kafka、SIGTERM 仍属 OPS-01；`Of` 不读环境变量，分片数写死 2；`Sub` 的 N 由调用方传入。不改变资金规则、接口、表结构和错误码 |
 | 2026-10-15 | v3.0 | ACC-01 口径澄清：幂等命中 `uk_owner_account_type_sub` 时返回已有行，不把余额和冻结金额改回 0。PLATFORM 账户 `shard` 只能是 0 或 1；`CHANNEL_RECEIVABLE` 的 `owner_id` 非空且不超过 32 个字符；`FEE_INCOME` 与 `TRANSIT` 的 `owner_id` 必须是 `PLATFORM`。账户号与另一组 owner 冲突时返回已有的 `10003`，对外消息不带 SQL。不改变资金规则、接口、表结构和错误码语义 |
+| 2026-10-15 | v3.0 | ACC-02 口径澄清：平台渠道应收汇总的验收不调用记账。入账本身是 ACC-03，本测试用 SQL 写入余额，不改变资金规则 |

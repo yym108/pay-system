@@ -1,6 +1,6 @@
-// Package biz 实现账户开户。
+// Package biz 实现账户开户和账户查询。
 //
-// OpenAccount 是进程内方法，供种子和测试调用，不监听 RPC。
+// OpenAccount 供种子和测试调用。GetAccount 只读。二者都不监听 RPC。
 package biz
 
 import (
@@ -44,9 +44,10 @@ var errDifferentOwner = errors.New("account number conflicts with a different ow
 
 var errNilTx = errors.New("biz: nil tx")
 
-// Account 是开户结果。金额单位是分。
-// Shard 来自调用参数，account 表没有这一列。
+// Account 是开户或查询结果。金额单位是分。
+// Shard 来自开户参数或商户路由，account 表没有这一列。
 // AvailableAmount 是 Balance 减 FrozenAmount，不是单独存的列。
+// SubCount 是参与本次结果的行数。开户返回 0。
 type Account struct {
 	AccountNo        string
 	OwnerType        string
@@ -60,16 +61,19 @@ type Account struct {
 	FrozenAmount     money.Amount
 	AvailableAmount  money.Amount
 	Status           string
+	SubCount         int
 }
 
-// Service 开户。pools、发号器和子账户个数都由调用方注入，本类型不读环境变量。
+// Service 开户和查询。pools、发号器和子账户个数都由调用方注入，本类型不读环境变量。
 type Service struct {
 	pools    *dal.Pools
 	ids      *idgen.Generator
 	subCount int
+	// query 非空时替换分片读取，只给同包测试使用。生产路径保持 nil。
+	query accountLister
 }
 
-// New 构造开户服务。subCount 是平台子账户个数，调用方传入。
+// New 构造账户服务。subCount 是平台子账户个数，调用方传入。查询不使用它做截断。
 func New(pools *dal.Pools, ids *idgen.Generator, subCount int) *Service {
 	return &Service{pools: pools, ids: ids, subCount: subCount}
 }
