@@ -57,6 +57,8 @@ type Schema struct {
 	Name string
 	DB   *sqlx.DB
 
+	// dsn 含口令。只通过 DSN 交给需要再开池的测试，不写进日志。
+	dsn   string
 	admin *sqlx.DB
 }
 
@@ -164,6 +166,7 @@ func (m *MySQL) OpenSchema(ctx context.Context, service string) (*Schema, error)
 		return nil, err
 	}
 	rememberText(dsn)
+	schema.dsn = dsn
 	db, err := dbx.Open(ctx, dsn, dbx.PoolConfig{})
 	if err != nil {
 		return nil, errors.New("testkit: open schema: " + redactString(err.Error()))
@@ -171,6 +174,15 @@ func (m *MySQL) OpenSchema(ctx context.Context, service string) (*Schema, error)
 	schema.DB = db
 	ok = true
 	return schema, nil
+}
+
+// DSN 返回这个随机库的连接串。返回值含口令。
+// 只给测试再调用 dbx.Open。不要写入日志、错误文本或测试输出。
+func (s *Schema) DSN() string {
+	if s == nil {
+		return ""
+	}
+	return s.dsn
 }
 
 // Close 关闭连接池并删除这个随机库。

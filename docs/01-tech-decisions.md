@@ -66,6 +66,8 @@ BASE-08（2026-10-15）：新增直接依赖 `github.com/jmoiron/sqlx v1.4.0`，
 
 BASE-12（2026-10-15）：`make gen` 钉死为 `go run github.com/cloudwego/kitex/tool/cmd/kitex@v0.16.3 -module github.com/yym108/pay-system -gen-path kitex_gen`，对 `idl/account.thrift`、`idl/payment.thrift`、`idl/recon.thrift` 各跑一次。不传 `-service`，因此不生成 `main` 和 `handler`，也不监听端口。kitex 命令不写入 `go.mod`，避免生成器成为业务代码的直接依赖。生成文件头是 thriftgo 0.4.5 与 Kitex v0.16.3。`kitex_gen` 直接 import `github.com/cloudwego/gopkg/protocol/thrift`，`go mod tidy` 把 `github.com/cloudwego/gopkg v0.2.0` 列为直接依赖；这一版就是 kitex v0.16.3 的 `go.mod` 所要求的版本。kitex client/server 再带入间接依赖，其中包括 `github.com/cloudwego/thriftgo v0.4.5`、`github.com/cloudwego/netpoll`、`github.com/cloudwego/frugal`，以及 `golang.org/x/sync v0.22.0`（只被 kitex 的 singleflight 用到）。版本表里给业务 errgroup 预留的 `golang.org/x/sync v0.23.0` 没有改，也没有为了对齐表而抬高这次的间接版本。`gopkg.in/yaml.v3 v3.0.1` 被这条链路重新带成间接依赖，旁边仍是 BASE-10 的 `go.yaml.in/yaml/v3 v3.0.5`。kitex 仍是 v0.16.3，sonic 仍是 v1.15.4。本表已有版本号没有改。
 
+ACC-13（2026-10-15）：`pkg/shard` 调用 `Span.SetAttributes` 时 import `go.opentelemetry.io/otel/attribute`。这个包属于已锁定的模块 `go.opentelemetry.io/otel v1.47.0`。`go mod tidy` 只把该模块从间接依赖改成直接依赖，版本不变。没有加入 `otel/sdk` 或 exporter，也没有升级 `otel/trace`。不 import `go.opentelemetry.io/otel` 根包。
+
 ### 2.2 容器镜像（均已确认提供 arm64 与 amd64）
 
 | 组件 | 镜像 |
@@ -234,6 +236,7 @@ BASE-01（2026-10-13）：根据本机实际安装版本，将本表 Go 本机�
 - 决策：
   - account 数据拆为两个 schema `pay_account_0`、`pay_account_1`，表结构完全相同。本地放在同一个 MySQL 实例，但 account 进程为每个分片维护独立的连接池（`ACCOUNT_DB_DSN_0`、`ACCOUNT_DB_DSN_1`），代码中不允许跨分片事务，因此换成两个实例不需要改代码。
   - 路由键是商户号：`shard = 商户号数字部分 % ACCOUNT_SHARD_COUNT`（`M100001` → 1，`M100002` → 0）。路由函数放在 `pkg/shard`，payment 与 account 共用，payment 在转账单上记录双方分片。
+  - 补充（2026-10-15，ACC-13）：`Of` 不读取 `ACCOUNT_SHARD_COUNT`，模数写死为 2。`Sub(bizNo, n)` 的 n 由调用方传入，对应 `PLATFORM_SUB_ACCOUNTS`。配置仍只允许分片数为 2。
   - 平台账户（渠道应收、手续费收入、转账在途）在每个分片各开一套。支付入账、退款扣款只涉及“商户 + 本分片平台账户”，始终是单分片本地事务。
   - 分片数固定为 2，不做在线扩容（扩容需要迁移数据，超出范围）。
 - 理由：

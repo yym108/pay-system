@@ -35,7 +35,8 @@
 - [x] BASE-08 数据库访问
 - [x] BASE-11 集成测试基座
 - [x] BASE-12 IDL 与代码生成
-- [ ] ACC-13 分片路由 → ACC-01 开户 → ACC-02 账户查询 → ACC-03 通用记账
+- [x] ACC-13 分片路由
+- [ ] ACC-01 开户 → ACC-02 账户查询 → ACC-03 通用记账
 
 交付：`make up && make migrate && make test-integration` 跑通；两个分片表结构一致；ACC-03 并发扣款用例通过（A2 的主体）。
 

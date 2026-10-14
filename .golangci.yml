@@ -116,6 +116,8 @@ linters:
             - "**/gateway/**/*.go"
             - "**/job/**/*.go"
             - "**/pkg/**/*.go"
+            # 集成测试要使用 internal/testkit。生产代码仍然禁止。
+            - "!**/*_test.go"
           deny:
             - pkg: github.com/yym108/pay-system/internal/
               desc: internal 只给 bootstrap、seed、迁移和测试使用

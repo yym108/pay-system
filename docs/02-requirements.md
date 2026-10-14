@@ -349,7 +349,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | BASE-12 | IDL 与代码生成 | P0 | M1 | BASE-01 | DONE |
 | BASE-13 | 签名库 | P0 | M3 | BASE-01 | TODO |
 | BASE-14 | 密钥加密 | P0 | M3 | BASE-01 | TODO |
-| ACC-13 | 账户分片路由 | P0 | M1 | BASE-08、BASE-09 | TODO |
+| ACC-13 | 账户分片路由 | P0 | M1 | BASE-08、BASE-09 | DONE |
 | ACC-01 | 开户 | P0 | M1 | ACC-13、BASE-05 | TODO |
 | ACC-02 | 账户查询 | P0 | M1 | ACC-01 | TODO |
 | ACC-03 | 通用记账 | P0 | M1 | ACC-01、BASE-04 | TODO |
@@ -797,17 +797,17 @@ DSN 只按驱动的文本规则装配，不连接数据库：
 
 规则：
 
-1. `pkg/shard.Of(merchant_id) int`：取商户号 `M` 之后的数字部分对 `ACCOUNT_SHARD_COUNT`（固定 2）取模；格式非法返回错误（调用方返回 `10001`）。payment 与 account 共用该函数。
-2. account 启动时为每个分片建立连接池（`ACCOUNT_DB_DSN_0`、`ACCOUNT_DB_DSN_1`），任一分片不可达时 `/readyz` 返回 503。
-3. `dal` 层提供 `ShardDB(shard)`，`biz` 层通过 `pkg/dbx.WithTx(ctx, ShardDB(s), fn)` 开启事务；事务函数只能拿到一个分片的 `*sqlx.Tx`，从类型上避免跨分片事务（不变量 10）。
-4. 平台子账户选择：`pkg/shard.Sub(biz_no) = crc32.ChecksumIEEE(biz_no) % PLATFORM_SUB_ACCOUNTS`；`PLATFORM_SUB_ACCOUNTS` 只允许调大（调大后重新执行种子开出新子账户），调小会让高位子账户不再被选中，但余额仍计入汇总。
-5. 日志、trace 带 `shard` 属性。
+1. `pkg/shard.Of(merchantID) (int, error)`：商户号必须是 `M` + 恰好 6 位数字。取数字部分对固定的 2 取模。不读 `ACCOUNT_SHARD_COUNT`，也不读其他环境变量。格式非法返回错误，本包不返回业务码；调用方以后映射为 `10001`。payment 与 account 共用该函数。
+2. `dal.Open` 用 `dbx.Open` 为 `ACCOUNT_DB_DSN_0`、`ACCOUNT_DB_DSN_1` 各建一个连接池。第二个失败时关闭第一个。启动时 `dbx.Open` 会 Ping，连不上则 Open 失败。运行中某个池被 `Close` 后，`/readyz` 返回 503；两个池都在 1 秒内 Ping 成功则 200。本功能点只提供这个处理函数，不监听端口，不实现 `/healthz`、Kafka 检查、SIGTERM 和 metrics。这些仍属 OPS-01。
+3. `dal.ShardDB(shard)` 只接受 0 和 1。业务通过 `pkg/dbx.WithTx(ctx, ShardDB(s), fn)` 开启事务；`fn` 只能拿到这一个池的 `*sqlx.Tx`，从类型上避免跨分片事务（不变量 10）。
+4. 平台子账户选择：`pkg/shard.Sub(bizNo, n) (int, error)` = `crc32.ChecksumIEEE([]byte(bizNo)) % uint32(n)`。`n` 由调用方传入（配置 `PLATFORM_SUB_ACCOUNTS`，默认 8）。`n < 1` 或 `bizNo` 为空返回错误。只允许把 `PLATFORM_SUB_ACCOUNTS` 调大是运维规则，函数不记录历史值。调大后重新执行种子开出新子账户；调小会让高位子账户不再被选中，但余额仍计入汇总。
+5. 日志、trace 带整数属性 `shard`。
 
 验收：
 
-- [ ] `M100001`、`M100003` 路由到 1，`M100002` 路由到 0；非法商户号返回错误。
-- [ ] 同一 `biz_no` 多次选择的子账户相同；10 万个随机 `biz_no` 在 8 个子账户上的分布偏差 < 5%。
-- [ ] 停掉一个分片的连接（测试中关闭连接池）后 `/readyz` 返回 503。
+- [x] `M100001`、`M100003` 路由到 1，`M100002` 路由到 0；非法商户号返回错误。
+- [x] 同一 `biz_no` 多次选择的子账户相同；10 万个随机 `biz_no` 在 8 个子账户上的分布偏差 < 5%。
+- [x] 停掉一个分片的连接（测试中关闭连接池）后 `/readyz` 返回 503。
 
 #### ACC-01 开户
 
@@ -2699,3 +2699,4 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 | 2026-10-15 | v3.0 | BASE-08 口径澄清：`WithTx` 对 1213、1205 含第一次在内最多执行 4 次，三次重试前等待 10ms、20ms、40ms（约定 §6.3 的 3 是重试次数）。事务总时长默认 3 秒，用父 ctx 派生，先到期的生效，超时取消并回滚。`IsDuplicate` 只识别 1062，不实现 `errno.ErrDuplicate`，不注册 `30002`。`MustAffectOne` 不映射业务码。不改资金流向、接口、表结构和已有错误码 |
 | 2026-10-15 | v3.0 | BASE-11 口径澄清：每个测试包使用带随机后缀的独立 schema，结束时只删除这个库，不碰 `pay_account_0` 这类固定库名。设置 `TEST_MYSQL_DSN` 时复用已有 MySQL，不启动容器。2 秒的计时从 MySQL 已经接受连接开始，包括建库和执行调用方指定的 `migrations/<服务>`，不包括拉取镜像和容器第一次启动。Kafka 助手使用已锁定的 `apache/kafka:4.3.1`，不在每个 MySQL 测试里启动。不改资金流向、接口、表结构和错误码 |
 | 2026-10-15 | v3.0 | BASE-12：IDL 为 `idl/base.thrift`、`idl/account.thrift`、`idl/payment.thrift`、`idl/recon.thrift`。记账 `Post` 是 account 进程内方法，不进入 RPC，IDL 里没有这个方法。一致性检查命令是 `make gen && git diff --exit-code kitex_gen`。不改资金流向、接口、表结构和错误码 |
+| 2026-10-15 | v3.0 | ACC-13 口径澄清：`/readyz` 本功能点只提供处理函数，监听、Kafka、SIGTERM 仍属 OPS-01；`Of` 不读环境变量，分片数写死 2；`Sub` 的 N 由调用方传入。不改变资金规则、接口、表结构和错误码 |
