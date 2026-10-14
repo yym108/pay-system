@@ -9,3 +9,4 @@
 | BASE-03 | 数据库迁移与种子数据 | 基础设施 | `28061d8` | 2026-10-14 | [BASE-03-migrate-seed.md](BASE-03-migrate-seed.md) |
 | BASE-04 | 金额工具 | 基础设施 | `5df4729` | 2026-10-14 | [BASE-04-money.md](BASE-04-money.md) |
 | BASE-05 | ID 生成 | 基础设施 | `795cc26` | 2026-10-14 | [BASE-05-idgen.md](BASE-05-idgen.md) |
+| BASE-06 | 错误码 | 基础设施 | `d81c442` | 2026-10-14 | [BASE-06-errno.md](BASE-06-errno.md) |
