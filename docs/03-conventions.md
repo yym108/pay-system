@@ -1,6 +1,6 @@
 # pay-system 全局约定与编号规范
 
-> 版本：v2.5　最后修改：2026-10-14
+> 版本：v2.6　最后修改：2026-10-14
 > 适用：全部代码、文档、配置。需求见 `docs/02-requirements.md`，接口见 `docs/05-api.md`，表结构见 `docs/database.md`。
 
 本文集中登记会被多个功能点共用的约定：编号体系、业务单号、金额、时间、错误码、幂等与事务规则、命名规范、配置项。新增或修改这些内容时，先改本文并在 §9 记录，再改代码。
@@ -168,35 +168,35 @@ docker-compose 给将来会跑业务进程的 6 个占位服务写死互不相�
 
 ### 5.2 错误码表
 
-| 码 | 名称 | HTTP | 商户可重试 | 说明 |
-|---|---|---|---|---|
-| 0 | `OK` | 200 | — | 成功 |
-| 10001 | `INVALID_PARAM` | 400（请求体超过 64KB 时 413） | 否 | 参数缺失、格式或范围错误 |
-| 10002 | `NOT_FOUND` | 404 | 否 | 资源不存在（非订单类，如对账批次、差错） |
-| 10003 | `INTERNAL` | 500 | 是，参数不变 | 内部错误；对外只返回通用消息和 request_id |
-| 10004 | `UNAVAILABLE` | 503 | 是，参数不变 | 依赖暂时不可用 |
-| 10005 | `RATE_LIMITED` | 429 | 是，按 `Retry-After` | 请求过于频繁 |
-| 10006 | `IDEMPOTENT_CONFLICT` | 409 | 否 | 幂等键相同但参数不同 |
-| 20001 | `SIGN_INVALID` | 401 | 否 | 签名错误、缺少签名头、nonce 格式错误 |
-| 20002 | `TIMESTAMP_EXPIRED` | 401 | 是，新时间戳重签 | 时间戳超出 ±300 秒 |
-| 20003 | `NONCE_REPLAYED` | 401 | 是，新 nonce 重签 | nonce 重复 |
-| 20004 | `MERCHANT_INVALID` | 401 | 否 | 商户不存在或已停用 |
-| 20005 | `ADMIN_UNAUTHORIZED` | 401 | 否 | 管理 Token 无效 |
-| 30001 | `ORDER_NOT_FOUND` | 404 | 否 | 支付单、退款单或转账单不存在，含访问其他商户的单据（收款方查询转账单同样返回此码） |
-| 30002 | — | — | — | 保留不用（v1 需求中曾表示幂等冲突，已由 10006 替代） |
-| 30003 | `ORDER_STATUS_CONFLICT` | 409 | 否 | 当前状态不允许该操作 |
-| 30004 | `ORDER_EXPIRED` | 409 | 否 | 订单已过期或剩余时间不足 30 秒 |
-| 30005 | `REFUND_EXCEEDED` | 409 | 否 | 累计退款金额超过订单金额 |
-| 30006 | `CHANNEL_REJECTED` | 200 | 否 | 渠道明确拒绝，支付单或退款单已置为 FAILED；`data` 携带该单据 |
-| 30007 | `CHANNEL_UNSUPPORTED` | 400 | 否 | 不支持的支付渠道 |
-| 30008 | `PAYEE_INVALID` | 400 | 否 | 收款商户不存在、已停用或与付款商户相同 |
-| 40001 | `ACCOUNT_NOT_FOUND` | 404 | 否 | 账户不存在 |
-| 40002 | `INSUFFICIENT_BALANCE` | 409 | 否 | 可用余额不足；退款、转账失败时 `data` 携带该单据 |
-| 40003 | `UNBALANCED_ENTRIES` | 400 | 否 | 借贷不平或分录非法，含分录跨分片（仅内部） |
-| 40004 | `FREEZE_STATUS_CONFLICT` | 409 | 否 | 冻结单或转账分支的状态不允许该操作，含墓碑拦截迟到的 Try（仅内部 RPC） |
-| 40005 | `ACCOUNT_INACTIVE` | 409 | 否 | 账户非 ACTIVE |
-| 50001 | `CHANNEL_SIGN_INVALID` | 401 | — | 渠道签名错误（仅回调入口） |
-| 50002 | `CHANNEL_AMOUNT_MISMATCH` | 400 | — | 渠道金额与本地不一致（仅内部） |
+| 码 | 名称 | HTTP | 对外 msg | 商户可重试 | 说明 |
+|---|---|---|---|---|---|
+| 0 | `OK` | 200 | `ok` | — | 成功 |
+| 10001 | `INVALID_PARAM` | 400（请求体超过 64KB 时 413） | `invalid parameter` | 否 | 参数缺失、格式或范围错误 |
+| 10002 | `NOT_FOUND` | 404 | `not found` | 否 | 资源不存在（非订单类，如对账批次、差错） |
+| 10003 | `INTERNAL` | 500 | `internal error` | 是，参数不变 | 内部错误；对外只返回通用消息和 request_id |
+| 10004 | `UNAVAILABLE` | 503 | `service unavailable` | 是，参数不变 | 依赖暂时不可用 |
+| 10005 | `RATE_LIMITED` | 429 | `rate limited` | 是，按 `Retry-After` | 请求过于频繁 |
+| 10006 | `IDEMPOTENT_CONFLICT` | 409 | `idempotent conflict` | 否 | 幂等键相同但参数不同 |
+| 20001 | `SIGN_INVALID` | 401 | `invalid signature` | 否 | 签名错误、缺少签名头、nonce 格式错误 |
+| 20002 | `TIMESTAMP_EXPIRED` | 401 | `timestamp expired` | 是，新时间戳重签 | 时间戳超出 ±300 秒 |
+| 20003 | `NONCE_REPLAYED` | 401 | `nonce replayed` | 是，新 nonce 重签 | nonce 重复 |
+| 20004 | `MERCHANT_INVALID` | 401 | `invalid merchant` | 否 | 商户不存在或已停用 |
+| 20005 | `ADMIN_UNAUTHORIZED` | 401 | `admin unauthorized` | 否 | 管理 Token 无效 |
+| 30001 | `ORDER_NOT_FOUND` | 404 | `order not found` | 否 | 支付单、退款单或转账单不存在，含访问其他商户的单据（收款方查询转账单同样返回此码） |
+| 30002 | — | — | — | — | 保留不用（v1 需求中曾表示幂等冲突，已由 10006 替代）。`pkg/errno` 不定义可用错误 |
+| 30003 | `ORDER_STATUS_CONFLICT` | 409 | `order status conflict` | 否 | 当前状态不允许该操作 |
+| 30004 | `ORDER_EXPIRED` | 409 | `order expired` | 否 | 订单已过期或剩余时间不足 30 秒 |
+| 30005 | `REFUND_EXCEEDED` | 409 | `refund exceeded` | 否 | 累计退款金额超过订单金额 |
+| 30006 | `CHANNEL_REJECTED` | 200 | `channel rejected` | 否 | 渠道明确拒绝，支付单或退款单已置为 FAILED；`data` 携带该单据 |
+| 30007 | `CHANNEL_UNSUPPORTED` | 400 | `unsupported channel` | 否 | 不支持的支付渠道 |
+| 30008 | `PAYEE_INVALID` | 400 | `invalid payee` | 否 | 收款商户不存在、已停用或与付款商户相同 |
+| 40001 | `ACCOUNT_NOT_FOUND` | 404 | `account not found` | 否 | 账户不存在 |
+| 40002 | `INSUFFICIENT_BALANCE` | 409 | `insufficient balance` | 否 | 可用余额不足；退款、转账失败时 `data` 携带该单据 |
+| 40003 | `UNBALANCED_ENTRIES` | 400 | `unbalanced entries` | 否 | 借贷不平或分录非法，含分录跨分片（仅内部） |
+| 40004 | `FREEZE_STATUS_CONFLICT` | 409 | `freeze status conflict` | 否 | 冻结单或转账分支的状态不允许该操作，含墓碑拦截迟到的 Try（仅内部 RPC） |
+| 40005 | `ACCOUNT_INACTIVE` | 409 | `account inactive` | 否 | 账户非 ACTIVE |
+| 50001 | `CHANNEL_SIGN_INVALID` | 401 | `invalid channel signature` | — | 渠道签名错误（仅回调入口） |
+| 50002 | `CHANNEL_AMOUNT_MISMATCH` | 400 | `channel amount mismatch` | — | 渠道金额与本地不一致（仅内部） |
 
 “商户可重试”中的重试都必须使用新的 nonce 和时间戳重新签名，业务参数保持不变，依靠幂等键保证不会重复下单或重复退款。
 
@@ -204,11 +204,16 @@ docker-compose 给将来会跑业务进程的 6 个占位服务写死互不相�
 
 1. 错误码统一定义在 `pkg/errno`，业务代码不得直接写数字。
 2. Kitex 通过 `BizStatusError` 传递业务码；网关按本表映射 HTTP 状态码。
-3. 未识别的错误一律转为 `10003`，对外消息固定为“internal error”，原始错误只进日志。
+3. 未识别的错误一律转为 `10003`，对外消息固定为 `internal error`，原始错误只进日志，不进入对外 `msg`。
 4. 鉴权失败不说明具体原因（例如不区分“密钥错误”和“body 被篡改”）。
 5. 错误响应的 `data` 默认为空；本表“说明”中注明携带对象的，`data` 为该对象。Kitex 的 `BizStatusError` 不能同时返回响应体，因此携带对象的错误（如退款、转账的 `40002`，`30006`）在 RPC 层按正常响应返回：响应结构体带 `biz_code` 字段（`idl/base.thrift`）和该对象，网关看到非 0 的 `biz_code` 时按本表映射 HTTP 状态码并把对象放入 `data`。其他错误一律用 `BizStatusError`。
 6. 新增错误码：先登记到本表（码段内递增，不复用），再在 `pkg/errno` 实现，并同步 `docs/05-api.md` 中受影响的接口。
 7. `pkg/idgen` 在时钟回拨超过 5ms 时返回 `ErrClockRollback`，不携带数字码，也不包装 Kitex 错误。业务调用方将该错误映射为已有的 `10004`，不新增错误码。
+8. `nil` 表示成功，对应码 `0`、对外 msg `ok`、HTTP 200，不转为 `10003`。`pkg/errno` 把 nil 映射成非 nil 的成功值只供填写响应；调用方不要把它当作失败返回。
+9. `Error()` 只返回本表的对外 msg，不拼接底层错误。底层错误只能通过 `Unwrap` 取得。未知错误和包装后的 `10003`，对外文本都是 `internal error`。
+10. `10001` 在 `pkg/errno` 中的 `HTTPStatus` 是 400。请求体超过 64KB 时返回 413 由网关实现（接口 §2.1），本包不另造错误码。
+11. `30002` 保留，不在 `pkg/errno` 中定义为可用错误。未登记码按第 3 条转为 `10003`，对外不用对端或底层文本。
+12. Kitex 服务端把 `pkg/errno` 转成 `BizStatusError`，只携带本表的码和对外 msg。客户端用 `kerrors.FromBizStatusError` 还原为同一个码；对端 msg 与本表不一致时，对外仍用本表 msg。
 
 ### 5.4 失败原因码（fail_code）
 
@@ -364,3 +369,4 @@ docker-compose 给将来会跑业务进程的 6 个占位服务写死互不相�
 | v2.3 | 2026-10-14 | BASE-03 增加 `MYSQL_RECON_PASSWORD`、`MYSQL_CHANNEL_MOCK_PASSWORD`、`MYSQL_MIGRATOR_PASSWORD`、`DEMO_APP_SECRET_FORMAT`、`SEED_LOAD`；`MYSQL_HOST` / `MYSQL_PORT` 只给 bootstrap，不进 `.env.example`。`svc_account`、`svc_payment` 口令仍从已有 DSN 解析 |
 | v2.4 | 2026-10-14 | BASE-04：§3 明确 `money.Fee` 在费率越界、以及负金额且费率非 0 时返回错误，费率为 0 时结果为 0。不新增错误码 |
 | v2.5 | 2026-10-14 | BASE-05：§2.1 写明发号入口、回拨和 41 位溢出的口径；§2.5 登记 compose 中 6 个业务进程的 `WORKER_ID` 字面量；§5.3 写明 `ErrClockRollback` 由调用方映射为已有的 `10004`，不新增错误码；§8 的 `WORKER_ID` 说明指向 §2.5 |
+| v2.6 | 2026-10-14 | BASE-06：§5.2 增加“对外 msg”列，登记除 `30002` 外各码的稳定英文；§5.3 写明 nil 为成功码 `0` / `ok` / HTTP 200，`Error()` 只返回对外 msg、原因只在 `Unwrap`，`10001` 的 `HTTPStatus` 为 400（413 由网关返回，不另造码），`30002` 与未登记码不是可用错误、按 `10003` 处理，Kitex 用 `BizStatusError` 传码和对外 msg、客户端用 `FromBizStatusError` 还原且不采用与本表不一致的对端文本。不改码的数字、HTTP 语义和可重试含义，不实现 `ErrDuplicate` |

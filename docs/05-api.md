@@ -2,9 +2,9 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 2.0.0 |
+| 文档版本 | 2.0.1 |
 | API 版本 | v1（路径前缀 `/v1`） |
-| 最后修改 | 2026-10-12 |
+| 最后修改 | 2026-10-14 |
 | 状态 | 设计基线，实现须与本文一致 |
 
 关联文档：需求 `docs/02-requirements.md`（各接口的业务规则以功能点为准）、约定 `docs/03-conventions.md`（错误码、单号、时间格式）。
@@ -36,6 +36,7 @@
 | 1.0.0 | 2026-10-12 | 初版。从需求文档 v2.0 §6 拆出，补全字段约束、错误码、示例、管理接口与模拟渠道接口参数、RPC 与事件定义 | 全部 | — |
 | 1.1.0 | 2026-10-12 | 按 `docs/06-flows.md` R1–R14：请求体超限返回 413 / `10001`；关单渠道已失败返回 `30003` + FAILED 订单；创建退款新增 `30006`（渠道拒绝）、冻结冲突明确为 code 0；渠道回调未知单号与金额不一致返回 200；差错处理与事件重放规则补充；模拟渠道退款先幂等再校验额度 | §2.1、§4.3、§4.5、§7、§8、§9.5、§10.2 | GW-01、GW-06、PAY-06、REF-02、REC-07、MQ-05、CH-04 |
 | 2.0.0 | 2026-10-12 | 随需求 v3.0。新增：创建转账 `POST /v1/transfers`（§4.8）、查询转账（§4.9）、`Transfer` 对象（§5.3）、通知与事件 `transfer.succeeded` / `transfer.failed`（只通知付款商户，account 不消费）；错误码 `30008`，`40002` 扩展到转账；AccountService 新增 `TransferLocal`、`TransferInTry` / `TransferInConfirm` / `TransferInCancel`，PaymentService 新增 `CreateTransfer`、`QueryTransfer`。修改：account RPC 改为以商户号为入参、由 account 路由分片（`Freeze` / `ReleaseFreeze` / `ConfirmFreeze` / `GetAccount` / `CheckBalance`），`OpenAccount` 增加 `shard`、`sub_no`，`GetAccount` 平台账户返回两分片子账户汇总；`CheckBalance` 增加 `expect_quiescent`、失败项带 `shard`；查询余额路由到商户所属分片；商户通知改为 30 秒固定间隔共 5 次；`RunBatch` 返回批次与前 100 条差错；`ReconDiff` 状态只保留 PENDING / RESOLVED / IGNORED，新增 `TRANSFER_MISMATCH`，`handle_action` 为 REQUERY / REPLAY；§1 总览增加 RPC 列；明确商户限流为验签后的进程内令牌桶。删除：管理接口批次列表、差错列表、差错处理、同步渠道状态、流水查询；RPC `Post`（改为进程内方法）、`Transfer`、`ListEntries`、`ListBatches`、`ListDiffs`、`ResolveDiff`；§2.6 分页（已无列表接口）。商户 API 只有兼容新增，路径版本仍为 `/v1`；删除项只涉及管理 API 与内部 RPC，尚无实现与存量调用方，IDL 按本版直接生成 | §1、§2.4、§2.5、§4.7–§4.9、§5.3、§6、§8、§10、§11 | ACC-01~07、ACC-10、ACC-11、ACC-14、TRF-01~05、NTF-01、NTF-02、GW-02、GW-05、GW-07、MQ-01、MQ-05、REC-01、REC-05、REC-06、REC-08 |
+| 2.0.1 | 2026-10-14 | 澄清通用响应 `msg` 使用约定 §5.2 的稳定英文（成功 `ok`，`10003` 为 `internal error`，`40002` 为 `insufficient balance`）。不新增字段，不改路径、错误码数字和已有示例。§1 各接口的“最后修改”不变 | §2.3 | BASE-06 |
 
 ## 1. 接口总览
 
@@ -109,7 +110,7 @@
 | 字段 | 说明 |
 |---|---|
 | `code` | 业务码，`0` 成功，其他见 `docs/03-conventions.md` §5 |
-| `msg` | 简短说明，不包含内部细节 |
+| `msg` | 简短说明，不包含内部细节。取值是约定 §5.2 的对外 msg，例如成功 `ok`、`10003` 为 `internal error`、`40002` 为 `insufficient balance` |
 | `request_id` | 请求 ID，同响应头 `X-Request-Id`，排查问题时提供 |
 | `data` | 业务数据；错误时一般为空，部分错误携带当前对象（各接口中注明） |
 

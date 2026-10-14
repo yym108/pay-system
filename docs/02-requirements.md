@@ -340,7 +340,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | BASE-03 | 数据库迁移与种子数据 | P0 | M1 | BASE-02 | DONE |
 | BASE-04 | 金额工具 | P0 | M1 | BASE-01 | DONE |
 | BASE-05 | ID 生成 | P0 | M1 | BASE-01 | DONE |
-| BASE-06 | 错误码 | P0 | M1 | BASE-01 | TODO |
+| BASE-06 | 错误码 | P0 | M1 | BASE-01 | DONE |
 | BASE-07 | 时钟 | P0 | M1 | BASE-01 | TODO |
 | BASE-08 | 数据库访问与事务 | P0 | M1 | BASE-06 | TODO |
 | BASE-09 | 配置 | P0 | M1 | BASE-01 | TODO |
@@ -585,10 +585,49 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 2. 提供与 Kitex `BizStatusError` 的双向转换。
 3. 未知错误统一视为 `10003`；对外消息不包含底层错误文本。
 
+口径澄清（2026-10-14）：
+
+1. 本包定义约定 §5.2 里除 `30002` 以外的全部码。`30002` 保留不用、没有名称，代码里只注释说明跳过，不提供可用错误。未登记码（含 `30002`）和任何未知的非 nil 错误都视为 `10003`。
+2. `nil` 表示成功：码 `0`，对外 msg `ok`，HTTP 200。不要把 nil 当成 `10003`。映射函数在成功时返回非 nil 的成功值，只供填写响应，调用方不要把它当作失败再返回。
+3. 对外 `Msg` 是下表的稳定短英文，不含内部细节，与约定 §5.2 的“对外 msg”列一致。`Error()` 只返回 `Msg`。包装的底层错误只通过 `Unwrap` 取得，不拼进 `Msg` 或 `Error()`。`10003` 的对外消息固定为 `internal error`。
+4. `10001` 的 `HTTPStatus` 是 400。表里“请求体超过 64KB 时 413”是网关行为（接口 §2.1），本包不实现网关，也不另造错误码。
+5. 与 Kitex `kerrors.BizStatusError`（v0.16.3）双向转换：服务端把 errno 变成 `BizStatusError`（码 + 本表 msg）；客户端用 `kerrors.FromBizStatusError` 按码还原。对端消息与本表不一致时，对外仍用本表 msg。不生成 IDL，不起网络服务。不实现 `errno.ErrDuplicate` 和 MySQL 1062 映射（BASE-08，技术决策 D4）。
+
+| 码 | 对外 msg |
+|---|---|
+| 0 | `ok` |
+| 10001 | `invalid parameter` |
+| 10002 | `not found` |
+| 10003 | `internal error` |
+| 10004 | `service unavailable` |
+| 10005 | `rate limited` |
+| 10006 | `idempotent conflict` |
+| 20001 | `invalid signature` |
+| 20002 | `timestamp expired` |
+| 20003 | `nonce replayed` |
+| 20004 | `invalid merchant` |
+| 20005 | `admin unauthorized` |
+| 30001 | `order not found` |
+| 30003 | `order status conflict` |
+| 30004 | `order expired` |
+| 30005 | `refund exceeded` |
+| 30006 | `channel rejected` |
+| 30007 | `unsupported channel` |
+| 30008 | `invalid payee` |
+| 40001 | `account not found` |
+| 40002 | `insufficient balance` |
+| 40003 | `unbalanced entries` |
+| 40004 | `freeze status conflict` |
+| 40005 | `account inactive` |
+| 50001 | `invalid channel signature` |
+| 50002 | `channel amount mismatch` |
+
+`30002` 没有对外 msg。
+
 验收：
 
-- [ ] 包装后的错误经 `errors.Is` 能识别原错误码。
-- [ ] Kitex 服务端返回 `40002`，客户端还原为同一错误码。
+- [x] 包装后的错误经 `errors.Is` 能识别原错误码。
+- [x] Kitex 服务端返回 `40002`，客户端还原为同一错误码。
 
 #### BASE-07 时钟（pkg/clock）
 
@@ -2629,3 +2668,4 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 | 2026-10-14 | v3.0 | BASE-03 补充 §2.3：`cmd/bootstrap`、`cmd/seed` 与 `internal/` 是初始化工具，不进 `make build` 的 7 个二进制，只经 Dockerfile 构建。`service/`、`gateway/`、`job/`、`pkg/` 不得 import `internal/`。运行镜像不安装 tzdata，时区数据用 `-tags timetzdata` 编进二进制。不改资金规则、接口、表结构和错误码 |
 | 2026-10-14 | v3.0 | BASE-04 口径澄清：`Add` / `Sub` 的溢出含负数与 `MinInt64`，返回普通 error 而不回绕。`Fee` 的 `rateBP` 越界返回错误；负金额且费率非 0 返回错误（四舍五入加数只对非负金额成立），费率为 0 时结果为 0。`ValidatePayAmount` 越界返回错误。不新增错误码，不实现 `pkg/errno`。不改资金流向、接口和表结构 |
 | 2026-10-14 | v3.0 | BASE-05 口径澄清：发号入口是 `Generator.NewNo(ctx, prefix)`，`ctx` 只用于取消等待，前缀规则不变。时间早于纪元或超出 41 位时返回错误，不回绕。回拨超过 5ms 时本包返回 `ErrClockRollback`，不返回数字码、不包装 Kitex 错误；调用方以后映射为已有的 `10004`。`WorkerIDFromEnv` 只返回错误，不 `os.Exit`。不实现 `pkg/clock` 和 `pkg/errno`。不改资金流向、接口、表结构和已登记错误码 |
+| 2026-10-14 | v3.0 | BASE-06 口径澄清：`pkg/errno` 定义约定 §5.2 除 `30002` 外的全部码。`30002` 保留不用、没有名称，不提供可用错误。`nil` 是成功（码 `0`，msg `ok`，HTTP 200），不是 `10003`。未知非 nil 错误和未登记码视为 `10003`，对外消息固定 `internal error`，不含底层文本。`Error()` 只返回 `Msg`，底层错误只通过 `Unwrap` 取得。对外 msg 是稳定短英文，表见本节 BASE-06，并登记到约定 §5.2。`10001` 的 `HTTPStatus` 是 400；请求体超过 64KB 返回 413 是网关行为，本包不实现网关，也不另造码。Kitex 只用 `kerrors.BizStatusError` 双向转换，不生成 IDL。不实现 `errno.ErrDuplicate`（BASE-08）。不改资金流向、接口字段、表结构和已有码的含义 |

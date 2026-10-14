@@ -54,6 +54,8 @@
 | github.com/testcontainers/testcontainers-go（modules/mysql） | v0.44.0 | 集成测试 |
 | golangci-lint | v2.14.0 | 静态检查，按官方建议安装预编译二进制，不放进 `go.mod` |
 
+BASE-06（2026-10-14）：`go.mod` 直接依赖已锁定的 `github.com/cloudwego/kitex v0.16.3`，只为 `pkg/kerrors` 的 `BizStatusError`。不生成 IDL，不运行 kitex 命令，也不起 RPC 服务。sonic 仍显式锁定 v1.15.4，高于 kitex 自带的 v1.15.0，避免 Go 1.27 回退到 `encoding/json`。kitex 带入的间接依赖：`github.com/bytedance/gopkg` 由 v0.1.3 升到 v0.1.4，`golang.org/x/arch` 升到 v0.14.0，新增 `google.golang.org/protobuf v1.36.11` 与 `google.golang.org/genproto/googleapis/rpc v0.0.0-20260630182238-925bb5da69e7`。后一个模块被 `BizStatusError` 引用的 gRPC status 类型导入；v0.16.3 的 `go.mod` 没有单独 pin 它，`go mod tidy` 解析到这一版并写入 `go.sum`。
+
 ### 2.2 容器镜像（均已确认提供 arm64 与 amd64）
 
 | 组件 | 镜像 |
@@ -119,6 +121,7 @@ BASE-01（2026-10-13）：根据本机实际安装版本，将本表 Go 本机�
 - 约定：
   - 事务统一走 `pkg/dbx.WithTx(ctx, db, func(tx *sqlx.Tx) error)`，禁止在事务中调用 RPC 或 MQ。
   - MySQL 唯一键冲突（错误号 1062）统一转换为 `errno.ErrDuplicate`，由业务层决定是否当作幂等成功。
+- 补充（2026-10-14，BASE-06）：`errno.ErrDuplicate` 与 MySQL 1062 映射仍留给 BASE-08，本功能点不实现。`pkg/errno` 只定义约定 §5.2 的业务码（跳过保留的 `30002`），并直接依赖 kitex v0.16.3 的 `BizStatusError` 做双向转换。
   - 隔离级别统一 READ COMMITTED（DSN 设置 `transaction_isolation='READ-COMMITTED'`）。正确性依赖条件更新和唯一索引，不依赖 RR 的间隙锁；RC 可以减少间隙锁导致的死锁。这是一个面试讲解点。
 
 ### D5 自研雪花 ID
