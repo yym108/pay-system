@@ -1,0 +1,9 @@
+# BASE-02 只保证 Prometheus 能启动。应用管理端口的抓取由 OPS-03 接入。
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

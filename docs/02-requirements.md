@@ -333,7 +333,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | 编号 | 功能点 | 优先级 | 里程碑 | 依赖 | 状态 |
 |---|---|---|---|---|---|
 | BASE-01 | 工程骨架与构建 | P0 | M1 | — | DONE |
-| BASE-02 | 本地环境编排 | P0 | M1 | BASE-01 | TODO |
+| BASE-02 | 本地环境编排 | P0 | M1 | BASE-01 | DONE |
 | BASE-03 | 数据库迁移与种子数据 | P0 | M1 | BASE-02 | TODO |
 | BASE-04 | 金额工具 | P0 | M1 | BASE-01 | TODO |
 | BASE-05 | ID 生成 | P0 | M1 | BASE-01 | TODO |
@@ -463,24 +463,35 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 
 `P0 · M1 · 依赖：BASE-01`
 
-说明：`deploy/docker-compose.yml` 一条命令拉起全部依赖与服务。
+说明：`deploy/docker-compose.yml` 一条命令拉起本地基础设施。应用进程、迁移和种子的可运行内容不在本功能点交付，见下方口径澄清。
+
+口径澄清（2026-10-13）：不改业务规则、资金流向、接口、表结构、错误码，也不改 §3 依赖列。
+
+- 7 个 `cmd/*/main.go` 目前是空 `main`，进程会立即退出，不能保持 healthy。健康检查端点属于 OPS-01。
+- `migrate`、`seed` 的迁移文件与种子数据属于 BASE-03。
+- 因此本功能点的 `make up` 只启动基础设施长期容器和一次性 `kafka-init`。应用容器（gateway、payment、account、recon、channel-mock、merchant-demo）与 `migrate`、`seed` 写在 compose profile `apps` 中：声明 §2.2 端口、占位镜像和 `depends_on`，不由 `make up` / `make up-lite` 启动。占位命令以非 0 退出，避免被当成已完成。
+- BASE-03 替换 `migrate` / `seed` 的命令，OPS-01 为应用容器提供 `/healthz` 之后，再把 profile `apps` 并入默认启动。A1（QA-04 在新克隆目录执行 `make up` 后全部服务可用）仍由 BASE-02、BASE-03、OPS-01 共同完成，本功能点不关闭 A1。
+- “全部容器 healthy”在本功能点指 `make up` 实际启动的长期容器：mysql、redis、kafka、prometheus、jaeger。`kafka-init` 是一次性容器，成功标准是退出码 0，不是持续 healthy。
+- NFR-DEP-01 的 3 分钟上限按上述范围执行。不在本功能点提前实现 OPS-01 的健康检查或 BASE-03 的迁移与种子。
 
 规则：
 
 1. 镜像版本与 `docs/01-tech-decisions.md` §2.2 一致。
-2. 每个基础设施容器配置健康检查；应用容器用 `depends_on: condition: service_healthy` 控制启动顺序；`migrate`、`kafka-init`（创建 topic）、`seed` 为一次性容器，`service_completed_successfully` 后才启动应用。
-3. Kafka 单节点 KRaft，关闭自动建 topic；`kafka-init` 创建 `docs/05-api.md` §11.1 中的 topic，每个 3 分区、副本数 1。
+2. 每个基础设施长期容器配置健康检查。`kafka-init` 在 kafka healthy 之后创建 topic，成功则退出 0。profile `apps` 中的应用容器声明 `depends_on`：基础设施 `service_healthy`，`migrate`、`kafka-init`、`seed` 为 `service_completed_successfully`。这些依赖现在只存在于 YAML，`make up` 不启用该 profile。
+3. Kafka 单节点 KRaft，关闭自动建 topic；`kafka-init` 创建 `docs/05-api.md` §11.1 中的 topic，每个 3 分区、副本数 1。宿主机只映射 9094，容器网络内使用 `kafka:9092`。
 4. 资源限制：Kafka 堆 512MB；MySQL `innodb_buffer_pool_size=256M`、`max_connections=500`、默认时区 `+08:00`。
-5. 可观测组件（Prometheus、Jaeger）放在 compose profile `obs`，`make up` 默认包含，`make up-lite` 不包含。
-6. 端口映射遵循 §2.2，管理类端口只绑定 `127.0.0.1`。
-7. 敏感配置（数据库密码、`SECRET_MASTER_KEY`、`ADMIN_TOKEN`、渠道密钥）来自 `deploy/.env`，仓库只提交 `deploy/.env.example`（演示值）。
-8. `docker-compose.chaos.yml` 作为覆盖文件，用于开启故障注入（QA-01）。
+5. 可观测组件（Prometheus、Jaeger）放在 compose profile `obs`，`make up` 默认包含，`make up-lite` 不包含。Jaeger 使用镜像默认 all-in-one；健康检查打容器内 `127.0.0.1:13133/status`，该端口不映射到宿主机（§2.2 未列出）。
+6. 端口映射遵循 §2.2。`make up` 的渲染结果（profile `obs`）中，宿主机端口全部绑定 `127.0.0.1`。profile `apps` 中除 8080、9080、9100 外也绑定 `127.0.0.1`。
+7. 敏感配置（数据库密码、`SECRET_MASTER_KEY`、`ADMIN_TOKEN`、渠道密钥）来自环境文件，仓库只提交 `deploy/.env.example`（演示值）。`make up` 默认读取 `deploy/.env`；验证可以用 `ENV_FILE` 指向 example 或临时副本，不提交、不留下 `deploy/.env`。
+8. `docker-compose.chaos.yml` 作为覆盖文件，用于开启故障注入（QA-01）。本功能点只提供可合并的占位，不实现演练场景。
 
 验收：
 
-- [ ] 新克隆仓库，复制 `.env.example` 后执行 `make up`，在镜像已拉取的前提下 3 分钟内全部容器 healthy。
-- [ ] `make down` 停止全部容器；`make down V=1` 同时删除数据卷。
-- [ ] `docker compose config` 中除 8080、9080、9100 外的端口均绑定 `127.0.0.1`。
+- [x] 复制 `.env.example` 后执行 `make up`（可用 `ENV_FILE` 指向副本或 example），在镜像已拉取的前提下 3 分钟内：mysql、redis、kafka、prometheus、jaeger 为 healthy，`kafka-init` 退出码 0。不启动 profile `apps`。
+- [x] `make down` 停止 `make up` 与 `make up-lite` 会启动的全部容器；`make down V=1` 同时删除本项目数据卷。
+- [x] `docker compose config`（含 profile `obs`，即 `make up` 的渲染结果）中所有宿主机端口绑定 `127.0.0.1`。`docker compose --profile apps config` 中除 8080、9080、9100 外的端口绑定 `127.0.0.1`。
+- [x] `make up-lite` 不包含 prometheus、jaeger。
+- [x] `kafka-init` 创建 §11.1 的 6 个 topic，每个 3 分区、副本数 1；自动建 topic 关闭。
 
 #### BASE-03 数据库迁移与种子数据
 
@@ -2522,7 +2533,7 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 
 | 编号 | 要求 |
 |---|---|
-| NFR-DEP-01 | `make up` 一键启动，镜像已拉取时 ≤ 3 分钟全部 healthy（A1） |
+| NFR-DEP-01 | `make up` 一键启动，镜像已拉取时 ≤ 3 分钟全部 healthy（A1）。BASE-02 阶段的 healthy 范围见该功能点验收；应用进程在 OPS-01 提供健康检查后纳入 |
 | NFR-DEP-02 | 支持 darwin/arm64 与 linux/amd64 |
 | NFR-DEP-03 | 全部容器常驻内存合计 ≤ 6GB（`docker stats` 验证） |
 | NFR-DEP-04 | 配置只来自环境变量，无配置中心依赖 |
@@ -2598,3 +2609,4 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 | 2026-10-12 | v3.0 | 项目聚焦支付、退款、转账三条链路（§1.1）。新增：账户 2 分片与路由 ACC-13、平台账户每分片一套并拆子账户、转账在途账户 `TRANSIT`（§2.5、D17、D19）；不变量 10–12；转账模块 TRF-01~05（同分片本地事务 + 失败墓碑 ACC-07，跨分片 TCC + 收款方分支 ACC-14，恢复任务）；性能模块 OPT-01~05（分阶段耗时、批量记账、子账户、链路延迟、缓冲入账 P2）；故障点与演练 C9–C13；NFR-PERF 增加退款、转账、热点账户目标；验收 A11、A12。修改：Freeze / ReleaseFreeze / ConfirmFreeze 改为以商户号为入参；Post 改为进程内方法；ACC-10 增加分片与在途守恒；CH-07、GW-08 升为 P0；NTF-02 改为固定间隔 5 次；GW-05 改为进程内商户限流，去掉全局限流与 Redis 限流；管理接口只保留重放、核对、触发对账；`recon_diff` 只保留 PENDING / RESOLVED / IGNORED，新增 `TRANSFER_MISMATCH`，`handle_action` FIX_ORDER 改名 REPLAY。砍掉：ACC-09、ACC-12、REC-04、REC-07、OPS-04、`SUSPENSE` 账户与 `ADJUST` 凭证；ACC-08 降为 P1。原 R11（HANDLING）随 REC-07 一并移除。按 `docs/06-flows.md` R15、R16 补充：分支调用返回 `10001` / `10006` 的处理（TRF-02、TRF-03），反序列化失败的消息在分组前直接进 DLQ（OPT-02） |
 | 2026-10-13 | v3.0 | §0.2 新增第 6 条：功能点代码提交后在 `docs/reports/` 出具自包含报告，模板见 `.opencode/skills/pay-feature-dev/report-template.md`；流程只增加收尾步骤，不改业务规则 |
 | 2026-10-13 | v3.0 | v3.0 确认为开发基线；§2.3 补充 account、payment 的包内划分，明确转账协调者放在 payment（来源 `docs/07-module-plan.md`）；Q1 关闭，module path 定为 `github.com/yym108/pay-system` |
+| 2026-10-13 | v3.0 | BASE-02 口径澄清：`make up` 的 healthy 范围是 mysql、redis、kafka、prometheus、jaeger，外加 `kafka-init` 退出码 0。应用容器与 migrate/seed 放在 profile `apps` 占位，不启动；健康检查仍属 OPS-01，迁移与种子仍属 BASE-03。不改业务规则、资金流向、接口、表结构、错误码和 §3 依赖。A1 仍由 BASE-02、BASE-03、OPS-01 共同完成。NFR-DEP-01 补上同一范围说明。验收补上 `make up-lite` 与 topic 分区/副本，二者原来只写在规则里 |

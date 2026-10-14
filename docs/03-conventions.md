@@ -317,8 +317,9 @@
 | `MOCK_ALLOW_PARTIAL_BILL` | channel-mock | `false` | 允许下载当天账单（测试与演练） |
 | `FAULT_POINTS` | 全部服务 | 空 | 故障注入点（QA-01） |
 | `FAIL_FIRST_N` | merchant-demo | `0` | 每个单号前 N 次通知返回失败（TL-02） |
+| `MYSQL_ROOT_PASSWORD` | compose / MySQL | 无（必填，secret） | 仅本地 MySQL root。应用不使用 root；最小权限账号由 BASE-03 创建 |
 
-新增配置项：先登记到本表（或在对应功能点中说明并归入此表），再加入配置结构体和 `deploy/.env.example`。
+新增配置项：先登记到本表（或在对应功能点中说明并归入此表），再加入配置结构体和 `deploy/.env.example`。`deploy/.env.example` 已包含本表演示值；`MYSQL_ROOT_PASSWORD` 只给 compose 的 MySQL 容器做插值，不进入应用配置结构体。
 
 ## 9. 变更记录
 
@@ -329,3 +330,4 @@
 | v2.0 | 2026-10-12 | 随需求 v3.0 聚焦三条链路：新增模块前缀 `TRF`、`OPT`，编号 `S<n>`，验收扩展到 A12；新增单号前缀 `TF`、标识 `out_transfer_no` / `shard` / `sub_no`；新增错误码 `30008`，扩展 `30001`、`40002`、`40003`、`40004` 的说明；新增 fail_code `TRY_TIMEOUT`、`ACCOUNT_INVALID`；事务规则增加“一个事务只访问一个分片、禁止 XA”；幂等键增加转账单与转账分支，删除差错挂账凭证；配置增加分片 DSN、子账户数、批量记账、转账、缓存开关，通知改为固定间隔，删除全局限流 `RATE_LIMIT_GLOBAL` 与 `NOTIFY_BACKOFF`；§5.3 第 5 条明确携带对象的错误在 RPC 层用响应字段 `biz_code` 传递 |
 | v2.0 | 2026-10-13 | §7.6 补充不属于功能点的提交前缀 `[docs]`、`[chore]`；module path 定为 `github.com/yym108/pay-system` |
 | v2.1 | 2026-10-13 | BASE-01 建立根目录单模块工程；Go 版本、依赖和 Docker 镜像版本按 `docs/01-tech-decisions.md` §2 锁定 |
+| v2.2 | 2026-10-13 | BASE-02 增加 compose 专用配置 `MYSQL_ROOT_PASSWORD`；`deploy/.env.example` 写入本表演示值 |

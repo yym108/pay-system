@@ -69,6 +69,8 @@
 
 BASE-01 镜像 digest 于 2026-10-13 在本机 Docker 29.4.0 执行 `docker pull` 后用 `docker image inspect` 获取并写入 `deploy/Dockerfile`。运行阶段选择 Alpine 是为了减少占用；程序以 `CGO_ENABLED=0` 的静态二进制运行，不需要额外运行时依赖。
 
+BASE-02（2026-10-13）：本地编排使用上表镜像，不新增 Go 依赖。Kafka 4.3.1 单节点必须把 offsets、transaction state、share coordinator 的副本数和 min ISR 设为 1，否则 broker 按默认值 3 拒绝启动；这是锁定镜像的兼容约束，不是新组件。宿主机只发布 `127.0.0.1:9094`，容器网络使用 `kafka:9092`。`CLUSTER_ID` 固定为 `ZyizIAN2R0ad6PqH5Ne0Gw`，避免数据卷复用时因 ID 变化无法启动。日志保留 168 小时，对齐 NFR-CAP。MySQL 额外固定 `utf8mb4`，与设计稿字符集一致。Jaeger 2.22 使用镜像默认 all-in-one；健康检查访问容器内 13133，不映射到宿主机。应用容器在 OPS-01 之前用已锁定的 `alpine:3.22.1` 占位，不构建空 `main`。`deploy/compose.sh` 把 project directory 设为仓库根，是为了不让 Compose 自动读取 `deploy/.env`；因此 bind mount 相对仓库根，而不是 compose 文件所在目录。
+
 BASE-01（2026-10-13）：根据本机实际安装版本，将本表 Go 本机版本从 1.27.1 更正为 1.27.2；模块语言版本仍按需求锁定为 `go 1.27.0`。
 
 ### 2.3 已完成的兼容性验证

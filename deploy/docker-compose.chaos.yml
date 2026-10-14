@@ -1,0 +1,8 @@
+# QA-01 故障注入覆盖文件。
+# BASE-02 只保证本文件能与 deploy/docker-compose.yml 合并，不实现演练场景。
+# 不在此配置故障点或 kill 行为。
+name: pay-system
+
+x-chaos:
+  owner: QA-01
+  note: placeholder
