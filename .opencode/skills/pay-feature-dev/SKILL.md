@@ -83,7 +83,7 @@ description: pay-system 功能点编码流程。实现、修改、测试任何�
 时间、ID、错误：
 
 - 当前时间只来自注入的 `clock.Clock`，`biz` 和 `job` 包禁止 `time.Now()`。
-- 单号只用 `idgen.NewNo(prefix)`，前缀必须已在约定 §2.2 登记。
+- 单号只用 `(*idgen.Generator).NewNo(ctx, prefix)`，前缀必须已在约定 §2.2 登记。时钟回拨超过 5ms 时返回 `ErrClockRollback`，调用方映射为已有的 `10004`。
 - 错误码只用 `pkg/errno` 中的定义；包装底层错误用 `%w`；对外不暴露内部错误细节。新错误码先登记约定 §5.2。
 
 IO、并发、日志：

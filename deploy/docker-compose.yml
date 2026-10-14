@@ -216,6 +216,9 @@ services:
     profiles:
       - apps
     image: alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+    # worker 用字面量，见约定 §2.5。不要改成 ${WORKER_ID}，否则六个实例都是 1。
+    environment:
+      WORKER_ID: "1"
     restart: "no"
     entrypoint: ["/bin/sh", "-c"]
     command: ["echo 'gateway placeholder: OPS-01 owns /healthz; not started by make up' >&2; exit 1"]
@@ -229,6 +232,8 @@ services:
     profiles:
       - apps
     image: alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+    environment:
+      WORKER_ID: "2"
     restart: "no"
     entrypoint: ["/bin/sh", "-c"]
     command: ["echo 'payment placeholder: OPS-01 owns /healthz; not started by make up' >&2; exit 1"]
@@ -241,6 +246,8 @@ services:
     profiles:
       - apps
     image: alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+    environment:
+      WORKER_ID: "3"
     restart: "no"
     entrypoint: ["/bin/sh", "-c"]
     command: ["echo 'account placeholder: OPS-01 owns /healthz; not started by make up' >&2; exit 1"]
@@ -253,6 +260,8 @@ services:
     profiles:
       - apps
     image: alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+    environment:
+      WORKER_ID: "4"
     restart: "no"
     entrypoint: ["/bin/sh", "-c"]
     command: ["echo 'recon placeholder: OPS-01 owns /healthz; not started by make up' >&2; exit 1"]
@@ -265,6 +274,8 @@ services:
     profiles:
       - apps
     image: alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+    environment:
+      WORKER_ID: "5"
     restart: "no"
     entrypoint: ["/bin/sh", "-c"]
     command: ["echo 'channel-mock placeholder: OPS-01 owns /healthz; not started by make up' >&2; exit 1"]
@@ -277,6 +288,8 @@ services:
     profiles:
       - apps
     image: alpine:3.22.1@sha256:4bcff63911fcb4448bd4fdacec207030997caf25e9bea4045fa6c8c44de311d1
+    environment:
+      WORKER_ID: "6"
     restart: "no"
     entrypoint: ["/bin/sh", "-c"]
     command: ["echo 'merchant-demo placeholder: OPS-01 owns /healthz; not started by make up' >&2; exit 1"]
