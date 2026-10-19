@@ -25,6 +25,16 @@ INSERT INTO merchant (
 ) VALUES (?, ?, ?, ?, 1, '', ?, 'ACTIVE')
 ON DUPLICATE KEY UPDATE merchant_id = merchant_id`
 
+// 用库里的费率和 created_at 补第一档。重复执行不改已有费率。
+// INSERT … SELECT 里两边都有 merchant_id，未限定的名字在 MySQL 8.4 是 1052。
+// 冲突时把商户号写成自己，不给 fee_rate_bp 和 effective_from 赋值。
+const insertFeeRateSQL = `
+INSERT INTO merchant_fee_rate (merchant_id, fee_rate_bp, effective_from)
+SELECT merchant.merchant_id, merchant.fee_rate_bp, merchant.created_at
+FROM merchant
+WHERE merchant.merchant_id = ?
+ON DUPLICATE KEY UPDATE merchant_id = merchant_fee_rate.merchant_id`
+
 // DefaultSecretFormat 与 docs/05-api.md §3.7 的 M100001 测试向量对齐。
 // 这是约定 §8 的演示默认值，不是生产密钥。
 const DefaultSecretFormat = "demo_secret_%s_0123456789ab" //nolint:gosec // 演示格式，见约定 §8。
@@ -190,6 +200,9 @@ func seedMerchant(ctx context.Context, payment *sql.DB, account [2]*sql.DB, key 
 	defer func() { _ = tx.Rollback() }()
 	if _, err := tx.ExecContext(ctx, insertMerchantSQL, spec.id, namePrefix+spec.id, appID, cipherText, spec.feeBP); err != nil {
 		return fmt.Errorf("seed: insert merchant %s: %w", spec.id, err)
+	}
+	if _, err := tx.ExecContext(ctx, insertFeeRateSQL, spec.id); err != nil {
+		return fmt.Errorf("seed: fee rate %s: %w", spec.id, err)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("seed: commit merchant %s: %w", spec.id, err)

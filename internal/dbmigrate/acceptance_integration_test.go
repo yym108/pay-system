@@ -83,6 +83,7 @@ func TestBASE03SeedIdempotentAndShardPlacement(t *testing.T) {
 	if accounts[0] != 25 || accounts[1] != 26 || merchants != 3 {
 		t.Fatalf("第一次数量 shard0=%d shard1=%d merchants=%d，期望 25/26/3", accounts[0], accounts[1], merchants)
 	}
+	assertSeedFeeTier(t, ctx, env, "M100002", 60)
 	if _, err := seed.Run(ctx, cfg); err != nil {
 		t.Fatalf("第二次 seed：%v", err)
 	}
@@ -96,6 +97,7 @@ func TestBASE03SeedIdempotentAndShardPlacement(t *testing.T) {
 	assertSettlementPlacement(t, ctx, env)
 	assertZeroBalances(t, ctx, env)
 	assertPlaintext(t, key, ciphers["M100002"], "demo_secret_M100002_0123456789ab")
+	assertSeedFeeTier(t, ctx, env, "M100002", 60)
 }
 
 // BASE-03 验收 3：svc_recon 写入 pay_payment、pay_account_0 被拒绝。
@@ -332,6 +334,34 @@ func assertZeroBalances(t *testing.T, ctx context.Context, env *mysqlEnv) {
 		if bad != 0 || txns != 0 || entries != 0 {
 			t.Fatalf("%s 种子写了余额或分录：nonzero=%d txn=%d entry=%d", schema, bad, txns, entries)
 		}
+	}
+}
+
+// PAY-10 验收 7：M100002 只有一档 60bp，生效时间等于该商户 created_at。
+func assertSeedFeeTier(t *testing.T, ctx context.Context, env *mysqlEnv, merchantID string, rate int) {
+	t.Helper()
+	var n, gotRate int
+	var effective, created time.Time
+	err := env.root.QueryRowContext(ctx, `
+SELECT COUNT(*), COALESCE(MIN(r.fee_rate_bp), -1)
+FROM pay_payment.merchant_fee_rate r
+WHERE r.merchant_id = ?`, merchantID).Scan(&n, &gotRate)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n != 1 || gotRate != rate {
+		t.Fatalf("%s 费率档数=%d 费率=%d，期望 1 档 %d", merchantID, n, gotRate, rate)
+	}
+	err = env.root.QueryRowContext(ctx, `
+SELECT r.effective_from, m.created_at
+FROM pay_payment.merchant_fee_rate r
+JOIN pay_payment.merchant m ON m.merchant_id = r.merchant_id
+WHERE r.merchant_id = ?`, merchantID).Scan(&effective, &created)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !effective.Equal(created) {
+		t.Fatalf("%s 生效时间 %s 不等于 created_at %s", merchantID, effective.Format(time.RFC3339Nano), created.Format(time.RFC3339Nano))
 	}
 }
 

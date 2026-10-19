@@ -132,3 +132,23 @@ func TestInsertSQLDoesNotRewriteBalance(t *testing.T) {
 		t.Fatal("account insert must write zero balance and frozen amount")
 	}
 }
+
+// PAY-10：种子用库里的费率和 created_at 补第一档，重复执行不改费率。
+func TestFeeRateSeedDoesNotOverwrite(t *testing.T) {
+	t.Parallel()
+	upper := strings.ToUpper(insertFeeRateSQL)
+	if !strings.Contains(upper, "INSERT INTO MERCHANT_FEE_RATE") {
+		t.Fatal("fee rate seed must insert into merchant_fee_rate")
+	}
+	if !strings.Contains(upper, "SELECT MERCHANT.MERCHANT_ID, MERCHANT.FEE_RATE_BP, MERCHANT.CREATED_AT") ||
+		!strings.Contains(upper, "FROM MERCHANT") ||
+		!strings.Contains(upper, "WHERE MERCHANT.MERCHANT_ID = ?") {
+		t.Fatal("fee rate seed must copy the stored rate and created_at")
+	}
+	if !strings.Contains(upper, "ON DUPLICATE KEY UPDATE MERCHANT_ID = MERCHANT_FEE_RATE.MERCHANT_ID") {
+		t.Fatal("duplicate fee tier must not change the stored rate")
+	}
+	if strings.Contains(upper, "FEE_RATE_BP =") || strings.Contains(upper, "EFFECTIVE_FROM =") {
+		t.Fatalf("idempotent update must not assign rate columns:\n%s", insertFeeRateSQL)
+	}
+}

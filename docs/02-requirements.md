@@ -1,6 +1,6 @@
 # pay-system 需求规格说明书
 
-> 版本：v3.0　最后修改：2026-10-15
+> 版本：v3.0　最后修改：2026-10-17
 > 状态：v3.0 重新聚焦支付、退款、转账三条资金链路（变更见 §8.2），2026-10-13 已确认为开发基线；开发按 §3 功能点总表逐项推进
 > 上游：`PROJECT_GOALS.md`（目标与约束）、`docs/01-tech-decisions.md`（技术选型与版本）
 > 关联：`docs/03-conventions.md`（编号、错误码、命名等全局约定）、`docs/05-api.md`（接口文档）、`docs/database.md`（表结构）、`docs/04-dev-plan.md`（周计划）、`docs/06-flows.md`（流程图）
@@ -322,12 +322,13 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | 退款卡单恢复 | payment | 10s | 状态 CAS + 幂等 Freeze | REF-04 |
 | 转账恢复 | payment | 1s | `SKIP LOCKED` 抢占 + 推后 `next_retry_at`；分支操作幂等 | TRF-04 |
 | 商户通知发送 | payment | 1s | `SKIP LOCKED` 抢占 | NTF-02 |
+| 订单手续费核对 | payment | 1 分钟 | 只读；多实例可同时跑 | PAY-10 |
 | outbox 清理 | payment | 每天 03:00 | 按批删除，天然幂等 | MQ-06 |
 | 余额核对 | account | 手动全量（管理接口、测试、`verify.sh`） | 只读 | ACC-10 |
 | 对账 | recon | 每天 10:00 | `uk_channel_bill_date` + 状态 CAS | REC-01 |
 | 渠道自动完成与回调 | channel-mock | 进程内定时 | 单实例 | CH-01、CH-05 |
 
-所有任务使用注入的 `clock.Clock` 和 `context`，单批 panic 被恢复并计数，进程退出时等待当前批次完成。
+所有任务使用注入的 `clock.Clock` 和 `context`，单批 panic 被恢复并计数，进程退出时等待当前批次完成。订单手续费核对（PAY-10）本次只提供可调用的扫描函数，不在 `cmd/payment/main.go` 里启动；payment 进程常驻后再按上表间隔调用。
 
 ## 3. 功能点总表
 
@@ -381,6 +382,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | PAY-07 | 超时关单 | P0 | M4 | PAY-06 | TODO |
 | PAY-08 | 支付单查询 | P0 | M3 | PAY-02 | TODO |
 | PAY-09 | 立即同步渠道状态 | P0 | M6 | PAY-05 | TODO |
+| PAY-10 | 商户费率变更与订单手续费核对 | P0 | M3 | BASE-03、BASE-04、BASE-08 | DONE |
 | REF-01 | 创建退款与额度占用 | P0 | M4 | PAY-04 | TODO |
 | REF-02 | 退款冻结与渠道提交 | P0 | M4 | REF-01、ACC-11、CH-04 | TODO |
 | REF-03 | 退款结果推进 | P0 | M4 | REF-02 | TODO |
@@ -1270,7 +1272,7 @@ M3 完成 01、02、03、08，其余在 M4 完成（06、07 的账单部分在 C
 
 1. 入参（`docs/05-api.md` §4.1）：`out_trade_no`、`amount`、`subject` 必填；`currency` 默认 `CNY`；`notify_url` 默认商户配置；`expire_minutes` 默认 15，范围 1–120。
 2. `notify_url` 必须是 http/https，且主机在 `NOTIFY_URL_ALLOW_HOSTS` 白名单内（防 SSRF，见 NFR-SEC-07）。
-3. 生成 `pay_no`；`expire_at = now + expire_minutes`；`fee_amount` 按商户当前费率在下单时计算并固化；状态 INIT。
+3. 生成 `pay_no`；`expire_at = now + expire_minutes`；手续费按下单时刻已生效的费率计算，即 `effective_from <= created_at` 的最近一档，并固化到 `fee_amount`；状态 INIT。PAY-02 仍是 TODO，本条不在 PAY-10 实现下单。
 4. 插入遇 `uk_merchant_out_trade_no` 冲突时读取已有订单：`amount`、`currency`、`subject`、`notify_url` 全部一致 → 返回已有订单（不论当前状态）；否则 `10006`。
 
 异常：参数错误 → `10001`；幂等冲突 → `10006`。
@@ -1458,6 +1460,38 @@ PAYING 状态必须等渠道确认关闭后才能 CLOSED，避免“本地已关
 
 - [ ] 本地 PAYING、渠道 SUCCESS，调用后订单 SUCCESS，`changed = true`。
 - [ ] 本地 CLOSED、渠道 SUCCESS，调用后订单仍为 CLOSED，返回双方状态。
+
+#### PAY-10 商户费率变更与订单手续费核对
+
+`P0 · M3 · 依赖：BASE-03、BASE-04、BASE-08 · 表：merchant_fee_rate、merchant、payment_order`
+
+说明：生效费率放在只追加的 `merchant_fee_rate`。`merchant.fee_rate_bp` 仍只是种子写下的初始费率，更改费率不更新该列。订单手续费核对只报告差异，不改 `payment_order.fee_amount`，不改账，也不重算流水。流水核对仍是 ACC-10。不新增错误码，不提供管理端口，不把费率放进 Redis。核对是可调用的扫描函数；本次不在 `cmd/payment/main.go` 里启动死循环，进程常驻后按 §2.8 每 1 分钟调一次。
+
+规则：
+
+1. 新迁移 `migrations/payment/000002_merchant_fee_rate.up.sql` 建 `merchant_fee_rate`（只追加，无 `updated_at`）。列：`id`、`merchant_id`、`fee_rate_bp`（0–10000）、`effective_from`、`created_at`。唯一键 `(merchant_id, effective_from)`。up 用一条 `INSERT … SELECT` 给已有商户补第一档，费率和生效时间分别取 `merchant.fee_rate_bp`、`merchant.created_at`；没有商户时插入 0 行。另给 `payment_order` 加索引 `idx_pay_merchant_created (merchant_id, created_at)`。down 删该索引并删除新表。不改已有迁移。
+2. `AppendFeeRate(ctx, merchantID, rateBP, effectiveFrom)` 接收调用方传入的 `*sqlx.DB`（由构造函数持有），写路径用 `dbx.WithTx`。`s`、`ctx` 或库为 nil 返回 `10003`；`ctx` 已取消则原样返回该错误。`merchantID` 为空、`rateBP` 不在 0–10000、`effectiveFrom` 为零值：返回 `10001`，不写行。
+3. 比较和写入前把 `effectiveFrom` 截断到毫秒。时区保持调用方传入的时刻，不调用 `time.Now`，不调用 `time.LoadLocation`。
+4. 同一事务 `SELECT merchant_id FROM merchant WHERE merchant_id = ? FOR UPDATE`。没有行返回 `20004`。DISABLED 也允许登记；停用只拒绝交易，不拒绝登记费率。
+5. 读取该商户 `effective_from` 最大的一档。没有历史行时，这一次就是第一档，直接插入。已有一档时，新时间必须严格晚于它才算新档；更早返回 `10001`，不插入。相同时间不在这里拒绝，交给下面的唯一键。商户行锁保证“晚于当前最大生效时间”在提交时仍成立。
+6. 插入。1062 用 `dbx.IsDuplicate` 识别，不解析错误文本，也不因此回滚（1062 不会中止当前事务）。再读同一 `(merchant_id, effective_from)`：费率相同则 `Duplicated: true` 并返回已有行；费率不同返回 `10006`，不改旧行。不修改 `merchant` 的任何列，不改已有费率行。
+7. `CheckOrderFees(ctx, from, to)` 一次只读事务，隔离级别 `sql.LevelRepeatableRead`，读完 Rollback。不用 `dbx.WithTx`（它是 READ COMMITTED，且最长 3 秒）。不在这条 BEGIN 之外再开事务，不更新任何行。`from` 含、`to` 不含，比较 `payment_order.created_at`。`from` 或 `to` 为零值表示该侧没有界。
+8. 先读出全部费率行，按商户、`effective_from` 升序放内存。再按 `payment_order.id` 升序分页读订单（每页 200 行），列只有 `pay_no`、`merchant_id`、`amount`、`fee_amount`、`created_at`。对每张单取 `effective_from <= created_at` 的最近一档。没有这一档：计入不符，费率记 -1，应收手续费记 0。有这一档：用 `money.Fee(amount, rateBP)` 得到应收手续费，与 `fee_amount` 不同则计入不符。`money.Fee` 返回错误时整次核对失败（`10003`）并停止，不把该单当成不符，也不返回部分成功结果。
+9. 返回扫描张数、不符张数，以及最多 100 条明细（`pay_no`、商户号、创建时间、订单金额、实收手续费、应收手续费、费率）。不符张数是全量，不是明细条数。金额用 `money.Amount`。不读、不写商品标题。不自动改 `fee_amount`，不自动改账。
+10. 扫描开始之后新提交的费率，要等下一轮才能看见。这是这一轮 REPEATABLE READ 只读快照的结果，不是漏扫后补写。
+11. 种子在商户插入成功或已存在后，于同一个 payment 事务里幂等补第一档：`INSERT INTO merchant_fee_rate … SELECT merchant.merchant_id, merchant.fee_rate_bp, merchant.created_at FROM merchant WHERE merchant.merchant_id = ?`。冲突时 `ON DUPLICATE KEY UPDATE merchant_id = merchant_fee_rate.merchant_id`。未限定的 `merchant_id` 在这条 `INSERT … SELECT` 里会报 1052，所以列名带表名；赋值不碰 `fee_rate_bp` 和 `effective_from`。用库里的费率和 `created_at`，不用本次参数覆盖已有商户。重复种子不新增第二档，也不改费率，也不改已有密文。
+
+异常：参数不合法或新时间早于已有最大生效时间 → `10001`；商户不存在 → `20004`；相同生效时间但费率不同 → `10006`；依赖失败 → `10003`。已取消的 context 原样返回。
+
+验收：
+
+- [x] 已有一档之后，更晚的时间追加成功，行数加 1，`merchant.fee_rate_bp` 不变。
+- [x] 同一生效时间再提交同一费率，返回已有行且 `Duplicated == true`，行数仍是 1。并发提交同一时间同一费率也只留 1 行。
+- [x] 同一时间不同费率返回 `10006`，旧费率还在。
+- [x] 更早的时间返回 `10001`，不新增行。
+- [x] 不存在的商户返回 `20004`。
+- [x] 两档费率：0bp 从 T0，60bp 从 T1。金额 10000 分的订单，创建时间在 T1 之前且 `fee_amount = 0` 通过；创建时间在 T1 之后且 `fee_amount = 60` 通过；创建时间在 T1 之后但 `fee_amount = 0` 被报出，库里的 `fee_amount` 仍是 0。没有落在任何档内的订单被报出。扫描张数和不符张数正确。
+- [x] 种子：`M100002` 有且只有一档 60bp，生效时间等于该商户 `created_at`。再执行一次种子，档数仍是 1，费率仍是 60。
 
 ### 4.5 退款（REF）
 
@@ -2708,4 +2742,5 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 | 2026-10-15 | v3.0 | ACC-13 口径澄清：`/readyz` 本功能点只提供处理函数，监听、Kafka、SIGTERM 仍属 OPS-01；`Of` 不读环境变量，分片数写死 2；`Sub` 的 N 由调用方传入。不改变资金规则、接口、表结构和错误码 |
 | 2026-10-15 | v3.0 | ACC-01 口径澄清：幂等命中 `uk_owner_account_type_sub` 时返回已有行，不把余额和冻结金额改回 0。PLATFORM 账户 `shard` 只能是 0 或 1；`CHANNEL_RECEIVABLE` 的 `owner_id` 非空且不超过 32 个字符；`FEE_INCOME` 与 `TRANSIT` 的 `owner_id` 必须是 `PLATFORM`。账户号与另一组 owner 冲突时返回已有的 `10003`，对外消息不带 SQL。不改变资金规则、接口、表结构和错误码语义 |
 | 2026-10-15 | v3.0 | ACC-02 口径澄清：平台渠道应收汇总的验收不调用记账。入账本身是 ACC-03，本测试用 SQL 写入余额，不改变资金规则 |
+| 2026-10-17 | v3.0 | PAY-10 口径：商户费率历史表只追加；新生效时间必须严格晚于该商户已有最大 `effective_from`；相同时间相同费率幂等成功，相同时间不同费率 `10006`；不改 `merchant.fee_rate_bp`；订单手续费核对只报告，不改订单和账；扫描开始后新提交的费率下一轮才看得见。流水核对仍是 ACC-10。PAY-02 第 3 条改为按下单时刻已生效费率（`effective_from <= created_at` 的最近一档）计算并固化到 `fee_amount`，PAY-02 仍是 TODO。不新增错误码，不在 `cmd/payment/main.go` 启动核对循环。种子冲突更新写成 `merchant_id = merchant_fee_rate.merchant_id`，避免 `INSERT … SELECT` 未限定列名在 MySQL 8.4 报 1052 |
 | 2026-10-15 | v3.0 | ACC-03 口径澄清：需求草稿里的 ROLLBACK 是调用方事务边界，Post 不执行 BEGIN、COMMIT、ROLLBACK，也不调用 `dbx.WithTx`。1062 不回滚调用方事务（MySQL 1062 不会中止 InnoDB 事务），用 `dbx.IsDuplicate` 判断后，在同一事务按 `(biz_type, biz_no)` SELECT 已有凭证，返回 `duplicated = true` 和已有 `txn_no`；即使这次的金额或分录和第一次不同，也返回第一次的结果，不插分录、不改余额；SELECT 不到则 `10003`。本连接查不到的 `account_id`（含只存在于另一分片的账户）返回 `40003`，不是 `40001`，因为本连接分不清“没有这个 id”和“在另一个库”；`GetAccount` 仍然用 `40001`。`biz_type = REVERSAL` 返回 `40003`，不写任何行：Post 没有 `reversal_of` 参数，表约束 `ck_ledger_txn_reversal` 要求 REVERSAL 必须有 `reversal_of`，冲正是 ACC-08，本功能点不加参数、不改表。不新增错误码，`40003` 对外英文仍是 `unbalanced entries`。验收 A2 的 1000 goroutine 不用 `dbx.WithTx`：`WithTx` 把单次事务限制在 3 秒，且包含等行锁的时间，1000 个等待者会被取消，成功和 `40002` 就数不成 500/500。该用例用 `BeginTxx(READ COMMITTED)`，父 ctx 至少 60 秒，Post 返回 nil 才 Commit，否则 Rollback。生产路径的单次记账仍由其他测试用 `dbx.WithTx` 覆盖。不改资金规则、接口、表结构和错误码 |

@@ -56,6 +56,7 @@
 - [ ] BASE-13 签名库（`docs/05-api.md` §3.7 测试向量）、BASE-14 密钥加密
 - [ ] CH-01 渠道受理 → CH-02 查单、CH-03 关单、CH-05 回调；CH-06 的 FAIL、DROP_NOTIFY、DUP_NOTIFY、NEVER_FINISH
 - [ ] PAY-01 商户与密钥（含配置缓存开关）→ PAY-02 创建支付单 → PAY-03 发起支付
+- [x] PAY-10 商户费率变更与订单手续费核对
 - [ ] MQ-01 outbox 写入 → PAY-04 支付结果推进 → PAY-06 商户关单、PAY-08 查询
 - [ ] OPS-01 健康检查与优雅退出、OPS-05 管理端口
 - [ ] GW-01 网关骨架 → GW-03 商户验签 → GW-02 支付路由、GW-06 渠道回调入口

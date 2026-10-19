@@ -1,8 +1,8 @@
 # Database Schema
 
-> **Last updated:** 2026-10-14
+> **Last updated:** 2026-10-17
 > **Database engine/version:** MySQL 8.4.11（InnoDB，utf8mb4 / utf8mb4_bin）
-> **Schema sources:** `migrations/account/000001_init.up.sql`（`pay_account_0` 与 `pay_account_1` 各执行一次）、`migrations/payment/000001_init.up.sql`、`migrations/recon/000001_init.up.sql`、`migrations/channel_mock/000001_init.up.sql`。设计稿 `docs/schema/schema_draft.sql` 已在 BASE-03 删除。golang-migrate 还会在每个 schema 创建工具表 `schema_migrations`（`version`、`dirty`），不在业务清单里。
+> **Schema sources:** `migrations/account/000001_init.up.sql`（`pay_account_0` 与 `pay_account_1` 各执行一次）、`migrations/payment/000001_init.up.sql`、`migrations/payment/000002_merchant_fee_rate.up.sql`、`migrations/recon/000001_init.up.sql`、`migrations/channel_mock/000001_init.up.sql`。设计稿 `docs/schema/schema_draft.sql` 已在 BASE-03 删除。golang-migrate 还会在每个 schema 创建工具表 `schema_migrations`（`version`、`dirty`），不在业务清单里。
 > **Owner:** pay-system 项目作者
 > **Status:** BASE-03 已把设计稿拆成迁移并在 MySQL 8.4.11 上执行 up/down。账号由 `cmd/bootstrap` 创建，不在迁移 DDL 中。
 
@@ -10,17 +10,17 @@
 
 | Item | Description |
 | --- | --- |
-| Scope | 5 个 schema：`pay_account_0`、`pay_account_1`（account 服务的两个分片，D17）、`pay_payment`（payment 服务）、`pay_recon`（对账任务）、`pay_channel_mock`（模拟渠道，代表外部系统）。共 16 种表、21 张物理表。覆盖本地 docker-compose 与集成测试环境 |
+| Scope | 5 个 schema：`pay_account_0`、`pay_account_1`（account 服务的两个分片，D17）、`pay_payment`（payment 服务）、`pay_recon`（对账任务）、`pay_channel_mock`（模拟渠道，代表外部系统）。共 17 种表、22 张物理表。覆盖本地 docker-compose 与集成测试环境 |
 | Shard tables | `account`、`ledger_txn`、`ledger_entry`、`account_freeze`、`transfer_branch` 在两个分片中结构完全相同，本文只写一次。下文 `pay_account_{s}.<表>` 表示分片 `s`（0 或 1）中的该表；关系两端都写 `{s}` 表示同一分片内。分片号 `s = 商户号数字部分 % 2`（ACC-13）。所有唯一键只在分片内成立，跨分片的关系都是逻辑关系 |
 | Naming | 表名、列名小写下划线；唯一索引 `uk_`，普通索引 `idx_`，检查约束 `ck_`；业务单号列以 `_no` 结尾；分片 schema 为 `pay_<服务>_<分片号>`（`docs/03-conventions.md` §7.2） |
 | Primary key convention | 每表 `id BIGINT UNSIGNED AUTO_INCREMENT`，只作物理主键、不对外暴露；分片表的 `id` 只在分片内唯一。业务单号（2 位前缀 + 19 位雪花数字，见 `docs/01-tech-decisions.md` D5）全局唯一，走唯一索引 |
-| Audit convention | `created_at`、`updated_at` 为 `DATETIME(3)`，由数据库默认值维护；只追加表（`ledger_txn`、`ledger_entry`、`recon_channel_bill`）没有 `updated_at`；可变的核心表带 `version` 用于排查并发更新 |
+| Audit convention | `created_at`、`updated_at` 为 `DATETIME(3)`，由数据库默认值维护；只追加表（`ledger_txn`、`ledger_entry`、`recon_channel_bill`、`merchant_fee_rate`）没有 `updated_at`；可变的核心表带 `version` 用于排查并发更新 |
 | Deletion convention | 一律不物理删除业务数据，不使用软删除标记；状态终结通过状态字段表达。例外：`outbox` 中 SENT 记录保留 7 天后清理（P1）；对账重跑时清理该批次的 `recon_channel_bill` 与 PENDING 差错 |
 | Time convention | 数据库与连接时区均为 `+08:00`；毫秒精度；账期按东八区自然日 |
 | Money convention | 金额统一 `BIGINT`，单位分，币种仅 `CNY`（CHECK 约束） |
 | Sensitive data convention | 不存储卡号、手机号、身份证等个人信息；商户签名密钥以 AES-256-GCM 密文存储；日志按字段名脱敏（`docs/01-tech-decisions.md` D13） |
 | Access control | 账号与权限由 `cmd/bootstrap` 创建，不在迁移 DDL 中（BASE-03）：`svc_account` 读写 `pay_account_0.*`、`pay_account_1.*`；`svc_payment` 读写 `pay_payment.*`；`svc_recon` 读写 `pay_recon.*`，只读 `pay_payment.*`、`pay_account_0.*`、`pay_account_1.*`；`svc_channel_mock` 读写 `pay_channel_mock.*`；`migrator` 仅迁移容器使用 |
-| Isolation level | 各服务连接统一 READ COMMITTED；余额核对（ACC-10）单独使用 REPEATABLE READ 一致性快照 |
+| Isolation level | 各服务连接统一 READ COMMITTED；余额核对（ACC-10）与订单手续费核对（PAY-10）单独使用 REPEATABLE READ 一致性快照 |
 
 ## 2. Relationship Overview
 
@@ -52,6 +52,7 @@
 | `pay_account_{payer_shard}.ledger_txn.(TRANSFER_OUT, biz_no)` 与 `pay_account_{payee_shard}.ledger_txn.(TRANSFER_IN, biz_no)` | `pay_payment.transfer_order.transfer_no`（mode=TCC） | 各 0..1:1 | ACC-06 / ACC-14 Confirm；不变量 11、12；REC-05 | 跨分片转账两段凭证，经各分片 `TRANSIT` 子账户过渡 | 只完成一段时在途余额非 0；长期如此由 ACC-10 在途守恒与 REC-05 发现 |
 | `pay_account_{s}.account`（account_type=TRANSIT）余额合计 | `account_freeze`（TRANSFER, CONFIRMED）金额合计 − `transfer_branch`（PAYEE, CONFIRMED）金额合计，同一分片 | 聚合等式 | ACC-10 全量模式在同一快照内校验（不变量 11） | 在途守恒 | 不等即账务错误，核对失败 |
 | `pay_payment.payment_order.merchant_id` | `pay_payment.merchant.merchant_id` | N:1 | 网关验签确定商户 | 订单归属 | — |
+| `pay_payment.merchant_fee_rate.merchant_id` | `pay_payment.merchant.merchant_id` | N:1 | 登记费率前 `SELECT … FOR UPDATE` 商户行；无物理外键 | 商户的费率历史。生效档是 `effective_from <= payment_order.created_at` 的最近一行 | 漏插第一档时，该时刻之前的订单核对为“没有生效费率” |
 | `pay_payment.refund_order.pay_no` | `pay_payment.payment_order.pay_no` | N:1 | 创建退款事务内条件更新 `refunded_amount` | 部分退款 | 退款累计超过订单金额（由条件更新阻止） |
 | `pay_payment.transfer_order.merchant_id` / `payee_merchant_id` | `pay_payment.merchant.merchant_id` | N:1 / N:1 | 网关验签确定付款商户；TRF-01 校验收款商户存在且 ACTIVE；`ck_transfer_self` | 付款方、收款方 | — |
 | `pay_payment.channel_txn.biz_no` | `payment_order.pay_no` 或 `refund_order.refund_no`（按 `txn_type`） | 1:1 | 与订单同一事务创建与推进 | 每笔订单一次渠道交易；转账不经过渠道 | 状态与订单不一致 |
@@ -74,6 +75,7 @@
 | `pay_account_{0,1}.account_freeze` | 冻结单 | account | 退款冻结、跨分片转账付款方分支 | 长期；内部 | `migrations/account/000001_init.up.sql` |
 | `pay_account_{0,1}.transfer_branch` | 转账分支 | account | 同分片转账结果、跨分片转账收款方分支 | 长期；内部 | `migrations/account/000001_init.up.sql` |
 | `pay_payment.merchant` | 商户 | payment | 商户配置与密钥 | 长期；含高敏密文 | `migrations/payment/000001_init.up.sql` |
+| `pay_payment.merchant_fee_rate` | 商户费率历史 | payment | 只追加的生效费率 | 只追加，永久；内部 | `migrations/payment/000002_merchant_fee_rate.up.sql` |
 | `pay_payment.payment_order` | 支付单 | payment | 支付状态机 | 长期；内部 | `migrations/payment/000001_init.up.sql` |
 | `pay_payment.refund_order` | 退款单 | payment | 退款状态机 | 长期；内部 | `migrations/payment/000001_init.up.sql` |
 | `pay_payment.transfer_order` | 转账单 | payment | 转账状态机，跨分片 TCC 协调者 | 长期；内部 | `migrations/payment/000001_init.up.sql` |
@@ -353,7 +355,7 @@
 | `app_secret_cipher` | VARBINARY(256) | 否 | — | — | AES-256-GCM 密文（nonce + ciphertext + tag），主密钥来自环境变量 | 高敏，禁止日志输出 |
 | `secret_version` | INT | 否 | 1 | — | 密钥轮换版本 | 内部 |
 | `notify_url` | VARCHAR(512) | 否 | `''` | — | 默认通知地址，订单或转账单可覆盖 | 内部 |
-| `fee_rate_bp` | INT | 否 | 0 | `ck_merchant_fee_rate` | 费率（万分之一），0–10000 | 内部 |
+| `fee_rate_bp` | INT | 否 | 0 | `ck_merchant_fee_rate` | 费率（万分之一），0–10000。种子写下的初始费率，不是生效费率 | 内部 |
 | `status` | VARCHAR(16) | 否 | `'ACTIVE'` | `ck_merchant_status` | DISABLED 时网关拒绝请求，也不能作为转账收款方 | 内部 |
 | `created_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | — | | 审计 |
 | `updated_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) ON UPDATE | — | | 审计 |
@@ -371,12 +373,49 @@
 #### Relationships
 
 - **Physical foreign keys:** 无。
-- **Logical business relationships:** 1:N `payment_order`、`refund_order`、`transfer_order`（付款方与收款方）；1:1 所属分片的 `account`（MERCHANT_SETTLE）。
+- **Logical business relationships:** 1:N `payment_order`、`refund_order`、`transfer_order`（付款方与收款方）；1:N `merchant_fee_rate`；1:1 所属分片的 `account`（MERCHANT_SETTLE）。
 
 #### Operational Notes
 
 - **Backfill/migration considerations:** BASE-03 种子按 BASE-14 的密文格式（`version(1B)+nonce(12B)+ciphertext+tag`，version=1）用标准库加密后写入。明文格式是 `DEMO_APP_SECRET_FORMAT`，只出现在环境文件。重复执行不覆盖已有密文。`pkg/secretbox` 仍由 BASE-14 实现，且必须能解密这些种子密文。
-- **Compatibility/deprecation notes:** 密钥轮换（双密钥并行）为 P2。
+- **Compatibility/deprecation notes:** 密钥轮换（双密钥并行）为 P2。`fee_rate_bp` 自 PAY-10 起不是生效费率。
+
+### 4.6.1 `merchant_fee_rate` — 商户费率历史
+
+- **Purpose:** 记录商户生效费率。下单和订单手续费核对都取 `effective_from <= payment_order.created_at` 的最近一档。`merchant.fee_rate_bp` 不是生效费率。
+- **Lifecycle:** 只追加。不更新、不删除已有档。新档的 `effective_from` 必须严格晚于该商户已有最大生效时间；相同时间相同费率是幂等成功。
+- **Sensitivity:** 内部配置，无密钥。
+- **Authoritative source:** `migrations/payment/000002_merchant_fee_rate.up.sql`。
+- **Write owners/read consumers:** payment 追加；订单手续费核对只读。种子在商户事务内幂等补第一档。
+- **Retention/archival:** 永久。
+
+#### Columns
+
+| Column | Type | Nullable | Default | Key/index role | Description and business rules | Sensitivity/source |
+| --- | --- | --- | --- | --- | --- | --- |
+| `id` | BIGINT UNSIGNED | 否 | AUTO_INCREMENT | PK | | 内部 |
+| `merchant_id` | VARCHAR(32) | 否 | — | `uk_merchant_effective_from` 1 | 商户号。登记前锁 `merchant` 行；商户不存在则不插入 | 内部 |
+| `fee_rate_bp` | INT | 否 | — | `ck_mfr_fee_rate` | 费率（万分之一），0–10000 | 内部 |
+| `effective_from` | DATETIME(3) | 否 | — | `uk_merchant_effective_from` 2 | 生效时间，含该时刻。写入前截断到毫秒 | 内部 |
+| `created_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | — | 追加时间。没有 `updated_at` | 审计 |
+
+#### Keys, Indexes, and Constraints
+
+| Name | Type | Columns/order/predicate | Purpose | Source |
+| --- | --- | --- | --- | --- |
+| `PRIMARY` | PK | `id` | | migrations/payment/000002_merchant_fee_rate.up.sql |
+| `uk_merchant_effective_from` | UNIQUE | `merchant_id, effective_from` | 同一时刻只有一档；相同时间相同费率幂等，不同费率 `10006` | migrations/payment/000002_merchant_fee_rate.up.sql |
+| `ck_mfr_fee_rate` | CHECK | `fee_rate_bp BETWEEN 0 AND 10000` | 与 `merchant.ck_merchant_fee_rate` 不是同一个约束 | migrations/payment/000002_merchant_fee_rate.up.sql |
+
+#### Relationships
+
+- **Physical foreign keys:** 无。
+- **Logical business relationships:** N:1 `merchant`。核对时与 `payment_order.created_at` 比较，无物理外键。
+
+#### Operational Notes
+
+- **Backfill/migration considerations:** `000002` 的 up 用 `INSERT … SELECT` 把已有商户的 `fee_rate_bp`、`created_at` 抄成第一档；`merchant` 为空时插入 0 行。种子重复执行命中唯一键后不改费率。
+- **Compatibility/deprecation notes:** 只追加。不要回写 `merchant.fee_rate_bp` 来表示当前费率。
 
 ### 4.7 `payment_order` — 支付单
 
@@ -400,7 +439,7 @@
 | `subject` | VARCHAR(128) | 否 | — | — | 商品描述 | 内部 |
 | `status` | VARCHAR(16) | 否 | — | `idx_status_expire_at` 1、`ck_pay_status` | 状态 | 内部 |
 | `channel` | VARCHAR(16) | 是 | NULL | — | 发起支付时确定 | 内部 |
-| `fee_amount` | BIGINT | 否 | 0 | `ck_pay_fee` | 成功时计算，0 ≤ fee ≤ amount | 财务 |
+| `fee_amount` | BIGINT | 否 | 0 | `ck_pay_fee` | 下单时按当时生效费率固化，0 ≤ fee ≤ amount。核对只报告差异，不改本列 | 财务 |
 | `refunded_amount` | BIGINT | 否 | 0 | `ck_pay_refunded` | 已占用退款额（处理中 + 成功），0–amount | 财务 |
 | `notify_url` | VARCHAR(512) | 否 | `''` | — | 为空时使用商户默认地址 | 内部 |
 | `expire_at` | DATETIME(3) | 否 | — | `idx_status_expire_at` 2 | 超时关单时间 | 内部 |
@@ -409,17 +448,18 @@
 | `fail_code` | VARCHAR(32) | 是 | NULL | — | 失败原因码：`CHANNEL_FAILED`、`CHANNEL_REJECTED`（登记见 `docs/03-conventions.md` §5.4） | 内部 |
 | `fail_msg` | VARCHAR(255) | 是 | NULL | — | | 内部 |
 | `version` | BIGINT UNSIGNED | 否 | 0 | — | | 内部 |
-| `created_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | — | | 审计 |
+| `created_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | `idx_pay_merchant_created` 2 | 手续费核对按此与 `effective_from` 比较 | 审计 |
 | `updated_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) ON UPDATE | — | | 审计 |
 
 #### Keys, Indexes, and Constraints
 
 | Name | Type | Columns/order/predicate | Purpose | Source |
 | --- | --- | --- | --- | --- |
-| `PRIMARY` | PK | `id` | | migrations/payment/000001_init.up.sql |
+| `PRIMARY` | PK | `id` | 手续费核对按 `id` 分页 | migrations/payment/000001_init.up.sql |
 | `uk_pay_no` | UNIQUE | `pay_no` | | migrations/payment/000001_init.up.sql |
 | `uk_merchant_out_trade_no` | UNIQUE | `merchant_id, out_trade_no` | 下单幂等兜底（已验证重复插入报 1062） | migrations/payment/000001_init.up.sql |
 | `idx_status_expire_at` | INDEX | `status, expire_at` | 超时关单扫描 | migrations/payment/000001_init.up.sql |
+| `idx_pay_merchant_created` | INDEX | `merchant_id, created_at` | 按商户和时间扫描订单 | migrations/payment/000002_merchant_fee_rate.up.sql |
 | `ck_pay_amount` / `ck_pay_fee` / `ck_pay_refunded` / `ck_pay_currency` / `ck_pay_status` | CHECK | 见 DDL | 金额边界与枚举 | migrations/payment/000001_init.up.sql |
 
 #### Relationships
@@ -429,7 +469,7 @@
 
 #### Operational Notes
 
-- **Backfill/migration considerations:** 无。
+- **Backfill/migration considerations:** PAY-10 只加 `idx_pay_merchant_created`，不改已有列。手续费核对按主键分页，不回写 `fee_amount`。
 - **Compatibility/deprecation notes:** 内部对账按 `paid_at` 扫描，数据量大时需要 `idx_paid_at`，第 6 周按实际查询补充。
 
 ### 4.8 `refund_order` — 退款单
@@ -909,6 +949,7 @@
 | 2026-10-12 | `docs/schema/schema_draft.sql` | `outbox`、`recon_diff` | `outbox` 新增 `biz_no VARCHAR(32) NOT NULL` 与 `idx_biz_no_event_type (biz_no, event_type)`，支持按业务单号重放（R9）；`recon_diff.ck_diff_status` 新增 `HANDLING`，人工挂账先占位再记账（R11）；FIX_ORDER 后保持 PENDING 等待复核（R10） | 尚无数据，直接改设计稿；在一次性 `mysql:8.4.11` 容器上重新执行 DDL。HANDLING 已在 v3.0 移除（下一行） |
 | 2026-10-12 | `docs/schema/schema_draft.sql`（v3.0，对应需求 v3.0、D17–D20） | schema `pay_account` → `pay_account_0` / `pay_account_1`；`account`、`ledger_txn`、`account_freeze`、`outbox`、`merchant_notify`、`recon_diff`；新增 `transfer_branch`、`transfer_order` | 账户分片：删除 `pay_account`，在 `pay_account_0` 完整定义 5 张表，`pay_account_1` 用 `CREATE TABLE ... LIKE` 复制。`account` 新增 `sub_no INT UNSIGNED`，唯一键 `uk_owner_account_type` 改为 `uk_owner_account_type_sub (owner_type, owner_id, account_type, currency, sub_no)`；账户类型改为 MERCHANT_SETTLE / CHANNEL_RECEIVABLE / FEE_INCOME / TRANSIT（删除 SUSPENSE），新增 `ck_account_type_rule`、`ck_account_merchant_sub`。`ledger_txn` 新增 `ck_ledger_txn_biz_type`（PAY / REFUND / TRANSFER / TRANSFER_OUT / TRANSFER_IN / REVERSAL，删除 ADJUST）与 `ck_ledger_txn_reversal`。`account_freeze` 新增 `ck_freeze_biz_type`（REFUND / TRANSFER）。新增分片表 `transfer_branch`（ACC-07 失败墓碑、ACC-14 收款方分支与 CANCELLED 墓碑）与 `pay_payment.transfer_order`（TRF-01~05）。`outbox`、`merchant_notify` 只改注释，允许转账事件（`msg_key` / `biz_no` = transfer_no，`biz_type` = TRANSFER）。`recon_diff`：`ck_diff_status` 只保留 PENDING / RESOLVED / IGNORED（删除 SUSPENDED、HANDLING），`diff_type` 新增 TRANSFER_MISMATCH，新增 `ck_diff_txn_type`（含 TRANSFER）与 `ck_diff_action`（REQUERY / REPLAY；FIX_ORDER 改名 REPLAY，删除 SUSPENSE、IGNORE、REFUND 人工动作），删除 `recheck_count`。DDL 开头增加 `SET NAMES utf8mb4` | 尚无数据，直接改设计稿。验证：`docker exec -i paysys-ddl-check mysql -uroot -proot < docs/schema/schema_draft.sql`，目标为一次性容器 `mysql:8.4.11`，执行成功，5 个 schema 共 21 张表、79 个 CHECK 约束（每个分片 22 个）；对比 `information_schema` 的列、索引、CHECK 表达式和表注释，两个分片一致，只有复制出的 CHECK 名称变为 `<表名>_chk_<n>`。负向测试：LOCAL + TRIED、PAYEE 带付款方、商户 `sub_no = 1`、TRANSIT 不透支、ADJUST 凭证、`recon_diff` HANDLING / SUSPENDED / FIX_ORDER、LOCAL 跨分片、LOCAL CONFIRMING、转给自己、FAILED 无 `finished_at` 均报 ERROR 3819；重复 `(transfer_no, role)`、`uk_owner_account_type_sub`、`uk_merchant_out_transfer_no` 报 ERROR 1062；TRF-04 扫描 EXPLAIN 使用 `idx_status_next_retry_at`。未加 `SET NAMES` 时管道执行按 latin1 解析，中文注释乱码，已修复。容器已删除 |
 | 2026-10-14 | `migrations/*/000001_init.{up,down}.sql`；`cmd/bootstrap` | 全部业务表；新增工具表 `schema_migrations` | 设计稿拆成四个迁移目录。账户分片共用 `migrations/account/`，对 `pay_account_0`、`pay_account_1` 各执行一次，CHECK 约束名不再被 `LIKE` 重命名。删除 `docs/schema/schema_draft.sql`。bootstrap 创建五个 schema 和最小权限账号，不放进迁移文件 | 验证：compose 的 `mysql:8.4.11`（`SELECT VERSION()` = 8.4.11）上 `make migrate`、`make migrate DIR=down`、再 `make migrate` 均成功。表数：分片各 6（含 `schema_migrations`）、`pay_payment` 8、`pay_recon` 4、`pay_channel_mock` 2。CHECK：分片各 22、payment 26、recon 7、channel_mock 2，合计 79。两个分片没有 `%_chk_%` 约束名。`scripts/compare-account-shards.sh` 报告结构一致。集成测试用 testcontainers 的 `mysql:8.4.11` 复跑了同一批文件 |
+| 2026-10-17 | `migrations/payment/000002_merchant_fee_rate.up.sql`、`.down.sql` | 新增 `merchant_fee_rate`；`payment_order` 增加 `idx_pay_merchant_created` | PAY-10。费率历史只追加，无 `updated_at`。`merchant.fee_rate_bp` 仍是种子初始费率，不是生效费率。up 用 `INSERT … SELECT` 为已有商户补第一档；down 先删索引再删新表，不删 `payment_order` | 验证见 PAY-10 集成测试：MySQL 8.4.11 上 up 后表和索引存在，空商户回填 0 行；执行 down 后表和索引消失、`payment_order` 仍在；再执行 up，已插入商户得到一档且 `effective_from = created_at` |
 
 ## 6. Open Questions
 
