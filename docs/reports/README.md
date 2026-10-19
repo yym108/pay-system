@@ -20,3 +20,4 @@
 | ACC-01 | 开户 | 基础设施 | `1b2a54b` | 2026-10-15 | [ACC-01-open-account.md](ACC-01-open-account.md) |
 | ACC-02 | 账户查询 | 基础设施 | `b72e591` | 2026-10-15 | [ACC-02-get-account.md](ACC-02-get-account.md) |
 | ACC-03 | 通用记账 | 基础设施 | `31fff62` | 2026-10-15 | [ACC-03-ledger-post.md](ACC-03-ledger-post.md) |
+| PAY-10 | 商户费率变更与订单手续费核对 | 支付 | `9587a08` | 2026-10-19 | [PAY-10-fee-rate.md](PAY-10-fee-rate.md) |
