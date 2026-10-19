@@ -2,6 +2,15 @@
 
 随手记录踩坑、数据和取舍。不替代需求与技术决策文档。
 
+## ACC-04 冻结
+
+- 行锁顺序是先 `INSERT account_freeze`（占住 `uk_biz`），再 `UPDATE account` 增加 `frozen_amount`。Post 只锁 `account`，不碰冻结单，所以和 Freeze 不会组成 AB-BA。两笔不同 `biz_no` 的 Freeze 先各锁自己的冻结单，再抢同一账户行，后面的排队，不会互相死锁。1213 / 1205 仍交给 `dbx.WithTx` 把整段回调重试。`freeze_no` 在事务外生成，重试沿用同一个号；回滚过的插入不会留下行。
+- 1062 不结束 InnoDB 事务。不要回滚再另开连接去读。用 `dbx.IsDuplicate` 认错误号，同一事务按 `(biz_type, biz_no)` 读出已有冻结单。FROZEN / CONFIRMED 且金额、账户一致就返回已有单，不再加冻结。RELEASED 直接 `40004`，这是防悬挂，即使金额不同也不改成 `10006`。
+- 透支分支只在同包假实现里测。`ck_account_type_rule` 要求 `MERCHANT_SETTLE` 的 `allow_overdraft = 0`，集成测试插不进透支商户账户。不为了覆盖这条去改 CHECK，也不写非法行。
+- 条件更新影响 0 行时，在同一事务重读。非 ACTIVE 优先于余额不足。重读后仍然够冻结就返回 `10003`，不在事务里空转，避免占着行锁反复抢。
+- `version` 和 Post 一样 +1。冻结不改 `balance`。需求里的 UPDATE 没写 version，这里只是和记账的版本列对齐。
+- 100 个 goroutine 走 Freeze 自己的 `WithTx`。单次事务上限 3 秒，含等连接的时间。测试把这个库的打开连接收到 8，锁等待就不会堆过驱动的 3 秒读超时。验收要求 Freeze 自己提交，不能改成 Post 那种调用方 `BeginTxx`。
+
 ## PAY-10 商户费率
 
 - 生效费率在 `merchant_fee_rate`，只追加。`merchant.fee_rate_bp` 仍是种子写下的初始值，改费率不更新它。

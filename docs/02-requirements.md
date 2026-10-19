@@ -1,6 +1,6 @@
 # pay-system 需求规格说明书
 
-> 版本：v3.0　最后修改：2026-10-17
+> 版本：v3.0　最后修改：2026-10-19
 > 状态：v3.0 重新聚焦支付、退款、转账三条资金链路（变更见 §8.2），2026-10-13 已确认为开发基线；开发按 §3 功能点总表逐项推进
 > 上游：`PROJECT_GOALS.md`（目标与约束）、`docs/01-tech-decisions.md`（技术选型与版本）
 > 关联：`docs/03-conventions.md`（编号、错误码、命名等全局约定）、`docs/05-api.md`（接口文档）、`docs/database.md`（表结构）、`docs/04-dev-plan.md`（周计划）、`docs/06-flows.md`（流程图）
@@ -354,7 +354,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | ACC-01 | 开户 | P0 | M1 | ACC-13、BASE-05 | DONE |
 | ACC-02 | 账户查询 | P0 | M1 | ACC-01 | DONE |
 | ACC-03 | 通用记账 | P0 | M1 | ACC-01、BASE-04 | DONE |
-| ACC-04 | 冻结 | P0 | M2 | ACC-03 | TODO |
+| ACC-04 | 冻结 | P0 | M2 | ACC-03 | DONE |
 | ACC-05 | 解冻（含空回滚、防悬挂） | P0 | M2 | ACC-04 | TODO |
 | ACC-06 | 确认扣款 | P0 | M2 | ACC-04 | TODO |
 | ACC-07 | 同分片转账（含失败墓碑） | P0 | M2 | ACC-03 | TODO |
@@ -898,21 +898,40 @@ DSN 只按驱动的文本规则装配，不连接数据库：
 
 `P0 · M2 · 依赖：ACC-03 · 表：account_freeze、account`
 
-接口：`AccountService.Freeze(biz_type, biz_no, merchant_id, amount)` → `{freeze_no, status}`
+接口：`biz.Freeze(ctx, biz_type, biz_no, merchant_id, amount)` → `{freeze_no, status, duplicated}`（进程内方法。IDL 已有 `Freeze`，RPC handler 仍是 ACC-11，本功能点不监听、不改 IDL）
 
 规则：
 
-1. `biz_type` 为 `REFUND`（退款，biz_no = refund_no）或 `TRANSFER`（跨分片转账付款方 Try，biz_no = transfer_no）；冻结对象是商户账户。只允许冻结 `allow_overdraft = 0` 的账户，否则 `10001`。
-2. 事务：插入 `account_freeze(FROZEN)`；`UPDATE account SET frozen_amount = frozen_amount + ? WHERE id = ? AND status = 'ACTIVE' AND balance - frozen_amount >= ?`。
-3. 插入遇 1062：读取已有冻结单。状态 FROZEN 或 CONFIRMED 且金额、账户一致 → 返回已有结果；状态 RELEASED → `40004`（防悬挂，见 ACC-05）；金额或账户不一致 → `10006`。
+1. `biz_type` 只允许 `REFUND`（退款，biz_no = refund_no）或 `TRANSFER`（跨分片转账付款方 Try，biz_no = transfer_no）。冻结对象是该商户在 `shard.Of(merchant_id)` 上的 `MERCHANT_SETTLE`。商户号分片不合法、`biz_type` 非法、`biz_no` 为空或超过 64 个码点、金额不是正的 int64 分：`10001`，不写行。只允许冻结 `allow_overdraft = 0` 的账户，否则 `10001`，不写行。
+2. `freeze_no` 在事务外用 `NewNo(ctx, "FZ")` 生成。`idgen.ErrClockRollback` 映射为已有的 `10004`。Freeze 自己用 `dbx.WithTx` 提交这一个分片事务（Post 仍由调用方提交，本功能点不改 Post）：
 
-异常：余额不足 → `40002`，不留下冻结单；账户不存在 → `40001`；非 ACTIVE → `40005`。
+   ```
+   INSERT account_freeze(..., status = 'FROZEN')
+     -- 1062：只用 dbx.IsDuplicate（MySQL 1062），不解析错误文本。1062 不结束 InnoDB 事务。
+     -- 同一事务按 (biz_type, biz_no) 读取。
+     -- FROZEN 或 CONFIRMED，且金额、账户一致 → 返回已有 freeze_no 和状态，duplicated = true，不增加 frozen_amount
+     -- RELEASED → 40004（防悬挂，见 ACC-05）。不再比较金额或账户
+     -- 金额或账户不一致（仅 FROZEN / CONFIRMED）→ 10006，旧行不变
+     -- 读不到行 → 10003
+   UPDATE account
+      SET frozen_amount = frozen_amount + ?, version = version + 1
+    WHERE id = ? AND status = 'ACTIVE' AND balance - frozen_amount >= ?
+     -- 不修改 balance。version +1 与 Post 改余额对齐，不改变冻结金额。
+     -- 影响 1 行才提交。
+     -- 影响 0 行：同一事务重读。非 ACTIVE → 40005（优先于余额不足）；可用余额不够 → 40002。
+     -- 两者都回滚，不留冻结单。
+     -- 重读后仍是 ACTIVE 且可用余额足够：不空转重试，返回 10003。
+   ```
+
+3. 分片上没有该商户账户 → `40001`，不写冻结单。nil service、nil ctx、nil db → `10003`。已取消的上下文原样返回，不改写成 `10003`。
+
+异常：余额不足 → `40002`，不留下冻结单；账户不存在 → `40001`；非 ACTIVE → `40005`；已释放 → `40004`；幂等参数冲突 → `10006`。
 
 验收：
 
-- [ ] 可用余额 1000，100 个 goroutine 各冻结 20（不同 biz_no），恰好 50 次成功，`frozen_amount = 1000`。
-- [ ] 同一 biz_no 重复冻结返回同一 `freeze_no`，冻结金额只增加一次。
-- [ ] 冻结与 ACC-03 扣减混合并发，可用余额始终 ≥ 0。
+- [x] 可用余额 1000，100 个 goroutine 各冻结 20（不同 biz_no），恰好 50 次成功，`frozen_amount = 1000`。
+- [x] 同一 biz_no 重复冻结返回同一 `freeze_no`，冻结金额只增加一次。
+- [x] 冻结与 ACC-03 扣减混合并发，可用余额始终 ≥ 0。
 
 #### ACC-05 解冻（含空回滚、防悬挂）
 
@@ -2744,3 +2763,4 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 | 2026-10-15 | v3.0 | ACC-02 口径澄清：平台渠道应收汇总的验收不调用记账。入账本身是 ACC-03，本测试用 SQL 写入余额，不改变资金规则 |
 | 2026-10-17 | v3.0 | PAY-10 口径：商户费率历史表只追加；新生效时间必须严格晚于该商户已有最大 `effective_from`；相同时间相同费率幂等成功，相同时间不同费率 `10006`；不改 `merchant.fee_rate_bp`；订单手续费核对只报告，不改订单和账；扫描开始后新提交的费率下一轮才看得见。流水核对仍是 ACC-10。PAY-02 第 3 条改为按下单时刻已生效费率（`effective_from <= created_at` 的最近一档）计算并固化到 `fee_amount`，PAY-02 仍是 TODO。不新增错误码，不在 `cmd/payment/main.go` 启动核对循环。种子冲突更新写成 `merchant_id = merchant_fee_rate.merchant_id`，避免 `INSERT … SELECT` 未限定列名在 MySQL 8.4 报 1052 |
 | 2026-10-15 | v3.0 | ACC-03 口径澄清：需求草稿里的 ROLLBACK 是调用方事务边界，Post 不执行 BEGIN、COMMIT、ROLLBACK，也不调用 `dbx.WithTx`。1062 不回滚调用方事务（MySQL 1062 不会中止 InnoDB 事务），用 `dbx.IsDuplicate` 判断后，在同一事务按 `(biz_type, biz_no)` SELECT 已有凭证，返回 `duplicated = true` 和已有 `txn_no`；即使这次的金额或分录和第一次不同，也返回第一次的结果，不插分录、不改余额；SELECT 不到则 `10003`。本连接查不到的 `account_id`（含只存在于另一分片的账户）返回 `40003`，不是 `40001`，因为本连接分不清“没有这个 id”和“在另一个库”；`GetAccount` 仍然用 `40001`。`biz_type = REVERSAL` 返回 `40003`，不写任何行：Post 没有 `reversal_of` 参数，表约束 `ck_ledger_txn_reversal` 要求 REVERSAL 必须有 `reversal_of`，冲正是 ACC-08，本功能点不加参数、不改表。不新增错误码，`40003` 对外英文仍是 `unbalanced entries`。验收 A2 的 1000 goroutine 不用 `dbx.WithTx`：`WithTx` 把单次事务限制在 3 秒，且包含等行锁的时间，1000 个等待者会被取消，成功和 `40002` 就数不成 500/500。该用例用 `BeginTxx(READ COMMITTED)`，父 ctx 至少 60 秒，Post 返回 nil 才 Commit，否则 Rollback。生产路径的单次记账仍由其他测试用 `dbx.WithTx` 覆盖。不改资金规则、接口、表结构和错误码 |
+| 2026-10-19 | v3.0 | ACC-04 口径澄清：Freeze 是进程内方法。IDL 已有 Freeze，本功能点不实现 RPC、不改 IDL。`biz_type` 只允许 REFUND / TRANSFER；商户号分片不合法、`biz_no` 为空或超过 64 个码点、金额不是正的 int64 分，返回已有的 `10001`，不写行。冻结对象是 `shard.Of(merchant_id)` 上的 MERCHANT_SETTLE。`freeze_no` 在事务外 `NewNo(ctx, "FZ")`，`ErrClockRollback` 映射为已有的 `10004`。事务由 Freeze 自己 `dbx.WithTx` 提交，Post 仍不提交。UPDATE 同时 `version = version + 1`，与 Post 改余额对齐，不改变冻结金额，也不改 `balance`。影响 0 行时同一事务重读：非 ACTIVE 返回 `40005`（优先于余额不足），可用余额不够返回 `40002`，两者回滚且不留冻结单；重读后仍是 ACTIVE 且可用余额足够则返回 `10003`，不空转重试。1062 只用 `dbx.IsDuplicate`，不解析错误文本，同一事务按 `(biz_type, biz_no)` 读取：FROZEN / CONFIRMED 且金额和账户一致则返回已有结果且 `duplicated = true`，不增加冻结；RELEASED 一律 `40004`，不再比较金额；FROZEN / CONFIRMED 金额或账户不一致为 `10006`，旧行不变；读不到行是 `10003`。`duplicated` 只在进程内结果里，与 Post 一样，不改 RPC 字段。不新增错误码，不改资金规则、表结构和接口 |

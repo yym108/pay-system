@@ -2,9 +2,9 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 2.0.1 |
+| 文档版本 | 2.0.2 |
 | API 版本 | v1（路径前缀 `/v1`） |
-| 最后修改 | 2026-10-14 |
+| 最后修改 | 2026-10-19 |
 | 状态 | 设计基线，实现须与本文一致 |
 
 关联文档：需求 `docs/02-requirements.md`（各接口的业务规则以功能点为准）、约定 `docs/03-conventions.md`（错误码、单号、时间格式）。
@@ -37,6 +37,7 @@
 | 1.1.0 | 2026-10-12 | 按 `docs/06-flows.md` R1–R14：请求体超限返回 413 / `10001`；关单渠道已失败返回 `30003` + FAILED 订单；创建退款新增 `30006`（渠道拒绝）、冻结冲突明确为 code 0；渠道回调未知单号与金额不一致返回 200；差错处理与事件重放规则补充；模拟渠道退款先幂等再校验额度 | §2.1、§4.3、§4.5、§7、§8、§9.5、§10.2 | GW-01、GW-06、PAY-06、REF-02、REC-07、MQ-05、CH-04 |
 | 2.0.0 | 2026-10-12 | 随需求 v3.0。新增：创建转账 `POST /v1/transfers`（§4.8）、查询转账（§4.9）、`Transfer` 对象（§5.3）、通知与事件 `transfer.succeeded` / `transfer.failed`（只通知付款商户，account 不消费）；错误码 `30008`，`40002` 扩展到转账；AccountService 新增 `TransferLocal`、`TransferInTry` / `TransferInConfirm` / `TransferInCancel`，PaymentService 新增 `CreateTransfer`、`QueryTransfer`。修改：account RPC 改为以商户号为入参、由 account 路由分片（`Freeze` / `ReleaseFreeze` / `ConfirmFreeze` / `GetAccount` / `CheckBalance`），`OpenAccount` 增加 `shard`、`sub_no`，`GetAccount` 平台账户返回两分片子账户汇总；`CheckBalance` 增加 `expect_quiescent`、失败项带 `shard`；查询余额路由到商户所属分片；商户通知改为 30 秒固定间隔共 5 次；`RunBatch` 返回批次与前 100 条差错；`ReconDiff` 状态只保留 PENDING / RESOLVED / IGNORED，新增 `TRANSFER_MISMATCH`，`handle_action` 为 REQUERY / REPLAY；§1 总览增加 RPC 列；明确商户限流为验签后的进程内令牌桶。删除：管理接口批次列表、差错列表、差错处理、同步渠道状态、流水查询；RPC `Post`（改为进程内方法）、`Transfer`、`ListEntries`、`ListBatches`、`ListDiffs`、`ResolveDiff`；§2.6 分页（已无列表接口）。商户 API 只有兼容新增，路径版本仍为 `/v1`；删除项只涉及管理 API 与内部 RPC，尚无实现与存量调用方，IDL 按本版直接生成 | §1、§2.4、§2.5、§4.7–§4.9、§5.3、§6、§8、§10、§11 | ACC-01~07、ACC-10、ACC-11、ACC-14、TRF-01~05、NTF-01、NTF-02、GW-02、GW-05、GW-07、MQ-01、MQ-05、REC-01、REC-05、REC-06、REC-08 |
 | 2.0.1 | 2026-10-14 | 澄清通用响应 `msg` 使用约定 §5.2 的稳定英文（成功 `ok`，`10003` 为 `internal error`，`40002` 为 `insufficient balance`）。不新增字段，不改路径、错误码数字和已有示例。§1 各接口的“最后修改”不变 | §2.3 | BASE-06 |
+| 2.0.2 | 2026-10-19 | 文字对齐：FROZEN 或 CONFIRMED 必须金额和账户都一致才返回已有 `freeze_no`、`status`；RELEASED 一律 `40004`，不再比较金额；FROZEN 或 CONFIRMED 的金额或账户不一致为 `10006`。ACC-04 交付进程内 `biz.Freeze`，RPC handler 仍是 ACC-11，契约保留，响应不增加字段。不改错误码数字，不改 IDL。§1 各接口的“最后修改”不变 | AccountService.Freeze | ACC-04 |
 
 ## 1. 接口总览
 
@@ -785,7 +786,7 @@ Kitex + Thrift，IDL 位于 `idl/`，以生成后的 IDL 为准；本节列出�
 
 ### 10.1 AccountService（:8882）
 
-account RPC 以商户号（或 owner）为入参，由 account 按商户号路由到所属分片（ACC-13），调用方不传账户号和分片号（`OpenAccount` 除外）；每次调用只在一个分片上开启事务。商户号格式非法一律返回 `10001`，下表不再重复。记账 `Post` 是 account 进程内方法（ACC-03，供 ConfirmFreeze、TransferLocal、TransferInConfirm 与事件消费使用），不提供 RPC。
+account RPC 以商户号（或 owner）为入参，由 account 按商户号路由到所属分片（ACC-13），调用方不传账户号和分片号（`OpenAccount` 除外）；每次调用只在一个分片上开启事务。商户号格式非法一律返回 `10001`，下表不再重复。记账 `Post` 是 account 进程内方法（ACC-03，供 ConfirmFreeze、TransferLocal、TransferInConfirm 与事件消费使用），不提供 RPC。ACC-04 交付的冻结同样是进程内方法 `biz.Freeze`，RPC handler 仍是 ACC-11；下表保留 `Freeze` 的契约。
 
 | 方法 | 请求 | 响应 | 幂等键 | 业务错误 | 调用方 | 功能点 |
 |---|---|---|---|---|---|---|
@@ -804,7 +805,7 @@ account RPC 以商户号（或 owner）为入参，由 account 按商户号路�
 方法语义：
 
 - `GetAccount`：MERCHANT 读取商户所属分片的账户；PLATFORM 读取两个分片全部子账户并求和，`account_no` 为空，`sub_count` 为参与汇总的行数，不在交易链路中调用。
-- `Freeze`：只冻结商户结算账户（透支账户 → `10001`）。已存在的冻结单 FROZEN / CONFIRMED 且金额一致 → 返回已有结果；RELEASED → `40004`（防悬挂）；金额不一致 → `10006`。余额不足 `40002`，不留下冻结单。
+- `Freeze`：只冻结商户结算账户（透支账户 → `10001`）。已存在的冻结单为 FROZEN 或 CONFIRMED，且金额和账户都一致 → 返回已有 `freeze_no`、`status`；RELEASED → `40004`（防悬挂），不再比较金额；FROZEN 或 CONFIRMED 的金额或账户不一致 → `10006`。余额不足 `40002`，不留下冻结单。响应仍是 `freeze_no`、`status`。
 - `ReleaseFreeze`：FROZEN → RELEASED；已 RELEASED 幂等成功；已 CONFIRMED → `40004`；冻结单不存在时写入 RELEASED 墓碑并返回成功（空回滚）。退款解冻由 account 消费 `refund.failed` 在进程内执行（MQ-04），不经过 RPC。
 - `ConfirmFreeze`：借商户账户并同时减少冻结。`REFUND` 贷本分片 `CHANNEL_RECEIVABLE(channel)` 子账户，凭证 `REFUND` / `refund_no`；`TRANSFER` 贷本分片 `TRANSIT` 子账户，凭证 `TRANSFER_OUT` / `transfer_no`，`channel` 传空串。已 CONFIRMED 返回已有 `txn_no`；RELEASED 或不存在 → `40004`。退款确认由 account 消费 `refund.succeeded` 在进程内执行（MQ-04），不经过 RPC。
 - `TransferLocal`：双方必须同分片、都是 ACTIVE 商户且不是同一商户（否则 `10001` / `40001` / `40005`）。余额不足是确定结果 `status = FAILED`、`fail_code = INSUFFICIENT_BALANCE`，不返回 `40002`；同一 `transfer_no` 之后一律返回首次结果，即使余额已经充足。

@@ -1,6 +1,6 @@
 # Database Schema
 
-> **Last updated:** 2026-10-17
+> **Last updated:** 2026-10-19
 > **Database engine/version:** MySQL 8.4.11（InnoDB，utf8mb4 / utf8mb4_bin）
 > **Schema sources:** `migrations/account/000001_init.up.sql`（`pay_account_0` 与 `pay_account_1` 各执行一次）、`migrations/payment/000001_init.up.sql`、`migrations/payment/000002_merchant_fee_rate.up.sql`、`migrations/recon/000001_init.up.sql`、`migrations/channel_mock/000001_init.up.sql`。设计稿 `docs/schema/schema_draft.sql` 已在 BASE-03 删除。golang-migrate 还会在每个 schema 创建工具表 `schema_migrations`（`version`、`dirty`），不在业务清单里。
 > **Owner:** pay-system 项目作者
@@ -116,7 +116,7 @@
 | `frozen_amount` | BIGINT | 否 | 0 | `ck_account_frozen` | 冻结金额（分），≥ 0，等于 FROZEN 冻结单合计 | 财务 |
 | `allow_overdraft` | TINYINT | 否 | 0 | `ck_account_available`、`ck_account_type_rule` | 由账户类型决定：MERCHANT_SETTLE 为 0，平台账户（含 TRANSIT）为 1 | 内部 |
 | `status` | VARCHAR(16) | 否 | `'ACTIVE'` | `ck_account_status` | ACTIVE / FROZEN / CLOSED，非 ACTIVE 不允许记账 | 内部 |
-| `version` | BIGINT UNSIGNED | 否 | 0 | — | 每次余额变更 +1 | 内部 |
+| `version` | BIGINT UNSIGNED | 否 | 0 | — | 余额或冻结金额变更时 +1（ACC-04 冻结成功也加 1，不只是余额） | 内部 |
 | `created_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | — | 创建时间 | 审计 |
 | `updated_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) ON UPDATE | — | 更新时间 | 审计 |
 
@@ -950,6 +950,7 @@
 | 2026-10-12 | `docs/schema/schema_draft.sql`（v3.0，对应需求 v3.0、D17–D20） | schema `pay_account` → `pay_account_0` / `pay_account_1`；`account`、`ledger_txn`、`account_freeze`、`outbox`、`merchant_notify`、`recon_diff`；新增 `transfer_branch`、`transfer_order` | 账户分片：删除 `pay_account`，在 `pay_account_0` 完整定义 5 张表，`pay_account_1` 用 `CREATE TABLE ... LIKE` 复制。`account` 新增 `sub_no INT UNSIGNED`，唯一键 `uk_owner_account_type` 改为 `uk_owner_account_type_sub (owner_type, owner_id, account_type, currency, sub_no)`；账户类型改为 MERCHANT_SETTLE / CHANNEL_RECEIVABLE / FEE_INCOME / TRANSIT（删除 SUSPENSE），新增 `ck_account_type_rule`、`ck_account_merchant_sub`。`ledger_txn` 新增 `ck_ledger_txn_biz_type`（PAY / REFUND / TRANSFER / TRANSFER_OUT / TRANSFER_IN / REVERSAL，删除 ADJUST）与 `ck_ledger_txn_reversal`。`account_freeze` 新增 `ck_freeze_biz_type`（REFUND / TRANSFER）。新增分片表 `transfer_branch`（ACC-07 失败墓碑、ACC-14 收款方分支与 CANCELLED 墓碑）与 `pay_payment.transfer_order`（TRF-01~05）。`outbox`、`merchant_notify` 只改注释，允许转账事件（`msg_key` / `biz_no` = transfer_no，`biz_type` = TRANSFER）。`recon_diff`：`ck_diff_status` 只保留 PENDING / RESOLVED / IGNORED（删除 SUSPENDED、HANDLING），`diff_type` 新增 TRANSFER_MISMATCH，新增 `ck_diff_txn_type`（含 TRANSFER）与 `ck_diff_action`（REQUERY / REPLAY；FIX_ORDER 改名 REPLAY，删除 SUSPENSE、IGNORE、REFUND 人工动作），删除 `recheck_count`。DDL 开头增加 `SET NAMES utf8mb4` | 尚无数据，直接改设计稿。验证：`docker exec -i paysys-ddl-check mysql -uroot -proot < docs/schema/schema_draft.sql`，目标为一次性容器 `mysql:8.4.11`，执行成功，5 个 schema 共 21 张表、79 个 CHECK 约束（每个分片 22 个）；对比 `information_schema` 的列、索引、CHECK 表达式和表注释，两个分片一致，只有复制出的 CHECK 名称变为 `<表名>_chk_<n>`。负向测试：LOCAL + TRIED、PAYEE 带付款方、商户 `sub_no = 1`、TRANSIT 不透支、ADJUST 凭证、`recon_diff` HANDLING / SUSPENDED / FIX_ORDER、LOCAL 跨分片、LOCAL CONFIRMING、转给自己、FAILED 无 `finished_at` 均报 ERROR 3819；重复 `(transfer_no, role)`、`uk_owner_account_type_sub`、`uk_merchant_out_transfer_no` 报 ERROR 1062；TRF-04 扫描 EXPLAIN 使用 `idx_status_next_retry_at`。未加 `SET NAMES` 时管道执行按 latin1 解析，中文注释乱码，已修复。容器已删除 |
 | 2026-10-14 | `migrations/*/000001_init.{up,down}.sql`；`cmd/bootstrap` | 全部业务表；新增工具表 `schema_migrations` | 设计稿拆成四个迁移目录。账户分片共用 `migrations/account/`，对 `pay_account_0`、`pay_account_1` 各执行一次，CHECK 约束名不再被 `LIKE` 重命名。删除 `docs/schema/schema_draft.sql`。bootstrap 创建五个 schema 和最小权限账号，不放进迁移文件 | 验证：compose 的 `mysql:8.4.11`（`SELECT VERSION()` = 8.4.11）上 `make migrate`、`make migrate DIR=down`、再 `make migrate` 均成功。表数：分片各 6（含 `schema_migrations`）、`pay_payment` 8、`pay_recon` 4、`pay_channel_mock` 2。CHECK：分片各 22、payment 26、recon 7、channel_mock 2，合计 79。两个分片没有 `%_chk_%` 约束名。`scripts/compare-account-shards.sh` 报告结构一致。集成测试用 testcontainers 的 `mysql:8.4.11` 复跑了同一批文件 |
 | 2026-10-17 | `migrations/payment/000002_merchant_fee_rate.up.sql`、`.down.sql` | 新增 `merchant_fee_rate`；`payment_order` 增加 `idx_pay_merchant_created` | PAY-10。费率历史只追加，无 `updated_at`。`merchant.fee_rate_bp` 仍是种子初始费率，不是生效费率。up 用 `INSERT … SELECT` 为已有商户补第一档；down 先删索引再删新表，不删 `payment_order` | 验证见 PAY-10 集成测试：MySQL 8.4.11 上 up 后表和索引存在，空商户回填 0 行；执行 down 后表和索引消失、`payment_order` 仍在；再执行 up，已插入商户得到一档且 `effective_from = created_at` |
+| 2026-10-19 | 无（仅文档） | `account.version` 的说明 | ACC-04：冻结成功时 `version` 也 +1，与余额变更使用同一列。无 DDL，不改 CHECK | 未执行迁移 |
 
 ## 6. Open Questions
 

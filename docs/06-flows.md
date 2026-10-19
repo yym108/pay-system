@@ -1,6 +1,6 @@
 # pay-system 流程图（状态机、泳道图、控制流图）
 
-> 版本：v2.2　最后修改：2026-10-15　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13
+> 版本：v2.3　最后修改：2026-10-19　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14
 > 依据：`docs/02-requirements.md` v3.0、`docs/03-conventions.md` v2.0、`docs/01-tech-decisions.md` D17–D21；`docs/05-api.md`、`docs/database.md` 尚未同步 v3.0，冲突处以需求文档为准
 > 用途：以图的形式确认全部功能性设计。图是需求的视图，规则冲突时以需求文档为准；需求变更后同步修改对应的图。
 
@@ -1409,29 +1409,32 @@ Post 不提交也不回滚。校验失败不发号、不写行。其后的失败
 
 ```mermaid
 flowchart TD
-    S(["Freeze(biz_type, biz_no, merchant_id, amount)<br/>biz_type = REFUND / TRANSFER"]) --> RT{"shard.Of(merchant_id) 合法"}
-    RT -->|"否"| E10001a["10001"]:::err
-    RT -->|"是"| AC{"分片 s 中商户账户存在"}
-    AC -->|"否"| E40001["40001"]:::err
-    AC -->|"是"| OD{"allow_overdraft = 0"}
-    OD -->|"否"| E10001b["10001"]:::err
-    OD -->|"是"| I
-    subgraph TX["分片 s 事务"]
-        I["INSERT account_freeze(FROZEN)"]
-        I -->|"成功"| U["UPDATE account SET frozen_amount += amount<br/>WHERE status = ACTIVE AND balance − frozen_amount ≥ amount"]
+    S(["Freeze(biz_type, biz_no, merchant_id, amount)"]) --> V{"biz_type 为 REFUND / TRANSFER<br/>biz_no 非空且不超过 64 个码点<br/>amount 为正的 int64 分<br/>shard.Of(merchant_id) 合法"}
+    V -->|"否"| E10001a["10001，不发号、不写行"]:::err
+    V -->|"是"| AC
+    subgraph TX["分片 s 事务；freeze_no 在事务外 NewNo FZ；成功才 COMMIT"]
+        AC{"MERCHANT_SETTLE"}
+        AC -->|"不存在"| E40001["40001，ROLLBACK"]:::err
+        AC -->|"allow_overdraft 不是 0"| E10001b["10001，ROLLBACK"]:::err
+        AC -->|"allow_overdraft = 0"| I["INSERT account_freeze(FROZEN)"]
+        I -->|"成功"| U["UPDATE frozen_amount += amount, version += 1<br/>WHERE ACTIVE 且 balance − frozen_amount ≥ amount"]
+        I -->|"1062"| EX{"已有冻结单"}
     end
     U -->|"影响 1 行"| OK(["COMMIT，返回 freeze_no、FROZEN"]):::ok
-    U -->|"影响 0 行"| RD{"重新读取账户"}
-    RD -->|"非 ACTIVE"| E40005["ROLLBACK，40005"]:::err
-    RD -->|"余额不足"| E40002["ROLLBACK，40002，不留冻结单"]:::err
-    I -->|"1062"| EX{"已有冻结单"}
-    EX -->|"FROZEN / CONFIRMED，金额与账户一致"| OK2(["返回已有结果"]):::ok
-    EX -->|"RELEASED"| E40004["40004（防悬挂）"]:::err
-    EX -->|"金额或账户不一致"| E10006["10006"]:::err
+    U -->|"影响 0 行"| RD{"同一事务重读账户"}
+    RD -->|"非 ACTIVE"| E40005["ROLLBACK，40005，不留冻结单"]:::err
+    RD -->|"可用余额不足"| E40002["ROLLBACK，40002，不留冻结单"]:::err
+    RD -->|"仍 ACTIVE 且可用余额足够"| E10003a["ROLLBACK，10003，不空转"]:::err
+    EX -->|"FROZEN / CONFIRMED，金额与账户一致"| OK2(["返回已有 freeze_no 与状态，不增加冻结"]):::ok
+    EX -->|"RELEASED"| E40004["40004，不冻结"]:::err
+    EX -->|"金额或账户不一致"| E10006["10006，旧行不变"]:::err
+    EX -->|"读不到"| E10003b["10003"]:::err
     classDef ok fill:#e3f6e8,stroke:#2e7d32
     classDef err fill:#fde4e4,stroke:#c62828
     classDef fault fill:#fff4d6,stroke:#b8860b
 ```
+
+参数不合法不发号、不写行。`freeze_no` 在 `BEGIN` 之前生成，时钟回拨超过 5ms 映射为已有的 `10004`。账户是否存在、是否允许透支，都在同一个分片事务里、插入之前判断。`UPDATE` 把 `version` 加 1，不改 `balance`。影响 0 行时非 ACTIVE 优先于余额不足；重读后仍然够冻结则 `10003`，不在事务里重试。1062 不结束 InnoDB 事务，同一事务按 `(biz_type, biz_no)` 读取。幂等成功由 Freeze 提交，这次没有新行，也没有增加冻结金额。`RELEASED` 一律 `40004`。金额或账户不一致只用于仍是 FROZEN 或 CONFIRMED 的行。错误分支由 `dbx.WithTx` 回滚，已经提交的旧行不受影响。
 
 #### CF-15 解冻
 
@@ -2159,3 +2162,4 @@ R1–R14 来自 v1.x 绘图，已落入需求文档 v2.2；R15 起来自 v2.0 �
 | 2026-10-12 | v2.0 | 对齐需求文档 v3.0。新增：SM-10 转账单、SM-11 转账分支、SL-11~15（同分片转账、跨分片成功、跨分片取消、崩溃恢复、批量记账）、CF-32~37（TransferLocal、收款方分支、创建转账单、TCC 协调、恢复任务、批量记账）。修改：覆盖矩阵；SM-04、SM-06、SM-07、SM-08；SL-01、SL-05~10（分片路由、子账户、冻结以商户号为入参、固定间隔通知、管理接口精简）；CF-01（进程内商户限流、去掉全局限流与降级）、CF-03、CF-09~11、CF-13~17（Post 进程内、ACC-10 分片与在途守恒）、CF-19~21、CF-26~29（差错只有 PENDING / RESOLVED / IGNORED、REPLAY、TRANSFER_MISMATCH）、§4.10。砍掉：CF-30（REC-07）、CF-27 中的跨日处理（REC-04）。§5 增加状态列，R10 部分、R11 整体被 v3.0 取代；新增 R15、R16（待确认） |
 | 2026-10-15 | v2.1 | ACC-03：CF-13 改为本连接缺账户（含另一分片）返回 40003，不再画 40001；1062 在同一事务读取已有凭证，Post 不回滚；`txn_no` 在行锁之前生成；`REVERSAL` 在校验阶段拒绝，不进入记账。不改资金流向 |
 | 2026-10-15 | v2.2 | ACC-03：CF-13 的 1062 补上同一事务按 `(biz_type, biz_no)` SELECT 不到时返回 10003、由调用方回滚的出口。不改资金流向 |
+| 2026-10-19 | v2.3 | ACC-04：CF-14 补上参数 10001、事务内先判断账户与透支、`version + 1`、更新 0 行且重读仍够冻结时 10003、1062 读不到行时 10003。RELEASED 一律 40004。不改资金流向 |
