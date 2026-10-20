@@ -1,6 +1,6 @@
 # Database Schema
 
-> **Last updated:** 2026-10-19
+> **Last updated:** 2026-10-20
 > **Database engine/version:** MySQL 8.4.11（InnoDB，utf8mb4 / utf8mb4_bin）
 > **Schema sources:** `migrations/account/000001_init.up.sql`（`pay_account_0` 与 `pay_account_1` 各执行一次）、`migrations/payment/000001_init.up.sql`、`migrations/payment/000002_merchant_fee_rate.up.sql`、`migrations/recon/000001_init.up.sql`、`migrations/channel_mock/000001_init.up.sql`。设计稿 `docs/schema/schema_draft.sql` 已在 BASE-03 删除。golang-migrate 还会在每个 schema 创建工具表 `schema_migrations`（`version`、`dirty`），不在业务清单里。
 > **Owner:** pay-system 项目作者
@@ -116,7 +116,7 @@
 | `frozen_amount` | BIGINT | 否 | 0 | `ck_account_frozen` | 冻结金额（分），≥ 0，等于 FROZEN 冻结单合计 | 财务 |
 | `allow_overdraft` | TINYINT | 否 | 0 | `ck_account_available`、`ck_account_type_rule` | 由账户类型决定：MERCHANT_SETTLE 为 0，平台账户（含 TRANSIT）为 1 | 内部 |
 | `status` | VARCHAR(16) | 否 | `'ACTIVE'` | `ck_account_status` | ACTIVE / FROZEN / CLOSED，非 ACTIVE 不允许记账 | 内部 |
-| `version` | BIGINT UNSIGNED | 否 | 0 | — | 余额或冻结金额变更时 +1（ACC-04 冻结成功也加 1，不只是余额） | 内部 |
+| `version` | BIGINT UNSIGNED | 否 | 0 | — | 余额或冻结金额变更时 +1（ACC-04 冻结成功、ACC-05 解冻成功也加 1；ACC-05 墓碑插入不改账户） | 内部 |
 | `created_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | — | 创建时间 | 审计 |
 | `updated_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) ON UPDATE | — | 更新时间 | 审计 |
 
@@ -258,7 +258,7 @@
 | `amount` | BIGINT | 否 | — | `ck_freeze_amount` | > 0 | 财务 |
 | `status` | VARCHAR(16) | 否 | — | `idx_account_status` 2、`ck_freeze_status` | FROZEN / CONFIRMED / RELEASED | 内部 |
 | `txn_no` | VARCHAR(32) | 是 | NULL | — | CONFIRMED 时的记账凭证：REFUND 对应 REFUND 凭证，TRANSFER 对应 TRANSFER_OUT 凭证 | 内部 |
-| `version` | BIGINT UNSIGNED | 否 | 0 | — | | 内部 |
+| `version` | BIGINT UNSIGNED | 否 | 0 | — | 解冻成功时 +1；直接插入的 RELEASED 墓碑保持 0，且不改账户（ACC-05） | 内部 |
 | `created_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | — | | 审计 |
 | `updated_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) ON UPDATE | — | | 审计 |
 
@@ -951,6 +951,7 @@
 | 2026-10-14 | `migrations/*/000001_init.{up,down}.sql`；`cmd/bootstrap` | 全部业务表；新增工具表 `schema_migrations` | 设计稿拆成四个迁移目录。账户分片共用 `migrations/account/`，对 `pay_account_0`、`pay_account_1` 各执行一次，CHECK 约束名不再被 `LIKE` 重命名。删除 `docs/schema/schema_draft.sql`。bootstrap 创建五个 schema 和最小权限账号，不放进迁移文件 | 验证：compose 的 `mysql:8.4.11`（`SELECT VERSION()` = 8.4.11）上 `make migrate`、`make migrate DIR=down`、再 `make migrate` 均成功。表数：分片各 6（含 `schema_migrations`）、`pay_payment` 8、`pay_recon` 4、`pay_channel_mock` 2。CHECK：分片各 22、payment 26、recon 7、channel_mock 2，合计 79。两个分片没有 `%_chk_%` 约束名。`scripts/compare-account-shards.sh` 报告结构一致。集成测试用 testcontainers 的 `mysql:8.4.11` 复跑了同一批文件 |
 | 2026-10-17 | `migrations/payment/000002_merchant_fee_rate.up.sql`、`.down.sql` | 新增 `merchant_fee_rate`；`payment_order` 增加 `idx_pay_merchant_created` | PAY-10。费率历史只追加，无 `updated_at`。`merchant.fee_rate_bp` 仍是种子初始费率，不是生效费率。up 用 `INSERT … SELECT` 为已有商户补第一档；down 先删索引再删新表，不删 `payment_order` | 验证见 PAY-10 集成测试：MySQL 8.4.11 上 up 后表和索引存在，空商户回填 0 行；执行 down 后表和索引消失、`payment_order` 仍在；再执行 up，已插入商户得到一档且 `effective_from = created_at` |
 | 2026-10-19 | 无（仅文档） | `account.version` 的说明 | ACC-04：冻结成功时 `version` 也 +1，与余额变更使用同一列。无 DDL，不改 CHECK | 未执行迁移 |
+| 2026-10-20 | 无（仅文档） | `account.version`、`account_freeze.version` 的说明 | ACC-05：解冻成功时冻结单和账户的 `version` 都 +1。墓碑插入不改账户，冻结单 `version` 保持 0。无 DDL，不改 CHECK | 未执行迁移 |
 
 ## 6. Open Questions
 

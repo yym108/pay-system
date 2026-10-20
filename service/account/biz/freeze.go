@@ -22,8 +22,9 @@ const (
 	freezeNoPrefix  = "FZ"
 )
 
-// FreezeResult 是冻结结果。
-// Duplicated 为 true 时 FreezeNo 属于已有冻结单，本次没有增加 frozen_amount。
+// FreezeResult 是冻结或解冻的结果。
+// Duplicated 为 true 表示本次没有新写入：Freeze 没有增加 frozen_amount；
+// ReleaseFreeze 返回的是已经存在的 RELEASED 行。第一次成功写入时为 false。
 type FreezeResult struct {
 	FreezeNo   string
 	Status     string

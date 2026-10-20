@@ -1,6 +1,6 @@
 # pay-system 流程图（状态机、泳道图、控制流图）
 
-> 版本：v2.3　最后修改：2026-10-19　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14
+> 版本：v2.4　最后修改：2026-10-20　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15
 > 依据：`docs/02-requirements.md` v3.0、`docs/03-conventions.md` v2.0、`docs/01-tech-decisions.md` D17–D21；`docs/05-api.md`、`docs/database.md` 尚未同步 v3.0，冲突处以需求文档为准
 > 用途：以图的形式确认全部功能性设计。图是需求的视图，规则冲突时以需求文档为准；需求变更后同步修改对应的图。
 
@@ -1442,22 +1442,43 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    S(["ReleaseFreeze(biz_type, biz_no, merchant_id, amount)"]) --> RT["按 merchant_id 路由到分片 s"]
-    RT --> R
-    subgraph TX["分片 s 事务"]
-        R{"冻结单 (biz_type, biz_no)"}
-        R -->|"FROZEN"| C["CAS FROZEN→RELEASED<br/>frozen_amount −= amount（条件 frozen_amount ≥ amount）"]
-        R -->|"不存在"| T["INSERT account_freeze(RELEASED) 墓碑<br/>不改账户（空回滚）"]
+    S(["ReleaseFreeze(biz_type, biz_no, merchant_id, amount)"]) --> V{"biz_type 为 REFUND / TRANSFER<br/>biz_no 为 1–64 个码点<br/>amount 为正的 int64 分<br/>shard.Of(merchant_id) 合法"}
+    V -->|"否"| E10001a["10001，不发号、不写行"]:::err
+    V -->|"是"| R
+    subgraph TX["分片 s 事务；freeze_no 在事务外 NewNo FZ，只给墓碑；成功才 COMMIT"]
+        R{"冻结单 (biz_type, biz_no)<br/>读到就 FOR UPDATE"}
+        R -->|"不存在"| AC{"MERCHANT_SETTLE<br/>sub_no = 0，CNY"}
+        AC -->|"不存在"| E40001["40001，ROLLBACK，不插入"]:::err
+        AC -->|"allow_overdraft 不是 0"| E10001b["10001，ROLLBACK，不插入"]:::err
+        AC -->|"有账户"| INS["INSERT account_freeze(RELEASED)<br/>version = 0，txn_no 空<br/>不改 balance，不改 frozen_amount"]
+        INS -->|"1062"| EX{"同一事务再读"}
+        R -->|"RELEASED"| OKIDEM(["幂等成功，duplicated = true<br/>返回已有 freeze_no，不改账户"]):::ok
+        R -->|"CONFIRMED"| E40004["40004，不再比较金额和账户"]:::err
+        R -->|"FROZEN"| MATCH{"金额等于冻结单<br/>且 account_id 是该商户结算账户"}
+        MATCH -->|"否"| E10006["10006，旧行不变，frozen_amount 不变"]:::err
+        MATCH -->|"是"| CAS["CAS status = RELEASED，version + 1<br/>WHERE status = FROZEN AND amount AND account_id<br/>不要求账户 ACTIVE"]
+        CAS -->|"影响 0 行"| RD{"同一事务重读冻结单"}
+        CAS -->|"影响 1 行"| UP["UPDATE frozen_amount −= amount，version + 1<br/>WHERE frozen_amount ≥ amount<br/>不改 balance，不看 ACTIVE"]
+        R -->|"其他状态"| E10003d["10003"]:::err
     end
-    C --> OK(["返回 RELEASED"]):::ok
-    T --> OK
-    R -->|"RELEASED"| OK2(["幂等成功"]):::ok
-    R -->|"CONFIRMED"| E40004["40004"]:::err
-    T -.- N["墓碑占用 (biz_type, biz_no)<br/>迟到的 Freeze 在唯一索引上冲突，返回 40004（防悬挂）"]
+    INS -->|"成功"| OKNEW(["COMMIT，duplicated = false<br/>RELEASED，freeze_no 用新号"]):::ok
+    EX -->|"RELEASED"| OKIDEM
+    EX -->|"CONFIRMED"| E40004
+    EX -->|"FROZEN 且一致"| CAS
+    EX -->|"FROZEN 不一致"| E10006
+    EX -->|"读不到或其他"| E10003a["10003，包住 1062"]:::err
+    UP -->|"影响 1 行"| OKOLD(["COMMIT，duplicated = false<br/>RELEASED，freeze_no 用已有的<br/>冻结单和账户 version 各加 1"]):::ok
+    UP -->|"影响 0 行"| E10003b["ROLLBACK，10003<br/>冻结单保持 FROZEN，不改成 40002"]:::err
+    RD -->|"变成 RELEASED"| OKIDEM
+    RD -->|"变成 CONFIRMED"| E40004
+    RD -->|"仍是 FROZEN 或读不到"| E10003c["10003"]:::err
+    INS -.- N["墓碑占住 uk_biz<br/>迟到的 Freeze 看到 RELEASED 返回 40004，不增加冻结"]
     classDef ok fill:#e3f6e8,stroke:#2e7d32
     classDef err fill:#fde4e4,stroke:#c62828
     classDef fault fill:#fff4d6,stroke:#b8860b
 ```
+
+参数不合法不发号、不写行；上下文已经取消时也先返回 `10001`。`freeze_no` 在 `BEGIN` 之前生成，只在插入墓碑时使用；时钟回拨超过 5ms 映射为已有的 `10004`。已有 FROZEN 解冻成功时返回原来的 `freeze_no`，不用这次新生成的号。`RELEASED` 幂等成功，不再比较金额和账户。`CONFIRMED` 一律 `40004`，不再比较金额和账户。FROZEN 的金额或结算账户不一致才是 `10006`。解冻不要求账户 `ACTIVE`，停用账户也减 `frozen_amount`，不返回 `40005`，不改 `balance`。账户更新影响 0 行则 `10003` 并回滚，冻结单保持 `FROZEN`，不改写成 `40002`，也不在事务里重试。1062 不结束 InnoDB 事务。先锁冻结单再更新账户，与 Freeze 相同。错误分支由 `dbx.WithTx` 回滚，已经提交的旧行不受影响。
 
 #### CF-16 确认扣款
 
@@ -2163,3 +2184,4 @@ R1–R14 来自 v1.x 绘图，已落入需求文档 v2.2；R15 起来自 v2.0 �
 | 2026-10-15 | v2.1 | ACC-03：CF-13 改为本连接缺账户（含另一分片）返回 40003，不再画 40001；1062 在同一事务读取已有凭证，Post 不回滚；`txn_no` 在行锁之前生成；`REVERSAL` 在校验阶段拒绝，不进入记账。不改资金流向 |
 | 2026-10-15 | v2.2 | ACC-03：CF-13 的 1062 补上同一事务按 `(biz_type, biz_no)` SELECT 不到时返回 10003、由调用方回滚的出口。不改资金流向 |
 | 2026-10-19 | v2.3 | ACC-04：CF-14 补上参数 10001、事务内先判断账户与透支、`version + 1`、更新 0 行且重读仍够冻结时 10003、1062 读不到行时 10003。RELEASED 一律 40004。不改资金流向 |
+| 2026-10-20 | v2.4 | ACC-05：CF-15 补上参数 10001、账户不存在 40001、FROZEN 金额或账户不一致 10006、CONFIRMED 一律 40004、RELEASED 幂等、账户更新 0 行则 10003 且回滚、停用账户仍解冻。不改资金流向 |
