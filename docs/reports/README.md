@@ -23,3 +23,4 @@
 | PAY-10 | 商户费率变更与订单手续费核对 | 支付 | `9587a08` | 2026-10-19 | [PAY-10-fee-rate.md](PAY-10-fee-rate.md) |
 | ACC-04 | 冻结 | 基础设施 | `747a27a` | 2026-10-19 | [ACC-04-freeze.md](ACC-04-freeze.md) |
 | ACC-05 | 解冻 | 基础设施 | `1db50ae` | 2026-10-20 | [ACC-05-release.md](ACC-05-release.md) |
+| ACC-06 | 确认扣款 | 基础设施 | `0608708` | 2026-10-20 | [ACC-06-confirm.md](ACC-06-confirm.md) |
