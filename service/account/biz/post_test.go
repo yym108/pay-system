@@ -573,6 +573,9 @@ func TestPostSQLHelpers(t *testing.T) {
 	if _, err := db.updateBalance(ctx, 1, 1, nil); !errors.Is(err, errNilTx) {
 		t.Fatalf("updateBalance = %v", err)
 	}
+	if _, err := db.updateFrozenDebit(ctx, 1, -1, 1); !errors.Is(err, errNilTx) {
+		t.Fatalf("updateFrozenDebit = %v", err)
+	}
 	if _, _, err := db.selectBalance(ctx, 1); !errors.Is(err, errNilTx) {
 		t.Fatalf("selectBalance = %v", err)
 	}
@@ -599,6 +602,11 @@ type balanceUpdate struct {
 	guard *money.Amount
 }
 
+type frozenDebitUpdate struct {
+	delta   money.Amount
+	release money.Amount
+}
+
 type fakePostTx struct {
 	insertErr     error
 	inserts       int
@@ -611,6 +619,7 @@ type fakePostTx struct {
 	locks         int
 	lockErr       error
 	deltas        map[uint64]balanceUpdate
+	frozenDeltas  map[uint64]frozenDebitUpdate
 	updates       int
 	updateErr     error
 	forceZero     map[uint64]bool
@@ -666,6 +675,36 @@ func (f *fakePostTx) updateBalance(_ context.Context, accountID uint64, delta mo
 		return false, err
 	}
 	row.Balance = next
+	f.accounts[accountID] = row
+	return true, nil
+}
+
+func (f *fakePostTx) updateFrozenDebit(_ context.Context, accountID uint64, delta, release money.Amount) (bool, error) {
+	f.updates++
+	if f.frozenDeltas == nil {
+		f.frozenDeltas = map[uint64]frozenDebitUpdate{}
+	}
+	f.frozenDeltas[accountID] = frozenDebitUpdate{delta: delta, release: release}
+	if f.updateErr != nil {
+		return false, f.updateErr
+	}
+	if f.forceZero[accountID] {
+		return false, nil
+	}
+	row, ok := f.accounts[accountID]
+	if !ok || row.FrozenAmount < release {
+		return false, nil
+	}
+	next, err := money.Add(row.Balance, delta)
+	if err != nil {
+		return false, err
+	}
+	frozen, err := money.Sub(row.FrozenAmount, release)
+	if err != nil {
+		return false, err
+	}
+	row.Balance = next
+	row.FrozenAmount = frozen
 	f.accounts[accountID] = row
 	return true, nil
 }

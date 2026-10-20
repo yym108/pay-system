@@ -13,6 +13,7 @@ import (
 
 	"github.com/yym108/pay-system/pkg/dbx"
 	"github.com/yym108/pay-system/pkg/errno"
+	"github.com/yym108/pay-system/pkg/idgen"
 	"github.com/yym108/pay-system/pkg/money"
 )
 
@@ -49,6 +50,9 @@ type postRequest struct {
 	Memo    string
 	Entries []Entry
 	Debit   money.Amount
+	// FrozenAccountID 非 0 时，该商户账户用确认扣款的更新代替普通借方更新。
+	// 为 0 时与现在的记账完全相同。只有 ConfirmFreeze 设置，公开的 Post 不设置。
+	FrozenAccountID uint64
 }
 
 type ledgerTxnInsert struct {
@@ -82,10 +86,11 @@ type ledgerEntryRow struct {
 }
 
 type preparedEntry struct {
-	entry    Entry
-	delta    money.Amount
-	decrease bool
-	guard    *money.Amount
+	entry         Entry
+	delta         money.Amount
+	decrease      bool
+	guard         *money.Amount
+	releaseFrozen money.Amount
 }
 
 // postTx 是调用方已经打开的同一个分片事务。
@@ -95,6 +100,7 @@ type postTx interface {
 	selectTxnNo(ctx context.Context, bizType, bizNo string) (string, bool, error)
 	lockAccount(ctx context.Context, accountID uint64) (lockedAccount, bool, error)
 	updateBalance(ctx context.Context, accountID uint64, delta money.Amount, guard *money.Amount) (bool, error)
+	updateFrozenDebit(ctx context.Context, accountID uint64, delta, release money.Amount) (bool, error)
 	selectBalance(ctx context.Context, accountID uint64) (money.Amount, bool, error)
 	reloadAccount(ctx context.Context, accountID uint64) (lockedAccount, bool, error)
 	insertEntries(ctx context.Context, rows []ledgerEntryRow) error
@@ -134,6 +140,35 @@ func (s *Service) Post(ctx context.Context, tx *sqlx.Tx, bizType, bizNo, memo st
 		Memo:    memo,
 		Entries: entries,
 		Debit:   debit,
+	})
+}
+
+// postEntries 在调用方已经打开的事务里记账，不提交。
+// frozenAccountID 为 0 时与 Post 相同。只有确认扣款传入被冻结的商户账户。
+// 凭证号在锁账户之前生成。发号错误沿用 mapIDError，调用方不要再包一层。
+func postEntries(ctx context.Context, ids *idgen.Generator, db postTx, bizType, bizNo, memo string, entries []Entry, frozenAccountID uint64) (PostResult, error) {
+	debit, err := validatePost(bizType, bizNo, memo, entries)
+	if err != nil {
+		return PostResult{}, err
+	}
+	if ctx == nil || ids == nil {
+		return PostResult{}, errno.ErrInternal
+	}
+	if err = ctx.Err(); err != nil {
+		return PostResult{}, err
+	}
+	txnNo, err := ids.NewNo(ctx, txnNoPrefix)
+	if err != nil {
+		return PostResult{}, mapIDError(err)
+	}
+	return applyPost(ctx, db, postRequest{
+		TxnNo:           txnNo,
+		BizType:         bizType,
+		BizNo:           bizNo,
+		Memo:            memo,
+		Entries:         entries,
+		Debit:           debit,
+		FrozenAccountID: frozenAccountID,
 	})
 }
 
@@ -218,17 +253,28 @@ func applyPost(ctx context.Context, db postTx, req postRequest) (PostResult, err
 		}
 		locked = append(locked, row)
 	}
-	planned, err := planBalances(ordered, locked)
+	planned, err := planBalances(ordered, locked, req.FrozenAccountID)
 	if err != nil {
 		return PostResult{}, err
 	}
 	after := make([]money.Amount, len(planned))
 	for i, item := range planned {
-		ok, updateErr := db.updateBalance(ctx, item.entry.AccountID, item.delta, item.guard)
+		var (
+			ok        bool
+			updateErr error
+		)
+		if item.releaseFrozen > 0 {
+			ok, updateErr = db.updateFrozenDebit(ctx, item.entry.AccountID, item.delta, item.releaseFrozen)
+		} else {
+			ok, updateErr = db.updateBalance(ctx, item.entry.AccountID, item.delta, item.guard)
+		}
 		if updateErr != nil {
 			return PostResult{}, internalErr(updateErr)
 		}
 		if !ok {
+			if item.releaseFrozen > 0 {
+				return PostResult{}, classifyFrozenDebitMiss(ctx, db, item)
+			}
 			return PostResult{}, classifyNoUpdate(ctx, db, item)
 		}
 		balance, found, readErr := db.selectBalance(ctx, item.entry.AccountID)
@@ -278,7 +324,7 @@ func sortEntries(entries []Entry) []Entry {
 	return ordered
 }
 
-func planBalances(entries []Entry, rows []lockedAccount) ([]preparedEntry, error) {
+func planBalances(entries []Entry, rows []lockedAccount, frozenAccountID uint64) ([]preparedEntry, error) {
 	if len(entries) != len(rows) {
 		return nil, errno.ErrInternal
 	}
@@ -291,7 +337,8 @@ func planBalances(entries []Entry, rows []lockedAccount) ([]preparedEntry, error
 		if row.Currency != currencyCNY {
 			return nil, errno.ErrUnbalancedEntries
 		}
-		if row.Status != statusActive {
+		// 被确认的商户腿不要求 ACTIVE。停用后这笔冻结仍然要能扣掉。
+		if row.Status != statusActive && (frozenAccountID == 0 || entry.AccountID != frozenAccountID) {
 			return nil, errno.ErrAccountInactive
 		}
 	}
@@ -311,7 +358,11 @@ func planBalances(entries []Entry, rows []lockedAccount) ([]preparedEntry, error
 			return nil, errno.Wrap(errno.ErrInternal, err)
 		}
 		var guard *money.Amount
-		if decrease && row.AllowOverdraft == overdraftNo {
+		var release money.Amount
+		if frozenAccountID != 0 && entry.AccountID == frozenAccountID {
+			// 冻结已经占住这笔钱。全额冻结时可用余额是 0，不能再用普通借方条件。
+			release = entry.Amount
+		} else if decrease && row.AllowOverdraft == overdraftNo {
 			avail, subErr := money.Sub(row.Balance, row.FrozenAmount)
 			if subErr != nil {
 				return nil, errno.Wrap(errno.ErrInternal, subErr)
@@ -322,7 +373,7 @@ func planBalances(entries []Entry, rows []lockedAccount) ([]preparedEntry, error
 			amount := entry.Amount
 			guard = &amount
 		}
-		out[i] = preparedEntry{entry: entry, delta: delta, decrease: decrease, guard: guard}
+		out[i] = preparedEntry{entry: entry, delta: delta, decrease: decrease, guard: guard, releaseFrozen: release}
 	}
 	return out, nil
 }
@@ -361,6 +412,19 @@ func classifyNoUpdate(ctx context.Context, db postTx, item preparedEntry) error 
 	return errno.ErrInternal
 }
 
+func classifyFrozenDebitMiss(ctx context.Context, db postTx, item preparedEntry) error {
+	row, found, err := db.reloadAccount(ctx, item.entry.AccountID)
+	if err != nil {
+		return internalErr(err)
+	}
+	if !found || row.FrozenAmount < item.releaseFrozen {
+		// 行没了，或冻结仍小于 R。不是可用余额不足，也不是账户停用。
+		return errno.ErrInternal
+	}
+	// 重读冻结仍然够减，但这条没写上。不要空转，也不要改成 40002 或 40005。
+	return errno.ErrInternal
+}
+
 const insertTxnSQL = `
 INSERT INTO ledger_txn (
   txn_no, biz_type, biz_no, amount, currency, entry_count, memo
@@ -389,6 +453,13 @@ const updateBalanceGuardSQL = `
 UPDATE account
 SET balance = balance + ?, version = version + 1
 WHERE id = ? AND status = 'ACTIVE' AND balance - frozen_amount >= ?`
+
+// 确认扣款的商户腿。余额增量是分录的有符号 delta，冻结减去的是正数金额。
+// 不要求 ACTIVE，也不看可用余额。version 只加这一次。
+const updateFrozenDebitSQL = `
+UPDATE account
+SET balance = balance + ?, frozen_amount = frozen_amount - ?, version = version + 1
+WHERE id = ? AND frozen_amount >= ?`
 
 const selectBalanceSQL = `
 SELECT balance FROM account WHERE id = ?`
@@ -475,6 +546,27 @@ func (s sqlPostTx) updateBalance(ctx context.Context, accountID uint64, delta mo
 	}
 	if n != 1 {
 		return false, fmt.Errorf("biz: balance update affected %d", n)
+	}
+	return true, nil
+}
+
+func (s sqlPostTx) updateFrozenDebit(ctx context.Context, accountID uint64, delta, release money.Amount) (bool, error) {
+	if s.tx == nil {
+		return false, errNilTx
+	}
+	res, err := s.tx.ExecContext(ctx, updateFrozenDebitSQL, int64(delta), int64(release), accountID, int64(release))
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	if n == 0 {
+		return false, nil
+	}
+	if n != 1 {
+		return false, fmt.Errorf("biz: frozen debit affected %d", n)
 	}
 	return true, nil
 }

@@ -1,6 +1,6 @@
 # pay-system 流程图（状态机、泳道图、控制流图）
 
-> 版本：v2.4　最后修改：2026-10-20　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15
+> 版本：v2.5　最后修改：2026-10-20　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16
 > 依据：`docs/02-requirements.md` v3.0、`docs/03-conventions.md` v2.0、`docs/01-tech-decisions.md` D17–D21；`docs/05-api.md`、`docs/database.md` 尚未同步 v3.0，冲突处以需求文档为准
 > 用途：以图的形式确认全部功能性设计。图是需求的视图，规则冲突时以需求文档为准；需求变更后同步修改对应的图。
 
@@ -1486,25 +1486,43 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    S(["ConfirmFreeze(biz_type, biz_no, merchant_id, channel)"]) --> RT["按 merchant_id 路由到分片 s<br/>子账户 k = crc32(biz_no) % PLATFORM_SUB_ACCOUNTS"]
-    RT --> CR{"biz_type"}
-    CR -->|"REFUND"| CA["贷方：分片 s CHANNEL_RECEIVABLE(channel) 子账户 k<br/>凭证 REFUND / refund_no"]
-    CR -->|"TRANSFER"| CB["贷方：分片 s TRANSIT 子账户 k<br/>凭证 TRANSFER_OUT / transfer_no，channel 为空"]
-    CA --> R
-    CB --> R
-    subgraph TX["分片 s 事务"]
-        R{"冻结单状态"}
-        R -->|"FROZEN"| C["CAS FROZEN→CONFIRMED"]
-        C --> P["Post（CF-13）：借 商户账户 R，贷 上述子账户 R<br/>商户账户 balance −R、frozen_amount −R（WHERE frozen_amount ≥ R）"]
-        P --> W["回写 account_freeze.txn_no"]
+    S(["ConfirmFreeze(biz_type, biz_no, merchant_id, channel)<br/>请求没有金额，R 取冻结单 amount"]) --> V{"参数合法<br/>REFUND 或 TRANSFER<br/>biz_no 1 到 64 个码点<br/>shard.Of 成功<br/>REFUND：channel 非空且不超过 32 个码点<br/>TRANSFER：channel 恰好空串"}
+    V -->|"否，即使 service 为 nil 或 ctx 已取消"| E10001["10001，不进事务，不发号，不写行"]:::err
+    V -->|"是"| NIL{"service、ctx、发号器、pools 可用<br/>subCount 大于等于 1，ShardDB 成功"}
+    NIL -->|"否"| E10003n["10003。subCount 小于 1 也是 10003"]:::err
+    NIL -->|"ctx 已取消或已过截止"| ECANCEL["原样返回，不进事务，不改写成 10003"]:::err
+    NIL -->|"是"| L
+    subgraph TX["分片 s 事务。ConfirmFreeze 自己 WithTx。Post 不提交。不新发 FZ"]
+        L["先 SELECT 冻结单 FOR UPDATE，多读 txn_no<br/>不插入墓碑"]
+        L --> ST{"状态"}
+        ST -->|"不存在或 RELEASED"| E40004["40004，ROLLBACK<br/>不插入，不记账，不改余额和冻结"]:::err
+        ST -->|"CONFIRMED 且 txn_no 非空"| OKDUP(["duplicated = true<br/>返回已有 freeze_no 和 txn_no<br/>不再比较 channel，不再记账"]):::ok
+        ST -->|"CONFIRMED 但 txn_no 为空"| E10003t["10003，不写"]:::err
+        ST -->|"其他状态"| E10003u["10003，不写"]:::err
+        ST -->|"FROZEN"| AC{"本分片 MERCHANT_SETTLE<br/>sub_no = 0，CNY"}
+        AC -->|"没有，或 account_id 不是这张结算账户"| E10006["10006，不写，不返回 40001"]:::err
+        AC -->|"allow_overdraft 不是 0"| E10001b["10001，不写"]:::err
+        AC -->|"是"| SUB{"k = shard.Sub(biz_no, subCount)"}
+        SUB -->|"失败"| E10003s["10003，不写"]:::err
+        SUB -->|"成功"| PL{"本分片平台贷方<br/>REFUND：channel 的 CHANNEL_RECEIVABLE，sub_no = k<br/>TRANSFER：owner PLATFORM 的 TRANSIT，sub_no = k"}
+        PL -->|"没有这行"| E40001["40001，不调用 Post，不改冻结单<br/>不是按所有者查不到的 40003"]:::err
+        PL -->|"id 与商户账户相同"| E10003i["10003"]:::err
+        PL -->|"有"| POST["同一事务记账。TX 号在锁账户之前生成<br/>先按账户 id 升序锁账户<br/>借商户结算 R，贷平台子账户 R，memo 空<br/>商户腿：balance 加有符号 delta，frozen_amount 减 R<br/>WHERE frozen_amount 大于等于 R<br/>不要求 ACTIVE，不看可用余额，version 加 1<br/>平台腿仍走普通余额更新，version 再加 1"]
+        POST -->|"平台不是 ACTIVE"| E40005["40005，ROLLBACK，冻结单保持 FROZEN"]:::err
+        POST -->|"平台币种不是 CNY"| E40003["40003，ROLLBACK，冻结单保持 FROZEN"]:::err
+        POST -->|"冻结更新影响 0 行"| E10003f["同一事务重读。行没了或冻结仍小于 R：10003<br/>ROLLBACK，不改成 40002 或 40005"]:::err
+        POST -->|"凭证已存在，duplicated = true"| E10003d["10003，不 CAS，不减冻结<br/>ROLLBACK 这次事务。已提交的旧凭证不动"]:::err
+        POST -->|"其他业务错误"| EPOST["原样交给 WithTx 回滚，冻结单保持 FROZEN"]:::err
+        POST -->|"成功且 duplicated = false"| CAS["CAS status = CONFIRMED，同时写入 txn_no，version 加 1<br/>WHERE status = FROZEN AND amount AND account_id"]
     end
-    W --> OK(["返回 freeze_no、txn_no"]):::ok
-    R -->|"CONFIRMED"| OK2(["返回已有 txn_no"]):::ok
-    R -->|"RELEASED / 不存在"| E40004["40004，无任何写入"]:::err
+    CAS -->|"影响 1 行"| OK(["COMMIT，duplicated = false<br/>返回已有 freeze_no 和这次 txn_no"]):::ok
+    CAS -->|"影响 0 行"| E10003c["10003，ROLLBACK<br/>不当成幂等成功，否则会提交刚插入的凭证"]:::err
     classDef ok fill:#e3f6e8,stroke:#2e7d32
     classDef err fill:#fde4e4,stroke:#c62828
     classDef fault fill:#fff4d6,stroke:#b8860b
 ```
+
+参数不合法在事务前返回 `10001`，即使 service 为 nil 或上下文已取消。先锁冻结单，再按账户 id 升序锁账户，避免和普通记账死锁。`REFUND` 贷渠道应收，凭证 `REFUND`，渠道应收余额减少 R。`TRANSFER` 贷在途，凭证 `TRANSFER_OUT`，冻结单自己的 `biz_type` 仍是 `TRANSFER`，在途余额增加 R。商户腿不走普通借方的可用余额条件。平台非 `ACTIVE` 为 `40005`，回滚后冻结单保持 `FROZEN`。冻结不够减是 `10003`，不是 `40002`。凭证已经存在而冻结单仍是 `FROZEN`，或确认 CAS 影响 0 行，都是 `10003` 并回滚，不当成幂等成功。`CONFIRMED` 重放忽略 `channel`。`RELEASED` 或不存在是 `40004`，不插入。不改资金流向。
 
 #### CF-17 余额核对
 
@@ -2185,3 +2203,4 @@ R1–R14 来自 v1.x 绘图，已落入需求文档 v2.2；R15 起来自 v2.0 �
 | 2026-10-15 | v2.2 | ACC-03：CF-13 的 1062 补上同一事务按 `(biz_type, biz_no)` SELECT 不到时返回 10003、由调用方回滚的出口。不改资金流向 |
 | 2026-10-19 | v2.3 | ACC-04：CF-14 补上参数 10001、事务内先判断账户与透支、`version + 1`、更新 0 行且重读仍够冻结时 10003、1062 读不到行时 10003。RELEASED 一律 40004。不改资金流向 |
 | 2026-10-20 | v2.4 | ACC-05：CF-15 补上参数 10001、账户不存在 40001、FROZEN 金额或账户不一致 10006、CONFIRMED 一律 40004、RELEASED 幂等、账户更新 0 行则 10003 且回滚、停用账户仍解冻。不改资金流向 |
+| 2026-10-20 | v2.5 | ACC-06：CF-16 补上事务前 10001、先锁冻结单、10006、40001、商户腿特殊更新、平台 40005 回滚且保持 FROZEN、CAS 同时写 txn_no、凭证已存在但冻结单仍 FROZEN 则 10003、CONFIRMED 重放忽略 channel、RELEASED 或不存在 40004 且不插入、冻结不足 10003 回滚。不改资金流向 |

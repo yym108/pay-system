@@ -356,7 +356,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | ACC-03 | 通用记账 | P0 | M1 | ACC-01、BASE-04 | DONE |
 | ACC-04 | 冻结 | P0 | M2 | ACC-03 | DONE |
 | ACC-05 | 解冻（含空回滚、防悬挂） | P0 | M2 | ACC-04 | DONE |
-| ACC-06 | 确认扣款 | P0 | M2 | ACC-04 | TODO |
+| ACC-06 | 确认扣款 | P0 | M2 | ACC-04 | DONE |
 | ACC-07 | 同分片转账（含失败墓碑） | P0 | M2 | ACC-03 | TODO |
 | ACC-14 | 收款方转账分支（Try / Confirm / Cancel） | P0 | M2 | ACC-03 | TODO |
 | ACC-08 | 冲正 | P1 | M8 | ACC-03 | TODO |
@@ -965,20 +965,34 @@ DSN 只按驱动的文本规则装配，不连接数据库：
 
 `P0 · M2 · 依赖：ACC-04 · 表：account_freeze、ledger_txn、ledger_entry、account`
 
-接口：`AccountService.ConfirmFreeze(biz_type, biz_no, merchant_id, channel)` → `{freeze_no, txn_no}`
+接口：`biz.ConfirmFreeze(ctx, biz_type, biz_no, merchant_id, channel)` → `{freeze_no, txn_no, duplicated}`（进程内方法。IDL 已有 `ConfirmFreeze`，RPC handler 仍是 ACC-11，本功能点不监听、不改 IDL。响应契约仍是 `freeze_no`、`txn_no`。`duplicated` 只在进程内，不进 RPC。请求没有金额，金额 R 只用冻结单上的 `amount`。第一次成功 `duplicated = false`，返回冻结单上已有的 `freeze_no`，不新发 `FZ`。已 `CONFIRMED` 的重放 `duplicated = true`，返回已有 `freeze_no` 和 `txn_no`，不再比较 `channel`，不再记账。）
 
 规则：
 
-1. 贷方账户由 `biz_type` 决定：`REFUND` → 本分片 `CHANNEL_RECEIVABLE(channel)` 子账户，凭证 `REFUND` / refund_no；`TRANSFER` → 本分片 `TRANSIT` 子账户，凭证 `TRANSFER_OUT` / transfer_no（`channel` 为空）。
-2. 同一分片事务：CAS 冻结单 FROZEN → CONFIRMED；按 ACC-03 记账（借：商户账户，贷：上述平台子账户），其中商户账户的更新为 `balance = balance - R, frozen_amount = frozen_amount - R WHERE frozen_amount >= R`；回写 `account_freeze.txn_no`。
-3. 已 CONFIRMED：返回已有 `txn_no`。已 RELEASED 或不存在：`40004`。
+1. 校验在进数据库之前，与 Release 一样：先校验，再判 nil。参数不合法时，即使 service 为 nil 或上下文已取消，也先返回已有的 `10001`，不发号、不写行。`biz_type` 只允许已有常量 `REFUND` / `TRANSFER`。`biz_no` 按码点 1–64。`shard.Of(merchant_id)` 失败 → `10001`。`REFUND` 的 `channel` 必须通过已有的渠道所有者校验（非空且不超过 32 个码点）。`TRANSFER` 的 `channel` 必须恰好是空串。其他情况 `10001`。
+2. 参数合法后：nil service、nil ctx、nil 发号器、nil pools、`subCount < 1`、`ShardDB` 失败 → `10003`。`subCount < 1` 是服务配置问题，不是 `10001`。上下文已取消或已过截止时间，原样返回，不进事务，不改写成 `10003`。
+3. ConfirmFreeze 自己不调用 `NewNo`。`TX` 号仍由记账在调用方事务内、账户行锁之前生成。本方法没有单独的时钟回拨路径；发号错误沿用记账的映射（时钟回拨仍是已有的 `10004`），不要再包一层。事务由 ConfirmFreeze 自己用 `dbx.WithTx` 提交该商户分片。记账仍然不 `BEGIN` / `COMMIT` / `ROLLBACK`，也不调用 `WithTx`。事务内不调用 RPC、HTTP、MQ。
+4. 锁顺序：先 `SELECT ... FOR UPDATE` 锁冻结单，再按账户 id 升序锁账户。不要先改商户账户再锁更小 id 的平台账户，否则会和普通记账死锁。不要插入墓碑。确认用自己的查询，多读 `txn_no`，不改解冻用的冻结单列清单。
+5. 冻结单分支：
+   - 没有行，或状态 `RELEASED`：`40004`。不插入、不记账、不改余额、不改冻结金额。墓碑不能被确认成真实扣款。
+   - `CONFIRMED`：`txn_no` 非空则幂等成功，`duplicated = true`，不记账，不再比较 `channel`。`txn_no` 为 NULL 或空串 → `10003`，不写。
+   - 其他未知状态 → `10003`，不写。
+   - `FROZEN`：用已有商户结算账户查询（`MERCHANT_SETTLE`、`sub_no = 0`、`CNY`、本分片）。没找到，或 `account_id` 不是这张结算账户 → `10006`，不写。不要为了“找不到商户”返回 `40001`。该结算账户 `allow_overdraft != 0` → `10001`，不写。子账户 `k = shard.Sub(biz_no, subCount)`，失败 → `10003`，不写。平台贷方只在本分片查：`REFUND` 为 `PLATFORM` + `owner_id = channel` + `CHANNEL_RECEIVABLE` + `CNY` + `sub_no = k`；`TRANSFER` 为 `PLATFORM` + `owner_id = PLATFORM` + `TRANSIT` + `CNY` + `sub_no = k`。查不到这行 → `40001`，不调用记账，不改冻结单。不要把“按所有者查不到”写成记账的 `40003`。平台账户 id 与商户账户 id 相同 → `10003`。然后在同一事务记账。公开的 `Post` 不加参数。
+   - 记账成功且 `duplicated = false` 之后再 CAS：`UPDATE account_freeze SET status = 'CONFIRMED', txn_no = ?, version = version + 1 WHERE biz_type = ? AND biz_no = ? AND status = 'FROZEN' AND amount = ? AND account_id = ?`。影响 1 行：提交，`duplicated = false`，返回已有 `freeze_no` 和这次的 `txn_no`。影响 0 行：这行已被 `FOR UPDATE` 锁住，WHERE 没对上，返回 `10003` 让事务回滚。不要当成幂等成功，否则会把刚插入的凭证一起提交。不要空转重试。
+   - 记账返回 `duplicated = true`（冻结单仍是 `FROZEN`，但凭证已存在）：返回 `10003`，不要 CAS，不要减冻结。本次事务回滚；已经提交的旧凭证不动。
+   - 记账返回的业务错误原样交给事务回滚，冻结单保持 `FROZEN`。
+6. 商户腿不能用普通记账的借方条件。普通借方是 `status = 'ACTIVE' AND balance - frozen_amount >= ?`，而且不改 `frozen_amount`。可用余额为 0 的全额冻结会被它拒绝，也不能把冻结减掉。公开 `Post` 行为不变：普通借方仍走原来的可用余额条件和 `ACTIVE` 检查，不改 `frozen_amount`。
+7. 只有确认扣款设置未导出选项：被冻结的商户账户 id。为 0 时路径与现在完全一样。该账户在同一次记账里、账户已经按 id 升序锁住之后，用 `UPDATE account SET balance = balance + ?, frozen_amount = frozen_amount - ?, version = version + 1 WHERE id = ? AND frozen_amount >= ?` 代替普通借方更新。`balance` 的增量是这笔分录的有符号 delta（商户结算账户是 `CREDIT`，借方分录使余额减少，delta 为负）。冻结减去的是分录金额 R（正数）。不要求 `ACTIVE`。停用（账户 status 为 `FROZEN` 或 `CLOSED`）的商户仍然确认，商户腿不返回 `40005`。不使用可用余额条件，不返回 `40002`。影响 0 行：同一事务重读。行没了，或 `frozen_amount` 仍小于 R → `10003`。不空转，不改写成 `40002` 或 `40005`。MySQL CHECK 3819 若因假数据触发，变成 `10003`，不是 `40002`。这条更新只加一次 `version`。平台账户仍走原来的余额更新，`version` 再加 1。
+8. 平台账户仍走现有记账规则：币种不是 `CNY` → `40003`；不是 `ACTIVE` → `40005`，整个事务回滚，冻结单保持 `FROZEN`。渠道应收和在途都允许透支，贷方不会因为余额不足失败。
+9. 分录两条，金额都是 R。借：商户结算账户，`direction = DEBIT`。贷：上面选出的平台子账户，`direction = CREDIT`。`REFUND` 凭证的 `biz_type = REFUND`，`biz_no` 为冻结单的 `biz_no`。渠道应收是 `DEBIT` 方向账户，贷记使其 `balance` 减少。`TRANSFER` 凭证的 `biz_type = TRANSFER_OUT`，`biz_no` 为冻结单的 `biz_no`。冻结单自己的 `biz_type` 仍是 `TRANSFER`。两张表的唯一键互不占用。在途是 `CREDIT` 方向账户，贷记使其 `balance` 增加。`memo` 为空串。`balance_after` 仍由记账在更新后读到的 `balance` 写入。不改分录，只追加。商户余额和冻结同减 R，可用余额不变，`ck_account_available` 仍成立。
+10. 不新增错误码。会用到的已有码：`10001`、`10003`、`10004`、`10006`、`40001`、`40003`、`40004`、`40005`。确认失败不返回 `40002`。`Error()` 不带 SQL、地址、口令。
 
 验收：
 
-- [ ] 余额 9940、冻结 3000，确认后余额 6940、冻结 0，渠道应收减少 3000。
-- [ ] `TRANSFER` 冻结确认后，商户余额与冻结各减 T，本分片在途增加 T，凭证类型为 `TRANSFER_OUT`。
-- [ ] 重复确认只记一次账。
-- [ ] 对 RELEASED 冻结单确认返回 `40004`，无任何写入。
+- [x] 余额 9940、冻结 3000，确认后余额 6940、冻结 0，渠道应收减少 3000。
+- [x] `TRANSFER` 冻结确认后，商户余额与冻结各减 T，本分片在途增加 T，凭证类型为 `TRANSFER_OUT`。
+- [x] 重复确认只记一次账。
+- [x] 对 RELEASED 冻结单确认返回 `40004`，无任何写入。
 
 #### ACC-07 同分片转账（含失败墓碑）
 
@@ -2774,3 +2788,4 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 | 2026-10-15 | v3.0 | ACC-03 口径澄清：需求草稿里的 ROLLBACK 是调用方事务边界，Post 不执行 BEGIN、COMMIT、ROLLBACK，也不调用 `dbx.WithTx`。1062 不回滚调用方事务（MySQL 1062 不会中止 InnoDB 事务），用 `dbx.IsDuplicate` 判断后，在同一事务按 `(biz_type, biz_no)` SELECT 已有凭证，返回 `duplicated = true` 和已有 `txn_no`；即使这次的金额或分录和第一次不同，也返回第一次的结果，不插分录、不改余额；SELECT 不到则 `10003`。本连接查不到的 `account_id`（含只存在于另一分片的账户）返回 `40003`，不是 `40001`，因为本连接分不清“没有这个 id”和“在另一个库”；`GetAccount` 仍然用 `40001`。`biz_type = REVERSAL` 返回 `40003`，不写任何行：Post 没有 `reversal_of` 参数，表约束 `ck_ledger_txn_reversal` 要求 REVERSAL 必须有 `reversal_of`，冲正是 ACC-08，本功能点不加参数、不改表。不新增错误码，`40003` 对外英文仍是 `unbalanced entries`。验收 A2 的 1000 goroutine 不用 `dbx.WithTx`：`WithTx` 把单次事务限制在 3 秒，且包含等行锁的时间，1000 个等待者会被取消，成功和 `40002` 就数不成 500/500。该用例用 `BeginTxx(READ COMMITTED)`，父 ctx 至少 60 秒，Post 返回 nil 才 Commit，否则 Rollback。生产路径的单次记账仍由其他测试用 `dbx.WithTx` 覆盖。不改资金规则、接口、表结构和错误码 |
 | 2026-10-19 | v3.0 | ACC-04 口径澄清：Freeze 是进程内方法。IDL 已有 Freeze，本功能点不实现 RPC、不改 IDL。`biz_type` 只允许 REFUND / TRANSFER；商户号分片不合法、`biz_no` 为空或超过 64 个码点、金额不是正的 int64 分，返回已有的 `10001`，不写行。冻结对象是 `shard.Of(merchant_id)` 上的 MERCHANT_SETTLE。`freeze_no` 在事务外 `NewNo(ctx, "FZ")`，`ErrClockRollback` 映射为已有的 `10004`。事务由 Freeze 自己 `dbx.WithTx` 提交，Post 仍不提交。UPDATE 同时 `version = version + 1`，与 Post 改余额对齐，不改变冻结金额，也不改 `balance`。影响 0 行时同一事务重读：非 ACTIVE 返回 `40005`（优先于余额不足），可用余额不够返回 `40002`，两者回滚且不留冻结单；重读后仍是 ACTIVE 且可用余额足够则返回 `10003`，不空转重试。1062 只用 `dbx.IsDuplicate`，不解析错误文本，同一事务按 `(biz_type, biz_no)` 读取：FROZEN / CONFIRMED 且金额和账户一致则返回已有结果且 `duplicated = true`，不增加冻结；RELEASED 一律 `40004`，不再比较金额；FROZEN / CONFIRMED 金额或账户不一致为 `10006`，旧行不变；读不到行是 `10003`。`duplicated` 只在进程内结果里，与 Post 一样，不改 RPC 字段。不新增错误码，不改资金规则、表结构和接口 |
 | 2026-10-20 | v3.0 | ACC-05 口径澄清：ReleaseFreeze 是进程内方法。IDL 已有 ReleaseFreeze，本功能点不实现 RPC、不改 IDL。校验与 Freeze 相同，不合法返回已有的 `10001`，不发号、不写行；上下文已取消时参数不合法仍先返回 `10001`。参数合法后 nil service、nil ctx、nil 发号器、ShardDB 失败为 `10003`；已取消或已过截止时间的上下文原样返回，不发号。`freeze_no` 在事务外 `NewNo(ctx, "FZ")`，只给墓碑；`ErrClockRollback` 映射为已有的 `10004`。事务由 ReleaseFreeze 自己 `dbx.WithTx` 提交。空回滚插入 RELEASED 墓碑，不改 `balance` 和 `frozen_amount`；账户不存在 `40001`；`allow_overdraft` 不是 0 则 `10001`，不插入。已 RELEASED 幂等成功且不再比较金额。已 CONFIRMED 一律 `40004`。FROZEN 必须金额和账户一致，否则 `10006`。解冻不要求账户 ACTIVE，不返回 `40005`，不改 `balance`；冻结单和账户的 `version` 各加 1。账户更新 0 行则 `10003` 并回滚，冻结单保持 FROZEN，不改写成 `40002`。`duplicated` 只在进程内。不新增错误码，不改资金总规则，不实现 ACC-06 |
+| 2026-10-20 | v3.0 | ACC-06 口径澄清：ConfirmFreeze 是进程内方法。IDL 已有 ConfirmFreeze，本功能点不实现 RPC、不改 IDL。请求没有金额，R 只用冻结单 `amount`。校验与 Release 一样先于 nil 判断，不合法返回已有的 `10001`。参数合法后 nil service、nil ctx、nil 发号器、nil pools、`subCount < 1`、ShardDB 失败为 `10003`；已取消或已过截止时间的上下文原样返回。本方法不调用 `NewNo`，`TX` 号仍由记账在锁账户之前生成，发号错误沿用记账映射。事务由 ConfirmFreeze 自己 `dbx.WithTx` 提交。先锁冻结单，再按账户 id 升序锁账户。不存在或 RELEASED 为 `40004`，不插入。CONFIRMED 且 `txn_no` 非空则幂等，不再比较 channel。FROZEN 但不是该商户结算账户为 `10006`，不返回 `40001`。本分片平台子账户不存在为 `40001`，不是 `40003`。商户腿用 `balance` 与 `frozen_amount` 同减的更新，不要求 ACTIVE，不返回 `40002`；平台非 ACTIVE 为 `40005`，回滚后冻结单保持 FROZEN。凭证已存在而冻结单仍是 FROZEN，或确认 CAS 影响 0 行，为 `10003` 并回滚，不当成幂等成功。REFUND 凭证借商户贷渠道应收；TRANSFER 冻结单仍是 TRANSFER，凭证是 TRANSFER_OUT，贷在途。`duplicated` 只在进程内。不新增错误码，不改 CHECK，不实现 ACC-07、ACC-14、ACC-11、ACC-10、MQ-04、OPT-03 |

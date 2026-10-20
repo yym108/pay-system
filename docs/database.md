@@ -115,8 +115,8 @@
 | `balance` | BIGINT | 否 | 0 | `ck_account_available` | 余额（分） | 财务 |
 | `frozen_amount` | BIGINT | 否 | 0 | `ck_account_frozen` | 冻结金额（分），≥ 0，等于 FROZEN 冻结单合计 | 财务 |
 | `allow_overdraft` | TINYINT | 否 | 0 | `ck_account_available`、`ck_account_type_rule` | 由账户类型决定：MERCHANT_SETTLE 为 0，平台账户（含 TRANSIT）为 1 | 内部 |
-| `status` | VARCHAR(16) | 否 | `'ACTIVE'` | `ck_account_status` | ACTIVE / FROZEN / CLOSED，非 ACTIVE 不允许记账 | 内部 |
-| `version` | BIGINT UNSIGNED | 否 | 0 | — | 余额或冻结金额变更时 +1（ACC-04 冻结成功、ACC-05 解冻成功也加 1；ACC-05 墓碑插入不改账户） | 内部 |
+| `status` | VARCHAR(16) | 否 | `'ACTIVE'` | `ck_account_status` | ACTIVE / FROZEN / CLOSED。普通记账要求 ACTIVE。确认扣款的商户腿不要求 ACTIVE（ACC-06）；平台贷方仍要求 ACTIVE | 内部 |
+| `version` | BIGINT UNSIGNED | 否 | 0 | — | 余额或冻结金额变更时 +1（ACC-04 冻结成功、ACC-05 解冻成功也加 1；ACC-05 墓碑插入不改账户）。ACC-06 确认成功时商户 `balance` 与 `frozen_amount` 同减，商户账户和平台账户的 `version` 各 +1 | 内部 |
 | `created_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | — | 创建时间 | 审计 |
 | `updated_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) ON UPDATE | — | 更新时间 | 审计 |
 
@@ -257,8 +257,8 @@
 | `account_id` | BIGINT UNSIGNED | 否 | — | `idx_account_status` 1 | 被冻结的商户账户（只允许 `allow_overdraft = 0`，ACC-04） | 内部 |
 | `amount` | BIGINT | 否 | — | `ck_freeze_amount` | > 0 | 财务 |
 | `status` | VARCHAR(16) | 否 | — | `idx_account_status` 2、`ck_freeze_status` | FROZEN / CONFIRMED / RELEASED | 内部 |
-| `txn_no` | VARCHAR(32) | 是 | NULL | — | CONFIRMED 时的记账凭证：REFUND 对应 REFUND 凭证，TRANSFER 对应 TRANSFER_OUT 凭证 | 内部 |
-| `version` | BIGINT UNSIGNED | 否 | 0 | — | 解冻成功时 +1；直接插入的 RELEASED 墓碑保持 0，且不改账户（ACC-05） | 内部 |
+| `txn_no` | VARCHAR(32) | 是 | NULL | — | CONFIRMED 时的记账凭证：REFUND 对应 REFUND 凭证，TRANSFER 对应 TRANSFER_OUT 凭证。确认成功时与 `version + 1` 同一条 CAS 写入 | 内部 |
+| `version` | BIGINT UNSIGNED | 否 | 0 | — | 解冻成功时 +1；确认成功时 +1 并写入 `txn_no`；直接插入的 RELEASED 墓碑保持 0，且不改账户（ACC-05） | 内部 |
 | `created_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | — | | 审计 |
 | `updated_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) ON UPDATE | — | | 审计 |
 
@@ -952,6 +952,7 @@
 | 2026-10-17 | `migrations/payment/000002_merchant_fee_rate.up.sql`、`.down.sql` | 新增 `merchant_fee_rate`；`payment_order` 增加 `idx_pay_merchant_created` | PAY-10。费率历史只追加，无 `updated_at`。`merchant.fee_rate_bp` 仍是种子初始费率，不是生效费率。up 用 `INSERT … SELECT` 为已有商户补第一档；down 先删索引再删新表，不删 `payment_order` | 验证见 PAY-10 集成测试：MySQL 8.4.11 上 up 后表和索引存在，空商户回填 0 行；执行 down 后表和索引消失、`payment_order` 仍在；再执行 up，已插入商户得到一档且 `effective_from = created_at` |
 | 2026-10-19 | 无（仅文档） | `account.version` 的说明 | ACC-04：冻结成功时 `version` 也 +1，与余额变更使用同一列。无 DDL，不改 CHECK | 未执行迁移 |
 | 2026-10-20 | 无（仅文档） | `account.version`、`account_freeze.version` 的说明 | ACC-05：解冻成功时冻结单和账户的 `version` 都 +1。墓碑插入不改账户，冻结单 `version` 保持 0。无 DDL，不改 CHECK | 未执行迁移 |
+| 2026-10-20 | 无（仅文档） | `account.balance`、`account.frozen_amount`、`account.version`、`account.status`、`account_freeze.txn_no`、`account_freeze.version` 的说明 | ACC-06：确认成功时冻结单 `version` +1 且写入 `txn_no`；商户 `balance` 与 `frozen_amount` 同减，两边账户 `version` 各 +1。无 DDL，不改 CHECK，不改迁移 | 未执行迁移 |
 
 ## 6. Open Questions
 
