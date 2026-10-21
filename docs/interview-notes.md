@@ -2,6 +2,12 @@
 
 随手记录踩坑、数据和取舍。不替代需求与技术决策文档。
 
+## ACC-07 同分片转账
+
+- 普通借方条件会扣掉冻结。公开 `Post` 的可用余额是 `balance - frozen_amount`，全额冻结时可用是 0，钱转不走，也不会把冻结一起扣掉。账户按 id 升序加锁是 Post 已有行为，A→B 与 B→A 不会因为锁顺序死锁。
+- 失败墓碑是另一个事务。事务 1 因 `40002` 回滚之后，事务 2 才插入 `FAILED` / `INSUFFICIENT_BALANCE`。之后给付款方加钱，同一 `transfer_no` 仍然 FAILED，不再看当前余额。
+- 1062 不中止 InnoDB 事务。必须让回调返回错误，由 `WithTx` 回滚，再在事务外读已有 LOCAL 分支。未回滚就继续记账，第二次的分录会留在这个还没结束的事务里。
+
 ## ACC-06 确认扣款
 
 - 普通扣款条件不能用于确认。`updateBalanceGuardSQL` 要求 `status = 'ACTIVE'` 并且 `balance - frozen_amount >= R`，而且不改 `frozen_amount`。全额冻结时可用余额是 0，这条会返回 `40002`，冻结也减不掉。确认的商户腿改成 `balance` 加上有符号 delta、`frozen_amount` 减去 R，条件只剩 `frozen_amount >= R`。停用商户也能确认。公开的 `Post` 不带这个选项，普通借方仍走原来的条件和 `ACTIVE` 检查。

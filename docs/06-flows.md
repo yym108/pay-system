@@ -1,6 +1,6 @@
 # pay-system 流程图（状态机、泳道图、控制流图）
 
-> 版本：v2.5　最后修改：2026-10-20　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16
+> 版本：v2.6　最后修改：2026-10-21　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐
 > 依据：`docs/02-requirements.md` v3.0、`docs/03-conventions.md` v2.0、`docs/01-tech-decisions.md` D17–D21；`docs/05-api.md`、`docs/database.md` 尚未同步 v3.0，冲突处以需求文档为准
 > 用途：以图的形式确认全部功能性设计。图是需求的视图，规则冲突时以需求文档为准；需求变更后同步修改对应的图。
 
@@ -1562,29 +1562,40 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    S(["TransferLocal(transfer_no, payer, payee, T)"]) --> V{"双方同一分片 s，且不是同一商户"}
-    V -->|"否"| E10001["10001"]:::err
-    V -->|"是"| AC{"双方商户账户"}
-    AC -->|"不存在"| E40001["40001"]:::err
-    AC -->|"非 ACTIVE"| E40005["40005"]:::err
-    AC -->|"存在且 ACTIVE"| B1
-    subgraph TX1["分片 s 事务 1"]
-        B1["INSERT transfer_branch(LOCAL, SUCCESS, amount, 双方)"]
-        B1 -->|"成功"| P1["Post(TRANSFER, transfer_no)（CF-13）<br/>借 付款商户 T，贷 收款商户 T，账户按 id 升序加锁"]
-        P1 -->|"成功"| W1["回写 transfer_branch.txn_no"]
+    S(["TransferLocal(ctx, transfer_no, payer, payee, amount)"]) --> V{"参数"}
+    V -->|"单号不是 1–32 码点、金额不是正数、商户号非法、不同分片、转给自己"| E10001["10001，不写行"]:::err
+    V -->|"合法"| N{"service、ctx、发号器、pools"}
+    N -->|"nil"| E10003N["10003"]:::err
+    N -->|"ctx 已取消或已过截止"| ECX["原样返回，不启事务"]:::fault
+    N -->|"齐全"| SD{"ShardDB"}
+    SD -->|"失败"| E10003S["10003"]:::err
+    SD -->|"本分片"| AC{"双方 MERCHANT_SETTLE / CNY / sub_no=0<br/>不加行锁，不比较余额"}
+    AC -->|"任一不存在"| E40001["40001，优先于非 ACTIVE"]:::err
+    AC -->|"id 为 0 或两个 id 相同"| E10003ID["10003，数据损坏，不写"]:::err
+    AC -->|"都存在且任一非 ACTIVE"| E40005["40005"]:::err
+    AC -->|"都存在且 ACTIVE"| B1
+    subgraph TX1["分片事务 1"]
+        B1["INSERT LOCAL SUCCESS，txn_no NULL，version 0"]
+        B1 -->|"成功"| P1["公开 Post TRANSFER，memo 空<br/>借付款 T，贷收款 T"]
+        P1 -->|"error 为 nil，含 Duplicated"| W1["回写 txn_no，version+1"]
     end
-    W1 --> OK1(["COMMIT，返回 SUCCESS、txn_no"]):::ok
-    P1 -->|"40002"| RB["ROLLBACK"]
+    W1 -->|"影响 1 行"| OK1(["COMMIT，SUCCESS、txn_no"]):::ok
+    W1 -->|"影响 0 行"| E10003W["10003，ROLLBACK，不留空 txn_no"]:::err
+    P1 -->|"40005 / 40003 / 10003 / 10004 / ctx"| EPOST["ROLLBACK，不写墓碑，返回该错误"]:::err
+    P1 -->|"仅 40002"| RB["ROLLBACK 事务 1"]
     RB --> B2
-    subgraph TX2["分片 s 事务 2"]
-        B2["INSERT transfer_branch(LOCAL, FAILED, fail_code = INSUFFICIENT_BALANCE)<br/>失败墓碑"]
+    subgraph TX2["分片事务 2"]
+        B2["INSERT LOCAL FAILED<br/>fail_code = INSUFFICIENT_BALANCE，txn_no NULL"]
     end
-    B2 -->|"成功"| OK2(["返回 FAILED、INSUFFICIENT_BALANCE<br/>业务结果，不返回 40002 错误码"]):::ok
-    B1 -->|"1062"| EX
-    B2 -->|"1062（并发请求已写入结果）"| EX{"已有分支"}
-    EX -->|"金额或双方不一致"| E10006["10006"]:::err
-    EX -->|"SUCCESS"| OK3(["返回 SUCCESS、txn_no"]):::ok
-    EX -->|"FAILED"| OK4(["返回 FAILED、fail_code<br/>即使余额已经充足"]):::ok
+    B2 -->|"成功"| OK2(["FAILED、INSUFFICIENT_BALANCE，error 为 nil"]):::ok
+    B2 -->|"其他错误"| E10003T["10003，不写成别的状态"]:::err
+    B1 -->|"1062"| RB1["ROLLBACK 后事务外读取"]
+    B2 -->|"1062"| RB1
+    RB1 --> EX{"已有 LOCAL"}
+    EX -->|"读不到、未知 status、FAILED 无 fail_code、SUCCESS 且 txn_no 空"| E10003E["10003，不空转"]:::err
+    EX -->|"金额或双方不一致"| E10006["10006，不写、不记账"]:::err
+    EX -->|"SUCCESS 且 txn_no 非空"| OK3(["SUCCESS、该 txn_no，不再记账"]):::ok
+    EX -->|"FAILED"| OK4(["FAILED、库里的 fail_code，不再看余额"]):::ok
     classDef ok fill:#e3f6e8,stroke:#2e7d32
     classDef err fill:#fde4e4,stroke:#c62828
     classDef fault fill:#fff4d6,stroke:#b8860b
@@ -2204,3 +2215,4 @@ R1–R14 来自 v1.x 绘图，已落入需求文档 v2.2；R15 起来自 v2.0 �
 | 2026-10-19 | v2.3 | ACC-04：CF-14 补上参数 10001、事务内先判断账户与透支、`version + 1`、更新 0 行且重读仍够冻结时 10003、1062 读不到行时 10003。RELEASED 一律 40004。不改资金流向 |
 | 2026-10-20 | v2.4 | ACC-05：CF-15 补上参数 10001、账户不存在 40001、FROZEN 金额或账户不一致 10006、CONFIRMED 一律 40004、RELEASED 幂等、账户更新 0 行则 10003 且回滚、停用账户仍解冻。不改资金流向 |
 | 2026-10-20 | v2.5 | ACC-06：CF-16 补上事务前 10001、先锁冻结单、10006、40001、商户腿特殊更新、平台 40005 回滚且保持 FROZEN、CAS 同时写 txn_no、凭证已存在但冻结单仍 FROZEN 则 10003、CONFIRMED 重放忽略 channel、RELEASED 或不存在 40004 且不插入、冻结不足 10003 回滚。不改资金流向 |
+| 2026-10-21 | v2.6 | ACC-07：CF-32 补上参数 10001 先于 nil 判断、nil 依赖 10003、已取消上下文原样返回、ShardDB 10003、不存在 40001 优先于非 ACTIVE、账户 id 相同 10003、事务 1 插入 SUCCESS 后公开 Post、Duplicated 仍回写 txn_no 并提交、回写 0 行 10003 并回滚、Post 的其他错误不写墓碑、只有 40002 开事务 2 写失败墓碑、1062 先回滚再读、金额或双方不一致 10006、SUCCESS 且 txn_no 空为 10003、FAILED 返回库里的 fail_code。不改资金流向 |
