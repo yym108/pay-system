@@ -2,6 +2,12 @@
 
 随手记录踩坑、数据和取舍。不替代需求与技术决策文档。
 
+## ACC-10 余额核对
+
+- 两个分片是两次独立快照，不是同一时刻。进行中的跨分片转账会让两边在途加总暂时不为 0，所以在途合计为 0 只在全量且 `expect_quiescent` 时才查。
+- 这次扫描是 REPEATABLE READ 一致性快照：`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ` 再 `START TRANSACTION READ ONLY, WITH CONSISTENT SNAPSHOT`。`dbx.WithTx` 是 READ COMMITTED，驱动的 `BeginTx(ReadOnly)` 也不会带上 `WITH CONSISTENT SNAPSHOT`。
+- 最后一条分录按 `ledger_entry.id` 的 `max(id)` 取 `balance_after`，不是 `created_at`。同一秒里后写入的分录 id 更大。
+
 ## ACC-14 收款方转账分支
 
 - Confirm 先 `SELECT ... FOR UPDATE` 锁 PAYEE 分支，再把账户锁交给公开 `Post`，按账户 id 升序。先锁账户再锁分支，会和只按 id 加锁的记账死锁。1062 不中止 InnoDB：Try 和 Cancel 都要让 `WithTx` 先回滚，再在事务外读已有行。Cancel 读到匹配的 TRIED 后另开事务做 CAS，不在未回滚的事务里继续写。

@@ -49,7 +49,7 @@
 - [x] ACC-06 确认扣款（REFUND、TRANSFER 两种贷方）
 - [x] ACC-07 同分片转账（失败墓碑）
 - [x] ACC-14 收款方分支（Try / Confirm / Cancel）
-- [ ] ACC-10 余额核对（分片 + 在途守恒；之后所有资金类测试结束时调用）
+- [x] ACC-10 余额核对（分片 + 在途守恒；之后所有资金类测试结束时调用）
 - [ ] ACC-11 account RPC 服务
 
 交付：A2 全部用例通过；ACC-14 的 Try / Cancel 并发用例通过；`service/account` 覆盖率 ≥ 70%。

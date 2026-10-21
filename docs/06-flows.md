@@ -1,6 +1,6 @@
 # pay-system 流程图（状态机、泳道图、控制流图）
 
-> 版本：v2.7　最后修改：2026-10-21　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐。2026-10-21 按 ACC-14 口径改正 CF-33，CF-33 已对齐
+> 版本：v2.8　最后修改：2026-10-21　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐。2026-10-21 按 ACC-14 口径改正 CF-33，CF-33 已对齐。2026-10-21 按 ACC-10 口径改正 CF-17，CF-17 已对齐
 > 依据：`docs/02-requirements.md` v3.0、`docs/03-conventions.md` v2.0、`docs/01-tech-decisions.md` D17–D21；`docs/05-api.md`、`docs/database.md` 尚未同步 v3.0，冲突处以需求文档为准
 > 用途：以图的形式确认全部功能性设计。图是需求的视图，规则冲突时以需求文档为准；需求变更后同步修改对应的图。
 
@@ -1530,31 +1530,39 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    S(["CheckBalance(merchant_id 或 all, expect_quiescent)<br/>只由管理接口、测试、verify.sh 手动触发"]) --> SN
-    subgraph LP["对每个分片 s 一个只读快照（单商户模式只查其所属分片）"]
-        SN["START TRANSACTION WITH CONSISTENT SNAPSHOT<br/>该事务单独用 REPEATABLE READ"]
-        SN --> A1["账户余额 = 按余额方向汇总的分录金额"]
-        A1 --> A2["最后一条分录 balance_after = 当前余额<br/>无分录时余额为 0"]
-        A2 --> A3["frozen_amount = 该账户 FROZEN 冻结单金额合计"]
-        A3 --> A4["allow_overdraft = 0 的账户可用余额 ≥ 0"]
-        A4 --> M{"全量模式"}
-        M -->|"是"| G1["每张凭证借贷平衡，分录数 = entry_count<br/>全部分录借方总额 = 贷方总额<br/>每张凭证的分录账户都属于本分片"]
-        G1 --> G2["在途守恒：预期在途 = 本分片 TRANSFER 冻结单 CONFIRMED 合计<br/>减 本分片 PAYEE 分支 CONFIRMED 合计<br/>与本分片 TRANSIT 子账户余额合计比较"]
-        M -->|"否"| DONE["结束快照"]
-        G2 --> DONE
-    end
-    DONE --> Q{"全量且 expect_quiescent = true"}
-    Q -->|"是"| Z["额外校验两个分片 TRANSIT 余额合计 = 0"]
-    Q -->|"否"| RES
-    Z --> RES{"failures 为空"}
-    RES -->|"是"| OK(["passed = true"]):::ok
-    RES -->|"否"| NG["passed = false，failures 带 shard、account_no、check、expected、actual<br/>pay_ledger_check_failures_total+1，ERROR 日志"]:::err
+    S(["CheckBalance(ctx, merchant_id, expect_quiescent)<br/>进程内只读，不监听 RPC"]) --> V{"merchant_id 非空"}
+    V -->|"shard.Of 失败"| E10001["10001，不查询<br/>先于 nil service 和已取消的 ctx"]:::err
+    V -->|"为空，或格式合法"| N{"service、ctx、pools"}
+    N -->|"nil"| E10003N["10003，failures 空"]:::err
+    N -->|"ctx 已取消或已过期"| ECX["原样返回 ctx.Err，不开事务"]:::fault
+    N -->|"可用"| MODE{"模式"}
+    MODE -->|"商户"| ONE["只打开该商户分片<br/>忽略 expect_quiescent"]
+    MODE -->|"全量"| BOTH["先分片 0，再分片 1<br/>各一次独立快照"]
+    ONE --> SET
+    BOTH --> SET
+    SET["不用 WithTx<br/>SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"]
+    SET --> START["START TRANSACTION READ ONLY, WITH CONSISTENT SNAPSHOT<br/>只读查询，成功也 ROLLBACK"]
+    START --> BAD{"SQL、未知方向或金额溢出"}
+    BAD -->|"是"| E10003["整次 10003，failures 空，计数不加"]:::err
+    BAD -->|"否"| ACC{"商户模式的结算账户"}
+    ACC -->|"0 行"| E40001["40001，failures 空，计数不加"]:::err
+    ACC -->|"不是 1 行"| E10003U["10003"]:::err
+    ACC -->|"全量，或恰好 1 行"| CHK["账户按 id 升序<br/>BALANCE_SUM、LAST_BALANCE_AFTER 用 max id、FROZEN_SUM、AVAILABLE_NON_NEGATIVE"]
+    CHK --> FULL{"全量"}
+    FULL -->|"否"| RES{"failures 为空"}
+    FULL -->|"是"| MORE["再查 TXN_BALANCED、GLOBAL_BALANCED、TRANSIT_EXPECTED<br/>返回全部失败"]
+    MORE --> Q{"expect_quiescent"}
+    Q -->|"false"| RES
+    Q -->|"true"| Z["TRANSIT_ZERO：两份快照的 TRANSIT 余额加总是否为 0<br/>shard 与 account_no 省略"]
+    Z --> RES
+    RES -->|"是"| OK(["passed = true，error = nil，计数不变"]):::ok
+    RES -->|"否"| NG["passed = false，error = nil<br/>计数 +1 一次，一条 ERROR 日志"]:::err
     classDef ok fill:#e3f6e8,stroke:#2e7d32
     classDef err fill:#fde4e4,stroke:#c62828
     classDef fault fill:#fff4d6,stroke:#b8860b
 ```
 
-不直接比较“两个分片在途合计 = 0”：两个快照不是同一时刻，进行中的转账会造成误报；`expect_quiescent = true` 只在全部转账终结后使用（`verify.sh`）。
+`10001` 在 nil 判断之前。快照是 REPEATABLE READ 的 `WITH CONSISTENT SNAPSHOT`，不是 `dbx.WithTx` 的 READ COMMITTED。两个分片不是同一时刻，所以在途合计为 0 只在全量且 `expect_quiescent = true` 时检查；商户模式忽略该参数。最后一条分录是 `max(ledger_entry.id)`。`passed = false` 不是错误码。一次失败的完成调用把进程内无标签计数加 1，`/metrics` 仍是 OPS-01。
 
 #### CF-32 同分片转账 TransferLocal
 
@@ -2267,3 +2275,4 @@ R1–R14 来自 v1.x 绘图，已落入需求文档 v2.2；R15 起来自 v2.0 �
 | 2026-10-20 | v2.5 | ACC-06：CF-16 补上事务前 10001、先锁冻结单、10006、40001、商户腿特殊更新、平台 40005 回滚且保持 FROZEN、CAS 同时写 txn_no、凭证已存在但冻结单仍 FROZEN 则 10003、CONFIRMED 重放忽略 channel、RELEASED 或不存在 40004 且不插入、冻结不足 10003 回滚。不改资金流向 |
 | 2026-10-21 | v2.6 | ACC-07：CF-32 补上参数 10001 先于 nil 判断、nil 依赖 10003、已取消上下文原样返回、ShardDB 10003、不存在 40001 优先于非 ACTIVE、账户 id 相同 10003、事务 1 插入 SUCCESS 后公开 Post、Duplicated 仍回写 txn_no 并提交、回写 0 行 10003 并回滚、Post 的其他错误不写墓碑、只有 40002 开事务 2 写失败墓碑、1062 先回滚再读、金额或双方不一致 10006、SUCCESS 且 txn_no 空为 10003、FAILED 返回库里的 fail_code。不改资金流向 |
 | 2026-10-21 | v2.7 | ACC-14：CF-33 补上参数 10001 先于 nil 判断、nil 依赖 10003、已取消上下文原样返回、ShardDB 10003、Try 不存在 40001 优先于非 ACTIVE、插入 TRIED 且不动余额、1062 先回滚再读、CANCELLED 一律 40004、Confirm 先锁分支再由 Post 按 id 锁账户、在途或商户行不存在 40001 且保持 TRIED、id 相同 10003、借在途贷收款商户、40002 与 40005 原样返回并保持 TRIED、Duplicated 仍回写并提交 CONFIRMED、回写 0 行 10003、Cancel 不查账户的空回滚墓碑、TRIED 不一致 10006。不改资金流向 |
+| 2026-10-21 | v2.8 | ACC-10：CF-17 补上 10001 在 nil 之前、10003、40001、商户模式与全量、快照 SQL 而不是 WithTx、TRANSIT_ZERO 仅当全量且 expect_quiescent、计数 +1 一次。不改资金流向 |

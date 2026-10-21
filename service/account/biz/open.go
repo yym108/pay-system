@@ -1,7 +1,8 @@
-// Package biz 实现账户开户、账户查询、通用记账、冻结、解冻、确认扣款、同分片转账和收款方转账分支。
+// Package biz 实现账户开户、账户查询、通用记账、冻结、解冻、确认扣款、同分片转账、收款方转账分支和余额核对。
 //
 // OpenAccount 供种子和测试调用。GetAccount 只读。Post 在调用方事务里记账。
 // Freeze、ReleaseFreeze、ConfirmFreeze、TransferLocal、TransferInTry、TransferInConfirm 和 TransferInCancel 自己提交分片事务。这些方法都不监听 RPC。
+// CheckBalance 是进程内只读核对，自己在分片上打开一致性快照，不监听 RPC。
 package biz
 
 import (
@@ -65,13 +66,16 @@ type Account struct {
 	SubCount         int
 }
 
-// Service 开户、查询、记账、冻结、解冻、确认扣款、同分片转账和收款方转账分支。pools、发号器和子账户个数都由调用方注入，本类型不读环境变量。
+// Service 开户、查询、记账、冻结、解冻、确认扣款、同分片转账、收款方转账分支和余额核对。pools、发号器和子账户个数都由调用方注入，本类型不读环境变量。
+// CheckBalance 是进程内只读核对，自己开快照，不监听 RPC。
 type Service struct {
 	pools    *dal.Pools
 	ids      *idgen.Generator
 	subCount int
 	// query 非空时替换分片读取，只给同包测试使用。生产路径保持 nil。
 	query accountLister
+	// balance 非空时替换分片快照读取，只给同包测试使用。生产路径保持 nil，走真 SQL。
+	balance balanceSource
 }
 
 // New 构造账户服务。subCount 是平台子账户个数，调用方传入。查询不使用它做截断。

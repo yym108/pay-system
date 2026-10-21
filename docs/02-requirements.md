@@ -361,7 +361,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | ACC-14 | 收款方转账分支（Try / Confirm / Cancel） | P0 | M2 | ACC-03 | DONE |
 | ACC-08 | 冲正 | P1 | M8 | ACC-03 | TODO |
 | ACC-09 | 流水查询 | P1 | — | — | CUT |
-| ACC-10 | 余额核对（含分片与在途守恒） | P0 | M2 | ACC-03、ACC-04、ACC-14 | TODO |
+| ACC-10 | 余额核对（含分片与在途守恒） | P0 | M2 | ACC-03、ACC-04、ACC-14 | DONE |
 | ACC-11 | account RPC 服务 | P0 | M2 | ACC-01~07、ACC-14、BASE-12 | TODO |
 | ACC-12 | 热点账户优化 | P2 | — | — | CUT（拆为 OPT-03、OPT-05） |
 | CH-01 | 渠道支付受理与自动完成 | P0 | M3 | BASE-13、BASE-03 | TODO |
@@ -1102,25 +1102,32 @@ DSN 只按驱动的文本规则装配，不连接数据库：
 
 `P0 · M2 · 依赖：ACC-03、ACC-04、ACC-14 · 表：account、ledger_entry、ledger_txn、account_freeze、transfer_branch`
 
-接口：`AccountService.CheckBalance(merchant_id | all, expect_quiescent)` → `{passed, failures[{shard, account_no, check, expected, actual}]}`
+接口：`AccountService.CheckBalance(merchant_id | all, expect_quiescent)` → `{passed, failures[{shard, account_no, check, expected, actual}]}`。ACC-10 交付进程内 `biz.CheckBalance`，不监听 RPC，不实现 `POST /admin/accounts/check`。
 
 规则：
 
-1. 每个分片分别校验（不变量 3、4、5），每个分片一个只读一致性快照（`START TRANSACTION WITH CONSISTENT SNAPSHOT`，该事务单独用 REPEATABLE READ）：
-   - 账户余额 = 按余额方向汇总的分录金额。
-   - 账户最后一条分录的 `balance_after` = 当前余额（无分录时余额为 0）。
-   - `frozen_amount` = 该账户 FROZEN 冻结单金额合计。
-   - `allow_overdraft = 0` 的账户可用余额 ≥ 0。
-   - 全量模式：每张凭证借贷平衡且分录数 = `entry_count`；全部分录借方总额 = 贷方总额；每张凭证的分录账户都属于本分片。
-2. 在途守恒（不变量 11，仅全量模式）：在同一个分片快照内计算该分片的“预期在途” = 本分片 `TRANSFER` 冻结单中 CONFIRMED 的金额合计 − 本分片 PAYEE 分支中 CONFIRMED 的金额合计，与本分片 `TRANSIT` 子账户余额合计比较。两个分片分别相等，合计自然相等。不直接比较“两个分片合计 = 0”，因为两个快照不是同一时刻，进行中的转账会造成误报；参数 `expect_quiescent = true`（`verify.sh` 在全部转账终结后使用）时才额外校验两个分片在途合计为 0。
-3. 只在管理接口、测试和 `verify.sh` 中手动触发；失败时 `pay_ledger_check_failures_total` 加一并输出错误日志。
+1. 签名是 `CheckBalance(ctx, merchantID, expectQuiescent)`。`merchantID` 为空是全量模式，不是错误。非空商户号必须能被 `shard.Of` 解析，否则 `10001`。这个校验在 nil service、nil ctx 和已取消的 ctx 之前；`10001` 不查询，`failures` 为空。商户模式忽略 `expectQuiescent`，不因此返回 `10001`。
+2. 参数合法后，nil service、nil ctx、nil pools 为 `10003`。已取消或已过期的 ctx 原样返回，不开事务。`ShardDB` 失败、任一分片失败或 SQL 错误都是整次 `10003`，`failures` 为空，不返回部分失败。`Error()` 不带 SQL、地址或密码。未知 `balance_direction` 是数据损坏，整次 `10003`，不记成一条 failure。金额求和用 `money.Add` / `money.Sub`，溢出是 `10003`，不回绕。
+3. `40001` 只表示点名的商户结算账户不存在：商户模式，`MERCHANT` / `MERCHANT_SETTLE` / `CNY` / `sub_no = 0`。非 CNY 行选不中算不存在。此时 `failures` 为空，计数不加。全量模式没有点名商户，不因某商户缺失返回 `40001`。空库全量通过。
+4. `passed = false` 且 `failures` 非空时 error 为 nil，不是 `40001`，也不是 `10003`。此时进程内无标签计数 `pay_ledger_check_failures_total` 加 1，一次调用只加一次，并打一条 ERROR 日志。成功、`40001`、`10003` 都不加计数、不打这条日志。`/metrics` 暴露仍是 OPS-01，本功能点不引入 Prometheus 客户端。
+5. 本方法不写 `ledger_*` 或 `account` 行，不调用外部系统。重复调用不记账、不冻结、不通知。不要在写事务里调用它，它自己也不包进别的业务事务。不用 `dbx.WithTx`（READ COMMITTED，且驱动的 `BeginTx(ReadOnly)` 没有 `WITH CONSISTENT SNAPSHOT`）。每个分片用一条固定连接，按顺序执行 `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`、`START TRANSACTION READ ONLY, WITH CONSISTENT SNAPSHOT`、只读查询、`ROLLBACK`（成功也回滚）。两个分片是两次独立快照，不是同一时刻。查询都带调用方 ctx。全量先分片 0 再分片 1。
+6. 返回全部失败，不在第一个停止。顺序：分片 0 然后分片 1；分片内账户按 `account.id` 升序；每个账户依次是 `BALANCE_SUM`、`LAST_BALANCE_AFTER`、`FROZEN_SUM`、`AVAILABLE_NON_NEGATIVE`；然后该分片的 `TXN_BALANCED`（凭证按 `ledger_txn.id` 升序）、`GLOBAL_BALANCED`、`TRANSIT_EXPECTED`。`TRANSIT_ZERO` 最后，且只在全量且 `expectQuiescent` 时做。商户模式只查该商户这一个结算账户的前四项。
+7. 公式（金额是 int64 分）：
+   - `BALANCE_SUM`：CREDIT 期望 = 贷方合计 − 借方合计；DEBIT 期望 = 借方合计 − 贷方合计；与 `account.balance` 比较。Actual 是账面余额。无分录时期望 0。
+   - `LAST_BALANCE_AFTER`：该账户 `max(ledger_entry.id)` 的 `balance_after` 等于当前余额，不用 `created_at`。无分录且余额 0 通过。无分录且余额非 0：expected 0，actual 为余额。
+   - `FROZEN_SUM`：`frozen_amount` = 该账户 `status = FROZEN` 的 `account_freeze.amount` 合计。RELEASED 和 CONFIRMED 不计。没有冻结时期望 0。
+   - `AVAILABLE_NON_NEGATIVE`：仅 `allow_overdraft = 0`。可用 = `balance - frozen_amount`，必须 ≥ 0。允许透支（含 TRANSIT）即使为负也跳过。失败时 expected 0，actual 为负数的可用余额。
+   - `TXN_BALANCED`（全量，`account_no` 空，shard 有值）：每张凭证借方合计 = 贷方合计，分录行数 = `entry_count`，且每条分录的 `account_id` 都在本分片 `account` 表。同一凭证可以因不同原因各有一行。`entry_count` 与行数一致即可，不额外要求至少 2 条。
+   - `GLOBAL_BALANCED`（全量，`account_no` 空）：该分片全部分录借方总额 ≠ 贷方总额时一行。expected 是借方总额，actual 是贷方总额。
+   - `TRANSIT_EXPECTED`（全量，`account_no` 空，每个失败分片一行）：expected = 本分片 `account_freeze` 中 `biz_type = TRANSFER` 且 `status = CONFIRMED` 的 amount 合计 − 本分片 `transfer_branch` 中 `role = PAYEE` 且 `status = CONFIRMED` 的 amount 合计。actual = 本分片全部 TRANSIT 账户（`PLATFORM` / `PLATFORM` / `TRANSIT` / `CNY`，所有 `sub_no`）的 balance 合计。LOCAL 成功分支和 REFUND 冻结不进公式。不拿两个分片互相比较，也不要求这个数是 0。
+   - `TRANSIT_ZERO`（仅全量且 `expectQuiescent`）：expected 0，actual = 分片 0 的 TRANSIT 余额合计 + 分片 1 的 TRANSIT 余额合计。`shard` 与 `account_no` 都省略。`expectQuiescent = false` 时不要把两个分片的 TRANSIT 加总去和 0 比。
 
 验收：
 
-- [ ] 正常数据核对通过。
-- [ ] 测试中直接用 SQL 篡改余额 1 分，核对失败并指出分片、账户和差额。
-- [ ] 跨分片转账只完成付款方 Confirm 时核对通过（在途按分支状态计算）；篡改一条 PAYEE 分支状态后核对失败。
-- [ ] 在并发记账和并发转账进行时执行全量核对，不出现误报。
+- [x] 正常数据核对通过。
+- [x] 测试中直接用 SQL 篡改余额 1 分，核对失败并指出分片、账户和差额。
+- [x] 跨分片转账只完成付款方 Confirm 时核对通过（在途按分支状态计算）；篡改一条 PAYEE 分支状态后核对失败。
+- [x] 在并发记账和并发转账进行时执行全量核对，不出现误报。
 
 #### ACC-11 account RPC 服务
 
@@ -2281,6 +2288,8 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 | `pay_recon_diffs_total`、`pay_recon_pending_diffs` | counter、gauge | diff_type |
 | `pay_ratelimit_rejected_total`、`pay_nonce_unavailable_total` | counter | — |
 
+ACC-10 在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（一次失败的完成调用加 1）。`/metrics` 暴露仍是 OPS-01，本功能点不起 HTTP，也不引入 Prometheus 客户端。
+
 约束：标签中不得出现单号、商户号以外的高基数值（商户号也只用于限流类指标）；延迟直方图桶 5ms、10ms、25ms、50ms、100ms、250ms、500ms、1s、2.5s、5s。
 
 验收：
@@ -2807,4 +2816,5 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 | 2026-10-20 | v3.0 | ACC-05 口径澄清：ReleaseFreeze 是进程内方法。IDL 已有 ReleaseFreeze，本功能点不实现 RPC、不改 IDL。校验与 Freeze 相同，不合法返回已有的 `10001`，不发号、不写行；上下文已取消时参数不合法仍先返回 `10001`。参数合法后 nil service、nil ctx、nil 发号器、ShardDB 失败为 `10003`；已取消或已过截止时间的上下文原样返回，不发号。`freeze_no` 在事务外 `NewNo(ctx, "FZ")`，只给墓碑；`ErrClockRollback` 映射为已有的 `10004`。事务由 ReleaseFreeze 自己 `dbx.WithTx` 提交。空回滚插入 RELEASED 墓碑，不改 `balance` 和 `frozen_amount`；账户不存在 `40001`；`allow_overdraft` 不是 0 则 `10001`，不插入。已 RELEASED 幂等成功且不再比较金额。已 CONFIRMED 一律 `40004`。FROZEN 必须金额和账户一致，否则 `10006`。解冻不要求账户 ACTIVE，不返回 `40005`，不改 `balance`；冻结单和账户的 `version` 各加 1。账户更新 0 行则 `10003` 并回滚，冻结单保持 FROZEN，不改写成 `40002`。`duplicated` 只在进程内。不新增错误码，不改资金总规则，不实现 ACC-06 |
 | 2026-10-20 | v3.0 | ACC-06 口径澄清：ConfirmFreeze 是进程内方法。IDL 已有 ConfirmFreeze，本功能点不实现 RPC、不改 IDL。请求没有金额，R 只用冻结单 `amount`。校验与 Release 一样先于 nil 判断，不合法返回已有的 `10001`。参数合法后 nil service、nil ctx、nil 发号器、nil pools、`subCount < 1`、ShardDB 失败为 `10003`；已取消或已过截止时间的上下文原样返回。本方法不调用 `NewNo`，`TX` 号仍由记账在锁账户之前生成，发号错误沿用记账映射。事务由 ConfirmFreeze 自己 `dbx.WithTx` 提交。先锁冻结单，再按账户 id 升序锁账户。不存在或 RELEASED 为 `40004`，不插入。CONFIRMED 且 `txn_no` 非空则幂等，不再比较 channel。FROZEN 但不是该商户结算账户为 `10006`，不返回 `40001`。本分片平台子账户不存在为 `40001`，不是 `40003`。商户腿用 `balance` 与 `frozen_amount` 同减的更新，不要求 ACTIVE，不返回 `40002`；平台非 ACTIVE 为 `40005`，回滚后冻结单保持 FROZEN。凭证已存在而冻结单仍是 FROZEN，或确认 CAS 影响 0 行，为 `10003` 并回滚，不当成幂等成功。REFUND 凭证借商户贷渠道应收；TRANSFER 冻结单仍是 TRANSFER，凭证是 TRANSFER_OUT，贷在途。`duplicated` 只在进程内。不新增错误码，不改 CHECK，不实现 ACC-07、ACC-14、ACC-11、ACC-10、MQ-04、OPT-03 |
 | 2026-10-21 | v3.0 | ACC-07 口径澄清：TransferLocal 是进程内方法，自己用 `dbx.WithTx` 提交本分片事务。RPC handler 仍是 ACC-11，不改 IDL，不增加进程内 `duplicated`。响应是 `status`、`txn_no`、`fail_code`。校验先于 nil 判断，不合法返回已有的 `10001`。`transfer_no` 为 1–32 个码点，不强制 `TF` 前缀。双方必须同一分片且不是同一商户。事务前普通 SELECT 双方 `MERCHANT_SETTLE` / `CNY` / `sub_no = 0`，不存在优先于非 ACTIVE，不加行锁、不比较余额。事务 1 插入 LOCAL SUCCESS 后调用公开 `Post(TRANSFER)`，借付款商户、贷收款商户，可用余额扣掉 `frozen_amount`。`Duplicated` 为 true 仍回写已有 `txn_no` 并提交 SUCCESS，与 ACC-06 不同。回写 0 行是 `10003` 并回滚。只有 `40002` 在事务 1 回滚后另开事务写 `INSUFFICIENT_BALANCE` 墓碑，error 为 nil；之后余额充足仍返回 FAILED。1062 必须先回滚再在事务外读取。金额或双方不一致为 `10006`。SUCCESS 但 `txn_no` 为空是 `10003`。验收第 1 条的 CheckBalance 在 ACC-10 完成前用 SQL 断言代替。不新增错误码，不改 CHECK，不实现 ACC-14、ACC-11、ACC-10、ACC-08、TRF-02、MQ |
-| 2026-10-21 | v3.0 | ACC-14 口径澄清：TransferInTry、TransferInConfirm、TransferInCancel 是进程内方法，各自用 `dbx.WithTx` 提交收款商户所在分片事务。RPC 仍是 ACC-11。校验先于 nil 判断，不合法为已有的 `10001`。`transfer_no` 为 1–32 个码点，不强制 `TF` 前缀。Try 先查收款商户结算账户，不存在 `40001`，非 ACTIVE `40005`，通过后才插入 TRIED，不动余额。1062 先回滚再读。CANCELLED 上的 Try 一律 `40004`，不再比较金额和收款商户。Confirm 先锁分支，再由公开 Post 按账户 id 升序锁账户。借本分片 TRANSIT 子账户、贷收款商户，凭证 `TRANSFER_IN`。在途允许透支，余额 0 也能确认。在途或商户行不存在为 `40001`，分支保持 TRIED。`Duplicated` 为 true 仍回写已有 `txn_no` 并提交 CONFIRMED，与 ACC-06 不同。回写 0 行、空凭证号、两个账户 id 相同为 `10003` 并回滚。Post 的 `40002` / `40005` 原样返回，不写墓碑，不自己加 `pay_transfer_inconsistent_total`。Cancel 不查账户；没有行时插入 CANCELLED 墓碑。TRIED 金额或收款商户不一致为 `10006`。已 CONFIRMED 再 Cancel 为 `40004`。验收五条的 CheckBalance 在 ACC-10 完成前用 SQL 断言代替。不新增错误码，不改 CHECK，不实现 ACC-11、ACC-10、ACC-08、TRF-03 | 
+| 2026-10-21 | v3.0 | ACC-14 口径澄清：TransferInTry、TransferInConfirm、TransferInCancel 是进程内方法，各自用 `dbx.WithTx` 提交收款商户所在分片事务。RPC 仍是 ACC-11。校验先于 nil 判断，不合法为已有的 `10001`。`transfer_no` 为 1–32 个码点，不强制 `TF` 前缀。Try 先查收款商户结算账户，不存在 `40001`，非 ACTIVE `40005`，通过后才插入 TRIED，不动余额。1062 先回滚再读。CANCELLED 上的 Try 一律 `40004`，不再比较金额和收款商户。Confirm 先锁分支，再由公开 Post 按账户 id 升序锁账户。借本分片 TRANSIT 子账户、贷收款商户，凭证 `TRANSFER_IN`。在途允许透支，余额 0 也能确认。在途或商户行不存在为 `40001`，分支保持 TRIED。`Duplicated` 为 true 仍回写已有 `txn_no` 并提交 CONFIRMED，与 ACC-06 不同。回写 0 行、空凭证号、两个账户 id 相同为 `10003` 并回滚。Post 的 `40002` / `40005` 原样返回，不写墓碑，不自己加 `pay_transfer_inconsistent_total`。Cancel 不查账户；没有行时插入 CANCELLED 墓碑。TRIED 金额或收款商户不一致为 `10006`。已 CONFIRMED 再 Cancel 为 `40004`。验收五条的 CheckBalance 在 ACC-10 完成前用 SQL 断言代替。不新增错误码，不改 CHECK，不实现 ACC-11、ACC-10、ACC-08、TRF-03 |
+| 2026-10-21 | v3.0 | ACC-10 口径澄清：CheckBalance 是进程内方法，不监听 RPC，不实现管理 HTTP。不用 `dbx.WithTx`。每个分片在固定连接上执行 `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ` 和 `START TRANSACTION READ ONLY, WITH CONSISTENT SNAPSHOT`，查完 ROLLBACK。商户号不合法的 `10001` 先于 nil service 和已取消的 ctx。nil 依赖、ShardDB 失败、SQL 错误、未知方向和金额溢出是 `10003`，failures 为空。`40001` 只表示点名的商户结算账户不存在。`passed = false` 不是错误码。商户模式忽略 `expect_quiescent`。最后一条分录是 `max(id)`，不是 `created_at`。一次失败的完成调用把进程内无标签计数 `pay_ledger_check_failures_total` 加 1，`/metrics` 暴露仍是 OPS-01。不新增错误码，不改 IDL，不改表，不实现 RPC 和 HTTP | 
