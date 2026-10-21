@@ -1,6 +1,6 @@
 # pay-system 流程图（状态机、泳道图、控制流图）
 
-> 版本：v2.6　最后修改：2026-10-21　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐
+> 版本：v2.7　最后修改：2026-10-21　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐。2026-10-21 按 ACC-14 口径改正 CF-33，CF-33 已对齐
 > 依据：`docs/02-requirements.md` v3.0、`docs/03-conventions.md` v2.0、`docs/01-tech-decisions.md` D17–D21；`docs/05-api.md`、`docs/database.md` 尚未同步 v3.0，冲突处以需求文档为准
 > 用途：以图的形式确认全部功能性设计。图是需求的视图，规则冲突时以需求文档为准；需求变更后同步修改对应的图。
 
@@ -1603,42 +1603,92 @@ flowchart TD
 
 #### CF-33 收款方转账分支
 
-覆盖：ACC-14。三个方法都在收款商户所属分片执行。
+覆盖：ACC-14。三个方法都在收款商户所属分片执行，各自用 `dbx.WithTx` 提交。RPC 仍是 ACC-11。
 
 ```mermaid
 flowchart TD
-    T0(["TransferInTry(transfer_no, payee, T)"]) --> TA{"收款商户账户"}
-    TA -->|"不存在"| TE1["40001"]:::err
-    TA -->|"非 ACTIVE"| TE2["40005"]:::err
-    TA -->|"存在且 ACTIVE"| TI["INSERT transfer_branch(PAYEE, TRIED, amount)<br/>不动余额"]
-    TI -->|"成功"| TOK(["TRIED"]):::ok
-    TI -->|"1062"| TX{"已有分支"}
-    TX -->|"TRIED / CONFIRMED，金额一致"| TOK2(["幂等成功"]):::ok
-    TX -->|"CANCELLED"| TE3["40004（防悬挂）"]:::err
-    TX -->|"金额不一致"| TE4["10006"]:::err
-
-    C0(["TransferInConfirm(transfer_no, payee)"]) --> CS{"分支状态"}
-    CS -->|"TRIED"| CT
-    subgraph CTX["收款方分片事务"]
-        CT["CAS TRIED→CONFIRMED"] --> CP["Post(TRANSFER_IN)（CF-13）<br/>借 本分片 TRANSIT 子账户 k T，贷 收款商户 T<br/>在途允许透支，不会余额不足"]
-        CP -->|"成功"| CW["回写 txn_no"]
+    T0(["TransferInTry(ctx, transfer_no, payee, T)"]) --> TV{"参数"}
+    TV -->|"单号不是 1 到 32 个码点、金额不是正数、商户号非法。即使 service 为 nil 或 ctx 已取消"| TE01["10001，不写行"]:::err
+    TV -->|"合法"| TN{"service、ctx、pools"}
+    TN -->|"nil service、nil ctx、nil pools、ShardDB 失败"| TE03["10003。不因 subCount 或发号器为空失败"]:::err
+    TN -->|"ctx 已取消或已过截止"| TEC["原样返回，不启事务"]:::fault
+    TN -->|"可用"| TA{"MERCHANT_SETTLE，CNY，sub_no 0。不加行锁，不读余额"}
+    TA -->|"不存在，含非 CNY 选不中"| TE40001["40001，不写行"]:::err
+    TA -->|"不是 ACTIVE"| TE40005["40005，不写行"]:::err
+    TA -->|"ACTIVE"| TI
+    subgraph TTX["收款分片事务。Try 自己 WithTx。不调用 Post"]
+        TI["INSERT PAYEE / TRIED，请求金额。payer、fail_code、txn_no 为 NULL，version 0。不动余额"]
     end
-    CW --> COK(["CONFIRMED、txn_no"]):::ok
-    CP -->|"40005（Try 之后被停用）"| CE2["ROLLBACK，严重不一致"]:::err
-    CS -->|"CONFIRMED"| COK2(["返回已有 txn_no"]):::ok
-    CS -->|"CANCELLED / 不存在"| CE1["40004，严重不一致<br/>调用方计入 pay_transfer_inconsistent_total"]:::err
+    TI -->|"成功"| TOK(["TRIED，txn_no 空"]):::ok
+    TI -->|"其他错误，含 CHECK 3819"| TE03i["10003。Error 不含 SQL"]:::err
+    TI -->|"1062"| TRB["ROLLBACK 后事务外读 PAYEE。不读不改 LOCAL"]
+    TRB --> TX{"已有 PAYEE"}
+    TX -->|"读不到或未知 status"| TE03r["10003，不循环"]:::err
+    TX -->|"CANCELLED"| TE40004["40004，不比较金额和收款商户"]:::err
+    TX -->|"TRIED 或 CONFIRMED，金额或收款商户不一致"| TE10006["10006，不写"]:::err
+    TX -->|"一致"| TOK2(["返回库里的 status。CONFIRMED 也不返回 txn_no。不记账"]):::ok
 
-    X0(["TransferInCancel(transfer_no, payee, T)"]) --> XS{"分支状态"}
-    XS -->|"TRIED"| XC["CAS TRIED→CANCELLED"]
-    XC --> XOK(["CANCELLED"]):::ok
-    XS -->|"CANCELLED"| XOK2(["幂等成功"]):::ok
-    XS -->|"不存在"| XT["INSERT transfer_branch(PAYEE, CANCELLED) 墓碑<br/>空回滚，之后迟到的 Try 返回 40004"]
-    XT --> XOK
-    XS -->|"CONFIRMED"| XE["40004"]:::err
+    C0(["TransferInConfirm(ctx, transfer_no, payee)。没有金额"]) --> CV{"参数"}
+    CV -->|"单号不是 1 到 32 个码点或商户号非法。即使 service 为 nil 或 ctx 已取消"| CE01["10001，不写行"]:::err
+    CV -->|"合法"| CN{"service、ctx、pools、发号器、subCount 至少为 1、shard.Sub、ShardDB"}
+    CN -->|"任一失败"| CE03["10003，不写，不发号"]:::err
+    CN -->|"ctx 已取消或已过截止"| CEC["原样返回，不调用发号器"]:::fault
+    CN -->|"可用"| CL
+    subgraph CTX["收款分片事务。Confirm 自己 WithTx。Post 不提交"]
+        CL["先 SELECT PAYEE FOR UPDATE。账户锁交给 Post，按 id 升序"]
+        CL --> CS{"状态"}
+        CS -->|"没有行或 CANCELLED"| CE40004["40004，不插入，不记账"]:::err
+        CS -->|"CONFIRMED 且 txn_no 非空"| COK2(["返回该 txn_no。不再比较收款商户，不再记账"]):::ok
+        CS -->|"CONFIRMED 但 txn_no 空，或未知 status"| CE03s["10003，不写"]:::err
+        CS -->|"TRIED 但收款商户不一致"| CE10006["10006，不记账"]:::err
+        CS -->|"TRIED 且收款商户一致"| CAC{"本分片 TRANSIT，sub_no 为 shard.Sub。金额只用行上的 amount"}
+        CAC -->|"在途没有，或商户结算账户没有"| CE40001["40001，不调用 Post。ROLLBACK 后仍是 TRIED"]:::err
+        CAC -->|"两个 id 相同或任一为 0"| CE03id["10003"]:::err
+        CAC -->|"都有"| CP["公开 Post TRANSFER_IN，memo 空。借在途，贷收款商户。FrozenAccountID 为 0。在途允许透支"]
+        CP -->|"40002"| CE40002["原样返回。ROLLBACK，保持 TRIED，不写墓碑"]:::err
+        CP -->|"40005"| CE40005["原样返回。ROLLBACK，保持 TRIED。本方法不加指标"]:::err
+        CP -->|"其他错误"| CEPOST["原样返回。ROLLBACK，保持 TRIED"]:::err
+        CP -->|"凭证号为空"| CE03t["10003，ROLLBACK"]:::err
+        CP -->|"error 为 nil。Duplicated 为 true 或 false 都回写"| CW["UPDATE CONFIRMED，写入 txn_no，version 加 1。WHERE TRIED 且 txn_no IS NULL，amount 与 payee 等于刚读到的值"]
+    end
+    CW -->|"影响 1 行"| COK(["COMMIT。CONFIRMED，该 txn_no"]):::ok
+    CW -->|"影响 0 行"| CE03w["10003，ROLLBACK。不是并发幂等"]:::err
+
+    X0(["TransferInCancel(ctx, transfer_no, payee, T)"]) --> XV{"参数"}
+    XV -->|"与 Try 相同的不合法。即使 service 为 nil 或 ctx 已取消"| XE01["10001，不写行"]:::err
+    XV -->|"合法"| XN{"service、ctx、pools"}
+    XN -->|"nil 或 ShardDB 失败"| XE03["10003。不查账户，不选子账户"]:::err
+    XN -->|"ctx 已取消或已过截止"| XEC["原样返回"]:::fault
+    XN -->|"可用"| XL
+    subgraph XTX["收款分片事务。Cancel 自己 WithTx。不调用 Post"]
+        XL["先 SELECT PAYEE FOR UPDATE。不查账户，不改余额"]
+        XL --> XS{"状态"}
+        XS -->|"没有行"| XI["INSERT CANCELLED。请求金额和收款商户。payer、fail_code、txn_no 为 NULL。version 0"]
+        XS -->|"CANCELLED"| XOK2(["幂等成功。不再比较金额和收款商户"]):::ok
+        XS -->|"CONFIRMED"| XE40004["40004，不再比较金额"]:::err
+        XS -->|"TRIED 且金额或收款商户不一致"| XE10006["10006，不改行"]:::err
+        XS -->|"TRIED 且一致"| XCAS["CAS CANCELLED，version 加 1"]
+        XS -->|"未知 status"| XE03u["10003"]:::err
+        XI -->|"成功"| XOK(["CANCELLED，txn_no 空"]):::ok
+        XI -->|"1062"| XRB["ROLLBACK 后事务外读"]
+        XI -->|"其他错误，含 CHECK 3819"| XE03i["10003。Error 不含 SQL"]:::err
+        XCAS -->|"影响 1 行"| XOK
+        XCAS -->|"影响 0 行"| XE03z["10003，ROLLBACK"]:::err
+    end
+    XRB --> XEX{"已有 PAYEE"}
+    XEX -->|"CANCELLED"| XOK3(["幂等成功"]):::ok
+    XEX -->|"CONFIRMED"| XE40004b["40004"]:::err
+    XEX -->|"TRIED 且不一致"| XE10006b["10006，不改行"]:::err
+    XEX -->|"TRIED 且一致"| X2["再开事务，锁住后 CAS"]
+    X2 -->|"成功"| XOK4(["CANCELLED"]):::ok
+    X2 -->|"再次 1062"| XE03b["10003，不空转"]:::err
+    XEX -->|"读不到或未知 status"| XE03c["10003"]:::err
     classDef ok fill:#e3f6e8,stroke:#2e7d32
     classDef err fill:#fde4e4,stroke:#c62828
     classDef fault fill:#fff4d6,stroke:#b8860b
 ```
+
+参数不合法在事务前返回 `10001`，即使 service 为 nil 或上下文已取消。Try 先查收款账户再插入，不调用 Post。Confirm 先锁分支，再按账户 id 升序锁账户，借在途、贷收款商户，凭证 `TRANSFER_IN`。在途允许透支，余额为 0 也能确认；`40002` 与 `40005` 原样返回，分支保持 TRIED。`Duplicated` 为 true 仍提交 CONFIRMED。Cancel 不查账户，没有行就写 CANCELLED 墓碑。1062 必须先回滚再读。不改资金流向。
 
 ### 4.5 转账
 
@@ -2216,3 +2266,4 @@ R1–R14 来自 v1.x 绘图，已落入需求文档 v2.2；R15 起来自 v2.0 �
 | 2026-10-20 | v2.4 | ACC-05：CF-15 补上参数 10001、账户不存在 40001、FROZEN 金额或账户不一致 10006、CONFIRMED 一律 40004、RELEASED 幂等、账户更新 0 行则 10003 且回滚、停用账户仍解冻。不改资金流向 |
 | 2026-10-20 | v2.5 | ACC-06：CF-16 补上事务前 10001、先锁冻结单、10006、40001、商户腿特殊更新、平台 40005 回滚且保持 FROZEN、CAS 同时写 txn_no、凭证已存在但冻结单仍 FROZEN 则 10003、CONFIRMED 重放忽略 channel、RELEASED 或不存在 40004 且不插入、冻结不足 10003 回滚。不改资金流向 |
 | 2026-10-21 | v2.6 | ACC-07：CF-32 补上参数 10001 先于 nil 判断、nil 依赖 10003、已取消上下文原样返回、ShardDB 10003、不存在 40001 优先于非 ACTIVE、账户 id 相同 10003、事务 1 插入 SUCCESS 后公开 Post、Duplicated 仍回写 txn_no 并提交、回写 0 行 10003 并回滚、Post 的其他错误不写墓碑、只有 40002 开事务 2 写失败墓碑、1062 先回滚再读、金额或双方不一致 10006、SUCCESS 且 txn_no 空为 10003、FAILED 返回库里的 fail_code。不改资金流向 |
+| 2026-10-21 | v2.7 | ACC-14：CF-33 补上参数 10001 先于 nil 判断、nil 依赖 10003、已取消上下文原样返回、ShardDB 10003、Try 不存在 40001 优先于非 ACTIVE、插入 TRIED 且不动余额、1062 先回滚再读、CANCELLED 一律 40004、Confirm 先锁分支再由 Post 按 id 锁账户、在途或商户行不存在 40001 且保持 TRIED、id 相同 10003、借在途贷收款商户、40002 与 40005 原样返回并保持 TRIED、Duplicated 仍回写并提交 CONFIRMED、回写 0 行 10003、Cancel 不查账户的空回滚墓碑、TRIED 不一致 10006。不改资金流向 |

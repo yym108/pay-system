@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 2.0.5 |
+| 文档版本 | 2.0.6 |
 | API 版本 | v1（路径前缀 `/v1`） |
 | 最后修改 | 2026-10-21 |
 | 状态 | 设计基线，实现须与本文一致 |
@@ -41,6 +41,7 @@
 | 2.0.3 | 2026-10-20 | 文字对齐：ReleaseFreeze 是进程内方法，RPC handler 仍是 ACC-11。空回滚账户不存在为 `40001`；FROZEN 金额或账户不一致为 `10006`；CONFIRMED 一律 `40004`；RELEASED 幂等且不再比较金额；解冻不要求账户 ACTIVE，不改 `balance`。不新增字段，不改错误码数字，不改 IDL。§1 各接口的“最后修改”不变 | AccountService.ReleaseFreeze | ACC-05 |
 | 2.0.4 | 2026-10-20 | 文字对齐：ConfirmFreeze 是进程内方法，RPC handler 仍是 ACC-11。不新增字段、不改错误码数字、不改 IDL。§1 各接口的“最后修改”不变 | AccountService.ConfirmFreeze | ACC-06 |
 | 2.0.5 | 2026-10-21 | 文字对齐：TransferLocal 是进程内方法，自己用 `dbx.WithTx` 提交本分片事务，RPC handler 仍是 ACC-11。不新增字段、不改错误码数字、不改 IDL。余额不足是业务结果 `FAILED` / `INSUFFICIENT_BALANCE`，不把 `40002` 列为该方法的业务错误。§1 各接口的“最后修改”不变 | AccountService.TransferLocal | ACC-07 |
+| 2.0.6 | 2026-10-21 | 文字对齐：TransferInTry、TransferInConfirm、TransferInCancel 是进程内方法，各自用 `dbx.WithTx` 提交收款商户所在分片的事务，RPC handler 仍是 ACC-11。不新增字段、不改错误码数字、不改 IDL。Confirm 的业务错误补上 `10006` 与 `40001`，Cancel 的业务错误补上 `10006`。`10003` / `10004` 仍不进业务错误列。§1 各接口的“最后修改”不变 | AccountService.TransferInTry、TransferInConfirm、TransferInCancel | ACC-14 |
 
 ## 1. 接口总览
 
@@ -789,7 +790,7 @@ Kitex + Thrift，IDL 位于 `idl/`，以生成后的 IDL 为准；本节列出�
 
 ### 10.1 AccountService（:8882）
 
-account RPC 以商户号（或 owner）为入参，由 account 按商户号路由到所属分片（ACC-13），调用方不传账户号和分片号（`OpenAccount` 除外）；每次调用只在一个分片上开启事务。商户号格式非法一律返回 `10001`，下表不再重复。记账 `Post` 是 account 进程内方法（ACC-03，供 ConfirmFreeze、TransferLocal、TransferInConfirm 与事件消费使用），不提供 RPC。ACC-04 交付的冻结同样是进程内方法 `biz.Freeze`，RPC handler 仍是 ACC-11；下表保留 `Freeze` 的契约。ACC-05 交付的解冻同样是进程内方法 `biz.ReleaseFreeze`，RPC handler 仍是 ACC-11；下表保留 `ReleaseFreeze` 的契约。ACC-06 交付的确认同样是进程内方法 `biz.ConfirmFreeze`，RPC handler 仍是 ACC-11；下表保留 `ConfirmFreeze` 的契约。ACC-07 交付的同分片转账已经是进程内方法 `biz.TransferLocal`，RPC handler 仍是 ACC-11；下表保留 `TransferLocal` 的契约。
+account RPC 以商户号（或 owner）为入参，由 account 按商户号路由到所属分片（ACC-13），调用方不传账户号和分片号（`OpenAccount` 除外）；每次调用只在一个分片上开启事务。商户号格式非法一律返回 `10001`，下表不再重复。记账 `Post` 是 account 进程内方法（ACC-03，供 ConfirmFreeze、TransferLocal、TransferInConfirm 与事件消费使用），不提供 RPC。ACC-04 交付的冻结同样是进程内方法 `biz.Freeze`，RPC handler 仍是 ACC-11；下表保留 `Freeze` 的契约。ACC-05 交付的解冻同样是进程内方法 `biz.ReleaseFreeze`，RPC handler 仍是 ACC-11；下表保留 `ReleaseFreeze` 的契约。ACC-06 交付的确认同样是进程内方法 `biz.ConfirmFreeze`，RPC handler 仍是 ACC-11；下表保留 `ConfirmFreeze` 的契约。ACC-07 交付的同分片转账已经是进程内方法 `biz.TransferLocal`，RPC handler 仍是 ACC-11；下表保留 `TransferLocal` 的契约。ACC-14 交付的收款方分支已经是进程内方法 `biz.TransferInTry`、`biz.TransferInConfirm`、`biz.TransferInCancel`，各自用 `dbx.WithTx` 提交收款商户所在分片的事务，RPC handler 仍是 ACC-11；下表保留这三行的契约。
 
 | 方法 | 请求 | 响应 | 幂等键 | 业务错误 | 调用方 | 功能点 |
 |---|---|---|---|---|---|---|
@@ -799,9 +800,9 @@ account RPC 以商户号（或 owner）为入参，由 account 按商户号路�
 | `ReleaseFreeze` | `biz_type`、`biz_no`、`merchant_id`、`amount` | `freeze_no`、`status` | `(biz_type, biz_no)` | 10001、10006、40001、40004 | payment（TRF-03 Cancel） | ACC-05 |
 | `ConfirmFreeze` | `biz_type`、`biz_no`、`merchant_id`、`channel` | `freeze_no`、`txn_no` | `(biz_type, biz_no)` | 10001、10006、40001、40004、40005 | payment（TRF-03 Confirm） | ACC-06 |
 | `TransferLocal` | `transfer_no`、`payer_merchant_id`、`payee_merchant_id`、`amount` | `status`（`SUCCESS` / `FAILED`）、`txn_no`（SUCCESS）、`fail_code`（FAILED） | `(transfer_no, LOCAL)`，分片内唯一 | 10001、10006、40001、40005 | payment（TRF-02） | ACC-07 |
-| `TransferInTry` | `transfer_no`、`payee_merchant_id`、`amount` | `status`（`TRIED`） | `(transfer_no, PAYEE)`，分片内唯一 | 10006、40001、40004、40005 | payment（TRF-03 Try） | ACC-14 |
-| `TransferInConfirm` | `transfer_no`、`payee_merchant_id` | `status`（`CONFIRMED`）、`txn_no` | `(transfer_no, PAYEE)` | 40004、40005 | payment（TRF-03 Confirm） | ACC-14 |
-| `TransferInCancel` | `transfer_no`、`payee_merchant_id`、`amount` | `status`（`CANCELLED`） | `(transfer_no, PAYEE)` | 40004 | payment（TRF-03 Cancel） | ACC-14 |
+| `TransferInTry` | `transfer_no`、`payee_merchant_id`、`amount` | `status`（`TRIED`，或已有 `CONFIRMED` 且不返回 `txn_no`） | `(transfer_no, PAYEE)`，分片内唯一 | 10006、40001、40004、40005 | payment（TRF-03 Try） | ACC-14 |
+| `TransferInConfirm` | `transfer_no`、`payee_merchant_id` | `status`（`CONFIRMED`）、`txn_no` | `(transfer_no, PAYEE)` | 10006、40001、40004、40005 | payment（TRF-03 Confirm） | ACC-14 |
+| `TransferInCancel` | `transfer_no`、`payee_merchant_id`、`amount` | `status`（`CANCELLED`） | `(transfer_no, PAYEE)` | 10006、40004 | payment（TRF-03 Cancel） | ACC-14 |
 | `CheckBalance` | `merchant_id`（为空时全量）、`expect_quiescent` | `passed`、`failures[{shard, account_no, check, expected, actual}]` | — | 40001 | gateway（管理接口）、测试、`verify.sh` | ACC-10 |
 | `Reverse` | `shard`、`txn_no`、`reason` | `reversal_txn_no`、`duplicated` | 原 `txn_no` | 10001、40001、40002 | 内部方法（P1），业务流程不调用 | ACC-08 |
 
@@ -812,9 +813,9 @@ account RPC 以商户号（或 owner）为入参，由 account 按商户号路�
 - `ReleaseFreeze`：进程内方法，自己用 `dbx.WithTx` 提交本分片事务，RPC handler 仍是 ACC-11。校验与 Freeze 相同，不合法为 `10001`，不写行。FROZEN 且金额、账户都一致 → RELEASED，`frozen_amount` 减少，`balance` 不变，冻结单和账户的 `version` 各加 1；不要求账户 `ACTIVE`，不返回 `40005`。金额或账户不一致 → `10006`，旧行不变。已 RELEASED 幂等成功，不再比较金额。已 CONFIRMED 一律 `40004`，不再比较金额。冻结单不存在时写入 RELEASED 墓碑并返回成功（空回滚），不改账户；账户不存在 → `40001`。账户更新影响 0 行 → `10003` 并回滚，冻结单保持 FROZEN。退款解冻由 account 消费 `refund.failed` 在进程内执行（MQ-04），不经过 RPC。响应仍是 `freeze_no`、`status`。
 - `ConfirmFreeze`：进程内方法，自己用 `dbx.WithTx` 提交本分片事务，RPC handler 仍是 ACC-11。请求没有金额，R 只用冻结单 `amount`。`REFUND` 的 `channel` 非空且不超过 32 个码点，贷本分片该渠道 `CHANNEL_RECEIVABLE` 子账户，凭证 `REFUND` / `refund_no`，渠道应收减少 R。`TRANSFER` 的 `channel` 必须是空串，贷本分片 `TRANSIT` 子账户，凭证 `TRANSFER_OUT` / `transfer_no`，在途增加 R；冻结单自己的 `biz_type` 仍是 `TRANSFER`。商户腿把 `balance` 与 `frozen_amount` 同减 R，不要求账户 `ACTIVE`，不返回 `40002`。平台贷方不是 `ACTIVE` → `40005`，回滚后冻结单保持 FROZEN。FROZEN 但账户不是该商户结算账户 → `10006`。本分片平台子账户不存在 → `40001`。第一次成功 `duplicated = false`，返回已有 `freeze_no` 和这次的 `txn_no`。已 CONFIRMED 返回已有 `txn_no`，不再比较 `channel`，不再记账。RELEASED 或不存在 → `40004`，不插入。`duplicated` 不进 RPC，响应仍是 `freeze_no`、`txn_no`。退款确认由 account 消费 `refund.succeeded` 在进程内执行（MQ-04），不经过 RPC。
 - `TransferLocal`：进程内方法，自己用 `dbx.WithTx` 提交本分片事务，RPC handler 仍是 ACC-11。参数校验在 nil service / nil ctx 之前，不合法为 `10001`，不写行。`transfer_no` 为 1–32 个码点，不强制 `TF` 前缀；金额必须是正的 int64 分；双方都能被 `shard.Of` 解析、同一分片、且不是同一商户。事务前普通 SELECT 双方 `MERCHANT_SETTLE` / `CNY` / `sub_no = 0`，不加行锁、不比较余额；任一不存在为 `40001`（优先于非 ACTIVE），两个都在但任一不是 `ACTIVE` 为 `40005`。事务 1 插入 `LOCAL` / `SUCCESS`（`txn_no` 空、`version` 0）后调用公开 `Post(TRANSFER, transfer_no, memo 空串)`，借付款商户、贷收款商户，可用余额条件是 `balance - frozen_amount`。`Post` 的 `error` 为 nil 时，无论 `Duplicated` 是 true 还是 false，都回写已有 `txn_no` 并提交 SUCCESS；`Duplicated` true 表示凭证已在、这次没有改余额。回写影响 0 行是 `10003`，回滚，不能留下没有 `txn_no` 的 SUCCESS。只有 `Post` 返回 `40002` 才在事务 1 回滚后开事务 2，插入 `FAILED` 墓碑，`fail_code` 为 `INSUFFICIENT_BALANCE`，成功时 error 为 nil、`txn_no` 为空，不把 `40002` 返回给调用方。`Post` 的其他错误只回滚事务 1，不写墓碑，把该错误返回给调用方。1062 先回滚，再在事务外读已有 `LOCAL` 分支：金额或双方不一致为 `10006`；SUCCESS 且 `txn_no` 非空返回该 `txn_no`，不再记账；SUCCESS 但 `txn_no` 为空是 `10003`；FAILED 返回库里的 `fail_code`，不再看当前余额。读不到行、未知 status、FAILED 却没有 `fail_code` 是 `10003`。不新增字段，响应仍是 `status`、`txn_no`、`fail_code`。
-- `TransferInTry`：只校验收款账户并写入 TRIED 分支，不动余额；分支已 CANCELLED（墓碑）→ `40004`。
-- `TransferInConfirm`：TRIED → CONFIRMED，借本分片 `TRANSIT` 子账户、贷收款商户，凭证 `TRANSFER_IN` / `transfer_no`；已 CONFIRMED 返回已有 `txn_no`；CANCELLED 或不存在 → `40004`（严重不一致）。
-- `TransferInCancel`：TRIED → CANCELLED；已 CANCELLED 幂等成功；不存在时写入 CANCELLED 墓碑（空回滚）；已 CONFIRMED → `40004`。
+- `TransferInTry`：进程内方法，自己用 `dbx.WithTx` 提交收款商户所在分片的事务，RPC handler 仍是 ACC-11。参数校验在 nil service / nil ctx 之前，不合法为 `10001`，不写行，即使 service 为 nil 或 ctx 已取消。`transfer_no` 为 1–32 个码点，不强制 `TF` 前缀；金额必须是正的 int64 分；收款商户必须能被 `shard.Of` 解析。参数合法后 nil service、nil ctx、nil pools 为 `10003`；已取消或已过截止时间的 ctx 原样返回，不启事务；ShardDB 失败为 `10003`。不选平台子账户，`subCount < 1` 或发号器为空不是参数错误。先普通 SELECT 收款商户 `MERCHANT_SETTLE` / `CNY` / `sub_no = 0`，不加行锁、不读余额。不存在（含非 CNY 选不中）为 `40001`；存在但不是 `ACTIVE` 为 `40005`。都不写行。账户通过后事务里 INSERT `role = PAYEE`、`status = TRIED`、请求金额、`payer_merchant_id` 与 `fail_code` 与 `txn_no` 均为 SQL NULL、`version` 0。不动余额，不调用 Post。1062 先回滚，再在事务外读已有 PAYEE 行：CANCELLED 返回 `40004`，不比较金额和收款商户；TRIED 或 CONFIRMED 且金额或收款商户不一致为 `10006`，不写；一致则返回库里的 status，不记账，CONFIRMED 也不返回 `txn_no`。读不到行或未知 status 为 `10003`，不循环。同一 `transfer_no` 的 LOCAL 行不冲突，不读不改。成功时 `txn_no` 为空。返回错误时 `status` 和 `txn_no` 都是空字符串。不新增字段。
+- `TransferInConfirm`：进程内方法，自己用 `dbx.WithTx` 提交同一分片事务，RPC handler 仍是 ACC-11。没有金额。校验同样先于 nil 判断，不合法为 `10001`。参数合法后 nil service、nil ctx、nil pools、发号器为空或 `subCount < 1` 为 `10003`；已取消或已过截止时间的 ctx 原样返回，不调用发号器。子账户号在开事务前用 `shard.Sub(transfer_no, subCount)`，失败为 `10003`，不写。事务内先 `SELECT ... FOR UPDATE` 锁 PAYEE 行，再由公开 Post 按账户 id 升序锁账户。没有行或 CANCELLED 为 `40004`，不插入，不记账。CONFIRMED 且 `txn_no` 非空则返回该 `txn_no`，不再比较收款商户，不再记账。CONFIRMED 但 `txn_no` 为空，或未知 status，为 `10003`，不写。TRIED 但收款商户不一致为 `10006`，不记账。TRIED 且收款商户一致时，金额只用行上的 `amount`。本分片 `TRANSIT`（`PLATFORM` / `PLATFORM` / `CNY` / `sub_no = shard.Sub`）不存在，或商户结算账户此时不存在，为 `40001`，不调用 Post，回滚后分支仍是 TRIED。两个账户 id 相同或任一为 0 是 `10003`。然后 `Post(ctx, tx, TRANSFER_IN, transfer_no, memo 空串)`：借在途、贷收款商户，`FrozenAccountID` 保持 0。在途允许透支，正常行不会因为在途不足返回 `40002`；若在途被改成不许透支且不够扣，`40002` 原样返回，回滚，保持 TRIED，不写墓碑。Post 返回 `40005` 原样返回，回滚，保持 TRIED。本方法不增加 `pay_transfer_inconsistent_total`。Post 的 error 为 nil 时，无论 `Duplicated` 是 true 还是 false，都回写 `PostResult.TxnNo` 并提交 CONFIRMED。`Duplicated` true 表示凭证已在、这次没改余额。这和 ACC-06 不同。回写 WHERE 为 `role = PAYEE AND status = TRIED AND txn_no IS NULL` 且 amount、payee 等于刚读到的值，`version` 加 1。影响 0 行或凭证号为空是 `10003` 并回滚。持有 FOR UPDATE 时 0 行不是并发幂等。`10003` / `10004` 不进上表业务错误列。成功时 `txn_no` 非空。返回错误时 `status` 和 `txn_no` 都是空字符串。不新增字段。
+- `TransferInCancel`：进程内方法，自己用 `dbx.WithTx` 提交同一分片事务，RPC handler 仍是 ACC-11。校验与 Try 相同，不合法为 `10001`，即使 service 为 nil 或 ctx 已取消。参数合法后的 nil 依赖、取消的 ctx、ShardDB 失败与 Try 相同。不查账户，不选平台子账户，所以没有 `40001` / `40005`。事务内先 `SELECT ... FOR UPDATE`。没有行：INSERT CANCELLED，金额和收款商户用请求值，payer、fail_code、txn_no 均为 SQL NULL，`version` 0。不改余额。1062 先回滚，再按已有行处理。已 CANCELLED 幂等成功，不再比较金额和收款商户。已 CONFIRMED 为 `40004`，不再比较金额。TRIED 且金额或收款商户不一致为 `10006`，不改行。TRIED 且一致则 CAS 为 CANCELLED，`version` 加 1。余额不变，不调用 Post。持有 FOR UPDATE 时 CAS 影响 0 行是 `10003` 并回滚。未知 status 为 `10003`。1062 之后读到匹配的 TRIED，再开一个事务锁住后 CAS；第二次仍是 1062 则为 `10003`，不空转。成功时 `txn_no` 为空。返回错误时 `status` 和 `txn_no` 都是空字符串。不新增字段。
 - `CheckBalance`：核对项与 `failures` 字段规则见 §8.4。
 - 平台子账户由 account 按 `crc32(biz_no) % PLATFORM_SUB_ACCOUNTS` 选择，调用方不感知。
 

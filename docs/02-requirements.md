@@ -358,7 +358,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | ACC-05 | 解冻（含空回滚、防悬挂） | P0 | M2 | ACC-04 | DONE |
 | ACC-06 | 确认扣款 | P0 | M2 | ACC-04 | DONE |
 | ACC-07 | 同分片转账（含失败墓碑） | P0 | M2 | ACC-03 | DONE |
-| ACC-14 | 收款方转账分支（Try / Confirm / Cancel） | P0 | M2 | ACC-03 | TODO |
+| ACC-14 | 收款方转账分支（Try / Confirm / Cancel） | P0 | M2 | ACC-03 | DONE |
 | ACC-08 | 冲正 | P1 | M8 | ACC-03 | TODO |
 | ACC-09 | 流水查询 | P1 | — | — | CUT |
 | ACC-10 | 余额核对（含分片与在途守恒） | P0 | M2 | ACC-03、ACC-04、ACC-14 | TODO |
@@ -1044,30 +1044,36 @@ DSN 只按驱动的文本规则装配，不连接数据库：
 
 `P0 · M2 · 依赖：ACC-03 · 表：transfer_branch、ledger_txn、ledger_entry、account`
 
-接口（均以收款商户所属分片执行）：
+接口（均以收款商户所属分片执行。三个方法都是进程内方法，各自用 `dbx.WithTx` 提交该分片事务。RPC 仍是 ACC-11）：
 
-- `AccountService.TransferInTry(transfer_no, payee_merchant_id, amount)` → `{status}`
-- `AccountService.TransferInConfirm(transfer_no, payee_merchant_id)` → `{status, txn_no}`
-- `AccountService.TransferInCancel(transfer_no, payee_merchant_id, amount)` → `{status}`
+- `TransferInTry(ctx, transfer_no, payee_merchant_id, amount)` → `{status}`。成功时 `txn_no` 为空。
+- `TransferInConfirm(ctx, transfer_no, payee_merchant_id)` → `{status, txn_no}`。成功时 `txn_no` 非空。
+- `TransferInCancel(ctx, transfer_no, payee_merchant_id, amount)` → `{status}`。成功时 `txn_no` 为空。
+
+`error` 为 nil 才表示业务成功。返回错误时 `status` 和 `txn_no` 都是空字符串。没有进程内 `duplicated` 字段。
 
 说明：收款方 Try 不动余额，只占位并确认收款账户可用，避免 Confirm 阶段才发现收款账户异常、资金滞留在途。分支记录同时承担空回滚与防悬挂。
 
 规则：
 
-1. Try：校验收款商户账户存在且 ACTIVE（否则 `40001` / `40005`）；`INSERT transfer_branch(role = 'PAYEE', status = 'TRIED', amount)`。遇 1062 读取已有分支：TRIED、CONFIRMED 且金额一致 → 幂等成功；CANCELLED → `40004`（防悬挂）；金额不一致 → `10006`。
-2. Confirm（同一事务）：CAS `TRIED → CONFIRMED`；`Post(TRANSFER_IN, transfer_no, 借本分片 TRANSIT 子账户 T，贷收款商户 T)`；回写 `txn_no`。已 CONFIRMED → 返回已有 `txn_no`。CANCELLED 或不存在 → `40004`：协调者只会在两个 Try 都成功后发起 Confirm，出现即为严重不一致，调用方记错误日志并计入 `pay_transfer_inconsistent_total`。
-3. Cancel：CAS `TRIED → CANCELLED`。已 CANCELLED → 幂等成功。不存在 → 插入 CANCELLED 墓碑（空回滚），之后迟到的 Try 返回 `40004`。已 CONFIRMED → `40004`。
-4. 收款方 Confirm 只增加商户余额、减少平台在途（允许透支），不会因余额不足失败；唯一的业务失败是账户在 Try 之后被停用（Post 返回 `40005`），本项目没有停用入口，按严重不一致处理。
+1. 参数校验在 nil service / nil ctx 之前。不合法返回 `10001`，不写行。即使 service 为 nil 或 ctx 已取消也如此。`transfer_no` 为 1–32 个码点，不强制 `TF` 前缀。Try 和 Cancel 的 `amount` 必须是正的 int64 分。收款商户必须能被 `shard.Of` 解析，分片由收款商户决定。Confirm 没有金额。
+2. 参数合法之后：nil service、nil ctx、nil pools 为 `10003`。已取消或已过截止时间的 ctx 原样返回，不启事务。ShardDB 失败为 `10003`。Try 和 Cancel 不选平台子账户，不因为 `subCount < 1` 或发号器为空失败。Confirm 在开事务前要求发号器非空且 `subCount >= 1`，否则 `10003`，因为 Post 要发 `TX` 号。子账户号用 `shard.Sub(transfer_no, subCount)`，不在业务里另算 crc32。`shard.Sub` 失败是 `10003`，不写。
+3. 商户结算账户：`owner_type = MERCHANT`，`owner_id` 为收款商户，`account_type = MERCHANT_SETTLE`，`currency = CNY`，`sub_no = 0`。不加行锁，不读余额。Try：不存在（含非 CNY 选不中）为 `40001`；存在但不是 `ACTIVE` 为 `40005`。不写行。账户检查在插入之前，所以账户还不存在时看不到墓碑，返回 `40001`；账户后来建好且为 `ACTIVE`，再对 CANCELLED 调用 Try 才是 `40004`。Cancel 不查账户。没有行时直接插入 CANCELLED 墓碑，账户不存在也写。这是空回滚。
+4. PAYEE 行：`role = PAYEE`，`payer_merchant_id` 为 SQL NULL，`fail_code` 为 SQL NULL，不写空字符串。同一 `transfer_no` 的 LOCAL 行不冲突，不读不改 LOCAL。
+5. Try：账户通过后，事务里 INSERT `status = TRIED`，金额为请求金额，`txn_no` 为 NULL，`version` 为 0。不动余额，不调用 Post。1062 不中止 InnoDB。返回错误让 WithTx 回滚，再在事务外读已有 PAYEE 行。CANCELLED：返回 `40004`，不比较金额和收款商户，不插入。TRIED 或 CONFIRMED：金额或 `payee_merchant_id` 不一致为 `10006`，不写；一致则返回库里的 status，不记账。CONFIRMED 的 Try 不返回 `txn_no`。读不到行、未知 status 为 `10003`，不循环。
+6. Confirm 在一个 WithTx 里：先 `SELECT ... FOR UPDATE` 锁 PAYEE 行，再按账户 id 升序锁账户（这是 Post 已有行为，不在 Post 之前用相反顺序锁）。没有行或 CANCELLED：`40004`，不插入，不记账。CONFIRMED 且 `txn_no` 非空：返回该 `txn_no` 和 status `CONFIRMED`，不再比较收款商户，不再记账。CONFIRMED 但 `txn_no` 为 SQL NULL 或空：`10003`，不写。未知 status：`10003`。TRIED 但收款商户不是本次请求：`10006`，不记账。TRIED 且收款商户一致：金额只用行上的 `amount`。查本分片 TRANSIT：`owner_type = PLATFORM`，`owner_id = PLATFORM`，`account_type = TRANSIT`，`currency = CNY`，`sub_no = shard.Sub(transfer_no, subCount)`。没有该行：`40001`，不调用 Post，不改分支，事务回滚后仍是 TRIED。商户结算账户此时不存在：`40001`，同样保持 TRIED。两个账户 id 相同，或任一 id 为 0：`10003`。然后公开 `Post(ctx, tx, TRANSFER_IN, transfer_no, memo 空串)`：借在途、贷收款商户。`FrozenAccountID` 保持 0。在途允许透支，正常行不会因为在途余额不足返回 `40002`。不把 `40002` 改成别的码。若库里的在途被改成不许透支并且不够扣，Post 仍返回 `40002`，本方法原样返回，回滚，分支保持 TRIED，不写墓碑。Post 返回 `40005`（商户或在途不是 ACTIVE）原样返回，回滚，保持 TRIED。这是严重不一致，本方法只返回 `40005`，不自己加 `pay_transfer_inconsistent_total`（指标仍由 TRF-03 负责）。Post 的 error 为 nil 时，无论 `Duplicated` 是 true 还是 false，都回写 `PostResult.TxnNo`。`Duplicated` true 表示这张 `TRANSFER_IN` 凭证已在、这次没改余额；仍把分支提交为 CONFIRMED。这和 ACC-06 不同。回写用一条 UPDATE：`status = CONFIRMED`，`txn_no` 为返回的号，`version = version + 1`，WHERE `role = PAYEE AND status = TRIED AND txn_no IS NULL` 且 amount 与 payee 等于刚读到的值。影响 1 行则提交。影响 0 行：`10003` 并回滚。行上有 FOR UPDATE，0 行不是并发幂等。Post 返回空字符串凭证号：`10003`，回滚。
+7. Cancel 在一个 WithTx 里：先 `SELECT ... FOR UPDATE`。没有行：INSERT CANCELLED，金额用请求金额，payee 用请求商户，payer 为 NULL，fail_code 为 NULL，txn_no 为 NULL，version 为 0。不查账户，不改余额。1062 则回滚后按已有行处理。已 CANCELLED：幂等成功，不再比较金额和收款商户。已 CONFIRMED：`40004`，不再比较金额。TRIED 且金额或 payee 不一致：`10006`，不改行。TRIED 且一致：CAS 为 CANCELLED，`version + 1`，WHERE `status = TRIED` 且 amount 与 payee 匹配。余额不变，不调用 Post。0 行在持有 FOR UPDATE 时是 `10003` 并回滚。未知 status：`10003`。1062 之后若读到匹配的 TRIED，再开一个事务锁住后 CAS。第二次仍是 1062 则为 `10003`，不空转。
+8. 错误只用 `pkg/errno` 已有值。内部错误保留已知 errno 和上下文取消或截止。CHECK 3819 收成 `10003`。`Error()` 不含 SQL、地址、密码。
 
-异常：账户不存在 → `40001`；非 ACTIVE → `40005`；分支状态冲突 → `40004`；幂等冲突 → `10006`。
+异常：Try 账户不存在 → `40001`，非 ACTIVE → `40005`。Confirm 的在途或商户行不存在 → `40001`，Post 返回的 `40005` / `40002` 原样返回。分支状态冲突 → `40004`。幂等冲突 → `10006`。Cancel 的空回滚和已取消不查账户，所以没有 `40001` / `40005`。
 
 验收：
 
-- [ ] Try → Confirm：收款商户余额 +T，本分片在途 −T，凭证类型 `TRANSFER_IN`；重复 Confirm 只记一次账。
-- [ ] Try → Cancel：余额无变化，分支 CANCELLED；重复 Cancel 幂等。
-- [ ] 先 Cancel（无记录）生成墓碑，随后 Try 返回 `40004`，Confirm 返回 `40004`，无任何记账。
-- [ ] 对已 CONFIRMED 的分支 Cancel 返回 `40004`。
-- [ ] 同一 `transfer_no` 并发 Try 与 Cancel 各 20 次：结果要么 TRIED 后被取消（最终 CANCELLED），要么 CANCELLED 墓碑且 Try 全部返回 `40004`；不存在 CONFIRMED。
+- [x] Try → Confirm：收款商户余额 +T，本分片对应 TRANSIT 子账户余额 −T（在途允许透支，起始可以是 0，确认后为 −T）。凭证恰好 1 张，`biz_type = TRANSFER_IN`。重复 Confirm 返回同一 `txn_no`，仍是 1 张凭证。另一分片没有这次的分支和凭证。ACC-10 未做，CheckBalance 用 SQL 断言代替，不调用核对函数。
+- [x] Try → Cancel：商户和在途余额不变，分支 CANCELLED。重复 Cancel 成功，仍是一行。CheckBalance 用 SQL 断言代替。
+- [x] 没有行时先 Cancel，生成 CANCELLED 墓碑（不要求账户事先存在）。随后 Try 返回 `40004`，Confirm 返回 `40004`。没有凭证，余额不变。CheckBalance 用 SQL 断言代替。
+- [x] 已 CONFIRMED 再 Cancel 返回 `40004`，分支仍是 CONFIRMED，凭证仍是 1 张，余额不再变。CheckBalance 用 SQL 断言代替。
+- [x] 同一 `transfer_no`，Try 与 Cancel 各 20 次并发：结束时分支不是 CONFIRMED，没有 `TRANSFER_IN` 凭证，余额不变，最终是 CANCELLED。墓碑之后的 Try 返回 `40004`。CheckBalance 用 SQL 断言代替。
 
 #### ACC-08 冲正
 
@@ -2801,3 +2807,4 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 | 2026-10-20 | v3.0 | ACC-05 口径澄清：ReleaseFreeze 是进程内方法。IDL 已有 ReleaseFreeze，本功能点不实现 RPC、不改 IDL。校验与 Freeze 相同，不合法返回已有的 `10001`，不发号、不写行；上下文已取消时参数不合法仍先返回 `10001`。参数合法后 nil service、nil ctx、nil 发号器、ShardDB 失败为 `10003`；已取消或已过截止时间的上下文原样返回，不发号。`freeze_no` 在事务外 `NewNo(ctx, "FZ")`，只给墓碑；`ErrClockRollback` 映射为已有的 `10004`。事务由 ReleaseFreeze 自己 `dbx.WithTx` 提交。空回滚插入 RELEASED 墓碑，不改 `balance` 和 `frozen_amount`；账户不存在 `40001`；`allow_overdraft` 不是 0 则 `10001`，不插入。已 RELEASED 幂等成功且不再比较金额。已 CONFIRMED 一律 `40004`。FROZEN 必须金额和账户一致，否则 `10006`。解冻不要求账户 ACTIVE，不返回 `40005`，不改 `balance`；冻结单和账户的 `version` 各加 1。账户更新 0 行则 `10003` 并回滚，冻结单保持 FROZEN，不改写成 `40002`。`duplicated` 只在进程内。不新增错误码，不改资金总规则，不实现 ACC-06 |
 | 2026-10-20 | v3.0 | ACC-06 口径澄清：ConfirmFreeze 是进程内方法。IDL 已有 ConfirmFreeze，本功能点不实现 RPC、不改 IDL。请求没有金额，R 只用冻结单 `amount`。校验与 Release 一样先于 nil 判断，不合法返回已有的 `10001`。参数合法后 nil service、nil ctx、nil 发号器、nil pools、`subCount < 1`、ShardDB 失败为 `10003`；已取消或已过截止时间的上下文原样返回。本方法不调用 `NewNo`，`TX` 号仍由记账在锁账户之前生成，发号错误沿用记账映射。事务由 ConfirmFreeze 自己 `dbx.WithTx` 提交。先锁冻结单，再按账户 id 升序锁账户。不存在或 RELEASED 为 `40004`，不插入。CONFIRMED 且 `txn_no` 非空则幂等，不再比较 channel。FROZEN 但不是该商户结算账户为 `10006`，不返回 `40001`。本分片平台子账户不存在为 `40001`，不是 `40003`。商户腿用 `balance` 与 `frozen_amount` 同减的更新，不要求 ACTIVE，不返回 `40002`；平台非 ACTIVE 为 `40005`，回滚后冻结单保持 FROZEN。凭证已存在而冻结单仍是 FROZEN，或确认 CAS 影响 0 行，为 `10003` 并回滚，不当成幂等成功。REFUND 凭证借商户贷渠道应收；TRANSFER 冻结单仍是 TRANSFER，凭证是 TRANSFER_OUT，贷在途。`duplicated` 只在进程内。不新增错误码，不改 CHECK，不实现 ACC-07、ACC-14、ACC-11、ACC-10、MQ-04、OPT-03 |
 | 2026-10-21 | v3.0 | ACC-07 口径澄清：TransferLocal 是进程内方法，自己用 `dbx.WithTx` 提交本分片事务。RPC handler 仍是 ACC-11，不改 IDL，不增加进程内 `duplicated`。响应是 `status`、`txn_no`、`fail_code`。校验先于 nil 判断，不合法返回已有的 `10001`。`transfer_no` 为 1–32 个码点，不强制 `TF` 前缀。双方必须同一分片且不是同一商户。事务前普通 SELECT 双方 `MERCHANT_SETTLE` / `CNY` / `sub_no = 0`，不存在优先于非 ACTIVE，不加行锁、不比较余额。事务 1 插入 LOCAL SUCCESS 后调用公开 `Post(TRANSFER)`，借付款商户、贷收款商户，可用余额扣掉 `frozen_amount`。`Duplicated` 为 true 仍回写已有 `txn_no` 并提交 SUCCESS，与 ACC-06 不同。回写 0 行是 `10003` 并回滚。只有 `40002` 在事务 1 回滚后另开事务写 `INSUFFICIENT_BALANCE` 墓碑，error 为 nil；之后余额充足仍返回 FAILED。1062 必须先回滚再在事务外读取。金额或双方不一致为 `10006`。SUCCESS 但 `txn_no` 为空是 `10003`。验收第 1 条的 CheckBalance 在 ACC-10 完成前用 SQL 断言代替。不新增错误码，不改 CHECK，不实现 ACC-14、ACC-11、ACC-10、ACC-08、TRF-02、MQ |
+| 2026-10-21 | v3.0 | ACC-14 口径澄清：TransferInTry、TransferInConfirm、TransferInCancel 是进程内方法，各自用 `dbx.WithTx` 提交收款商户所在分片事务。RPC 仍是 ACC-11。校验先于 nil 判断，不合法为已有的 `10001`。`transfer_no` 为 1–32 个码点，不强制 `TF` 前缀。Try 先查收款商户结算账户，不存在 `40001`，非 ACTIVE `40005`，通过后才插入 TRIED，不动余额。1062 先回滚再读。CANCELLED 上的 Try 一律 `40004`，不再比较金额和收款商户。Confirm 先锁分支，再由公开 Post 按账户 id 升序锁账户。借本分片 TRANSIT 子账户、贷收款商户，凭证 `TRANSFER_IN`。在途允许透支，余额 0 也能确认。在途或商户行不存在为 `40001`，分支保持 TRIED。`Duplicated` 为 true 仍回写已有 `txn_no` 并提交 CONFIRMED，与 ACC-06 不同。回写 0 行、空凭证号、两个账户 id 相同为 `10003` 并回滚。Post 的 `40002` / `40005` 原样返回，不写墓碑，不自己加 `pay_transfer_inconsistent_total`。Cancel 不查账户；没有行时插入 CANCELLED 墓碑。TRIED 金额或收款商户不一致为 `10006`。已 CONFIRMED 再 Cancel 为 `40004`。验收五条的 CheckBalance 在 ACC-10 完成前用 SQL 断言代替。不新增错误码，不改 CHECK，不实现 ACC-11、ACC-10、ACC-08、TRF-03 | 
