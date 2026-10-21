@@ -24,3 +24,4 @@
 | ACC-04 | 冻结 | 基础设施 | `747a27a` | 2026-10-19 | [ACC-04-freeze.md](ACC-04-freeze.md) |
 | ACC-05 | 解冻 | 基础设施 | `1db50ae` | 2026-10-20 | [ACC-05-release.md](ACC-05-release.md) |
 | ACC-06 | 确认扣款 | 基础设施 | `0608708` | 2026-10-20 | [ACC-06-confirm.md](ACC-06-confirm.md) |
+| ACC-07 | 同分片转账 | 基础设施 | `7138c9f` | 2026-10-21 | [ACC-07-transfer-local.md](ACC-07-transfer-local.md) |
