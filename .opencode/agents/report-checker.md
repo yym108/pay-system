@@ -1,7 +1,7 @@
 ---
-description: pay-system 报告可读性自检子代理（Grok 4.7）：只读一份 docs/reports/ 下的功能点报告，以外行工程师视角找出看不懂的地方。
+description: pay-system 报告可读性自检子代理（Claude Opus 5.5）：只读一份 docs/reports/ 下的功能点报告，以外行工程师视角找出看不懂的地方。
 mode: subagent
-model: grok/grok-4.7#high
+model: acompat/claude-opus-5-5#high
 color: "#b06ad8"
 permissions:
   - action: "*"

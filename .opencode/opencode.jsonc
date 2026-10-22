@@ -3,12 +3,12 @@
   // 主代理只编排，代码由 coder 子代理编写（见 .opencode/agents/）
   "default_agent": "lead",
   "agents": {
-    // 内置子代理也统一使用 Grok 4.7
+    // 内置子代理也统一使用 Claude Opus 5.5（acompat 是全局配置中 A/ 的别名，模型配置不接受带斜杠的提供方 ID）
     "explore": {
-      "model": "grok/grok-4.7#medium",
+      "model": "acompat/claude-opus-5-5#medium",
     },
     "general": {
-      "model": "grok/grok-4.7#high",
+      "model": "acompat/claude-opus-5-5#high",
     },
   },
 }
