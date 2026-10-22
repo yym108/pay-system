@@ -1,6 +1,7 @@
 package errno
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -309,5 +310,42 @@ func TestReserved30002NotUsable(t *testing.T) {
 	}
 	if strings.Contains(got.Msg, "reserved") || strings.Contains(got.Error(), "connection reset") {
 		t.Fatalf("保留码的对外文本带了对端句子: %q", got.Error())
+	}
+}
+
+// ACC-11：携带对象的错误经 biz_code 传递，其他错误走 BizStatusError。超时不变成 10003。
+func TestRPCExitCarryObjectAndTimeout(t *testing.T) {
+	code, rpcErr := RPCExit(nil, true)
+	if code != 0 || rpcErr != nil {
+		t.Fatalf("nil = code %d err %v", code, rpcErr)
+	}
+	code, rpcErr = RPCExit(ErrInsufficientBalance, true)
+	if rpcErr != nil || code != ErrInsufficientBalance.Code {
+		t.Fatalf("40002 carry = code %d err %v", code, rpcErr)
+	}
+	code, rpcErr = RPCExit(ErrChannelRejected, true)
+	if rpcErr != nil || code != ErrChannelRejected.Code {
+		t.Fatalf("30006 carry = code %d err %v", code, rpcErr)
+	}
+	code, rpcErr = RPCExit(ErrAccountNotFound, false)
+	biz, ok := kerrors.FromBizStatusError(rpcErr)
+	if code != 0 || !ok || biz.BizStatusCode() != ErrAccountNotFound.Code {
+		t.Fatalf("non-carry = code %d ok %v", code, ok)
+	}
+	raw := errors.New("password=secret select * from account")
+	code, rpcErr = RPCExit(raw, true)
+	biz, ok = kerrors.FromBizStatusError(rpcErr)
+	if code != 0 || !ok || biz.BizStatusCode() != 10003 {
+		t.Fatalf("unknown carry still 10003, code %d ok %v err %v", code, ok, rpcErr)
+	}
+	if strings.Contains(biz.BizMessage(), "secret") || strings.Contains(biz.Error(), "select") {
+		t.Fatalf("biz_code path leaked: %q", biz.Error())
+	}
+	code, rpcErr = RPCExit(context.DeadlineExceeded, false)
+	if code != 0 || !kerrors.IsTimeoutError(rpcErr) {
+		t.Fatalf("deadline = code %d err %v", code, rpcErr)
+	}
+	if _, ok = kerrors.FromBizStatusError(rpcErr); ok {
+		t.Fatal("deadline became BizStatusError")
 	}
 }

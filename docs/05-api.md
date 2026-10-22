@@ -2,9 +2,9 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 2.0.7 |
+| 文档版本 | 2.0.8 |
 | API 版本 | v1（路径前缀 `/v1`） |
-| 最后修改 | 2026-10-21 |
+| 最后修改 | 2026-10-22 |
 | 状态 | 设计基线，实现须与本文一致 |
 
 关联文档：需求 `docs/02-requirements.md`（各接口的业务规则以功能点为准）、约定 `docs/03-conventions.md`（错误码、单号、时间格式）。
@@ -43,6 +43,7 @@
 | 2.0.5 | 2026-10-21 | 文字对齐：TransferLocal 是进程内方法，自己用 `dbx.WithTx` 提交本分片事务，RPC handler 仍是 ACC-11。不新增字段、不改错误码数字、不改 IDL。余额不足是业务结果 `FAILED` / `INSUFFICIENT_BALANCE`，不把 `40002` 列为该方法的业务错误。§1 各接口的“最后修改”不变 | AccountService.TransferLocal | ACC-07 |
 | 2.0.6 | 2026-10-21 | 文字对齐：TransferInTry、TransferInConfirm、TransferInCancel 是进程内方法，各自用 `dbx.WithTx` 提交收款商户所在分片的事务，RPC handler 仍是 ACC-11。不新增字段、不改错误码数字、不改 IDL。Confirm 的业务错误补上 `10006` 与 `40001`，Cancel 的业务错误补上 `10006`。`10003` / `10004` 仍不进业务错误列。§1 各接口的“最后修改”不变 | AccountService.TransferInTry、TransferInConfirm、TransferInCancel | ACC-14 |
 | 2.0.7 | 2026-10-21 | 文字对齐：CheckBalance 是进程内方法，自己打开 REPEATABLE READ 一致性快照，不用 `dbx.WithTx`，RPC handler 仍是 ACC-11。业务错误列仍只有 `40001`。`passed = false` 不是错误码。商户模式忽略 `expect_quiescent`。最后一条分录是 `max(id)`。一次失败的完成调用把进程内计数加 1。不新增字段、不改错误码数字、不改 IDL。§1 各接口的“最后修改”不变 | AccountService.CheckBalance、`POST /admin/accounts/check` | ACC-10 |
+| 2.0.8 | 2026-10-22 | 文字对齐：AccountService 的 Kitex handler 由 ACC-11 提供，只做协议转换和错误码转换。业务错误走 TTHeader 的 `BizStatusError`；本服务没有携带对象的错误，响应不加 `biz_code`。`POST /admin/accounts/check` 仍是 GW-07，不在 account 进程上提供。不新增字段、不改错误码数字、不改 IDL。§1 各接口的“最后修改”不变 | §8.4、§10、§10.1 | ACC-11 |
 
 ## 1. 接口总览
 
@@ -615,7 +616,7 @@ signature = base64(HMAC-SHA256(channel_key, canonical))
 
 `POST /admin/accounts/check` · ACC-10
 
-ACC-10 交付进程内 `biz.CheckBalance`。本 HTTP 接口和 RPC handler 仍是 ACC-11，本节契约保留。进程内方法不写行，自己在分片连接上打开一致性快照，不用 `dbx.WithTx`。
+ACC-10 交付进程内 `biz.CheckBalance`。RPC handler 由 ACC-11 转发到该方法。本 HTTP 接口仍是 GW-07，不在 account 进程上监听。本节契约保留。进程内方法不写行，自己在分片连接上打开一致性快照，不用 `dbx.WithTx`。
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
@@ -789,7 +790,7 @@ UTF-8 无 BOM，`\n` 换行，首行为表头，按 `finished_at`、`channel_txn
 
 ## 10. 内部 RPC
 
-Kitex + Thrift，IDL 位于 `idl/`，以生成后的 IDL 为准；本节列出方法契约。业务错误使用 `BizStatusError`，错误码见 `docs/03-conventions.md` §5；例外是需要携带对象的错误（`CreateRefund`、`CreateTransfer` 的 `40002`，`30006`），按正常响应返回对象并在响应的 `biz_code` 字段中给出错误码（约定 §5.3 第 5 条）。超时与重试见需求 §5.4.1。HTTP 接口与 RPC 的对应见 §1。
+Kitex + Thrift，IDL 位于 `idl/`，以生成后的 IDL 为准；本节列出方法契约。业务错误使用 `BizStatusError`，经 TTHeader 传递，错误码见 `docs/03-conventions.md` §5。服务端和调用方都要启用 TTHeader meta handler，否则业务错误到不了调用方。例外是需要携带对象的错误（`CreateRefund`、`CreateTransfer` 的 `40002`，`30006`），按正常响应返回对象并在响应的 `biz_code` 字段中给出错误码（约定 §5.3 第 5 条）。AccountService 没有这类错误。超时与重试见需求 §5.4.1。HTTP 接口与 RPC 的对应见 §1。
 
 ### 10.1 AccountService（:8882）
 
@@ -822,7 +823,7 @@ account RPC 以商户号（或 owner）为入参，由 account 按商户号路�
 - `CheckBalance`：进程内方法，RPC handler 仍是 ACC-11。核对项与 `failures` 字段规则见 §8.4。`merchant_id` 为空是全量，不是 `10001`。非空商户号不能被 `shard.Of` 解析时 `10001`，先于 nil service、nil ctx 和已取消的 ctx，不查询。参数合法后 nil service、nil ctx、nil pools、ShardDB 失败、SQL 错误、未知余额方向或金额溢出为 `10003`，`failures` 为空；已取消或已过期的 ctx 原样返回，不开事务。`40001` 只表示点名的商户结算账户不存在。商户模式忽略 `expect_quiescent`，只核对该结算账户的前四项。最后一条分录是 `max(ledger_entry.id)` 的 `balance_after`，不是 `created_at`。`passed = false` 时 error 为 nil，不是错误码；同一次完成调用把进程内无标签计数 `pay_ledger_check_failures_total` 加 1，并打一条 ERROR 日志。成功、`40001`、`10003` 不加计数。不写行，不调用外部系统。不新增字段。
 - 平台子账户由 account 按 `crc32(biz_no) % PLATFORM_SUB_ACCOUNTS` 选择，调用方不感知。
 
-超时重试（ACC-11 第 4 条）：调用方客户端只对以下幂等方法在超时时重试 1 次：`Freeze`、`ReleaseFreeze`、`ConfirmFreeze`、`TransferLocal`、`TransferInTry`、`TransferInConfirm`、`TransferInCancel`、`GetAccount`。其余方法不自动重试。
+超时重试（ACC-11 第 4 条）：payment 使用 `pkg/accountclient`。连接 100ms，调用 500ms。只对以下幂等方法在超时时重试 1 次：`Freeze`、`ReleaseFreeze`、`ConfirmFreeze`、`TransferLocal`、`TransferInTry`、`TransferInConfirm`、`TransferInCancel`、`GetAccount`。`OpenAccount`、`CheckBalance`、`Reverse` 不自动重试。业务错误不重试。gateway 不使用这个客户端。
 
 `Account`：`account_no`、`owner_type`、`owner_id`、`account_type`、`shard`、`sub_no`、`currency`、`balance_direction`、`balance`、`frozen_amount`、`available_amount`、`status`、`sub_count`。PLATFORM 汇总结果中 `account_no` 为空，`shard`、`sub_no` 省略。
 

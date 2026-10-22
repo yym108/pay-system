@@ -4,6 +4,7 @@
 package errno
 
 import (
+	"context"
 	"errors"
 
 	"github.com/cloudwego/kitex/pkg/kerrors"
@@ -100,6 +101,38 @@ func FromBizStatus(err error) *Error {
 		return From(err)
 	}
 	return fromBizCode(biz.BizStatusCode(), err)
+}
+
+// RPCExit 把一个错误分成 RPC 的两种出口。
+// carryObject 为 true 时，已登记且不是 10003 的业务错误把码放进 bizCode，rpcErr 为 nil。
+// 调用方把 bizCode 写入响应的 biz_code，并按正常响应返回对象。
+// 这只用于约定 §5.3 第 5 条点名的、必须连同对象返回的错误，例如退款和转账的 40002、30006。
+// 调用方只在这些错误上把 carryObject 设为 true。10003 即使误设，仍走 BizStatusError，不放进 biz_code。
+// 其他错误一律用 BizStatusError。上下文取消、截止时间和 Kitex 超时保持传输层超时，不变成 10003，
+// 否则幂等调用方无法把“结果未知”和“内部错误”分开。
+// nil 是成功：bizCode 为 0，rpcErr 为 nil。
+func RPCExit(err error, carryObject bool) (bizCode int32, rpcErr error) {
+	if err == nil {
+		return 0, nil
+	}
+	if isTransportTimeout(err) {
+		return 0, kerrors.ErrRPCTimeout
+	}
+	e := From(err)
+	if e == nil || e.Code == OK.Code {
+		return 0, nil
+	}
+	// 未知错误经 From 变成 10003。携带对象的出口不接收它，避免把内部错误伪装成正常响应。
+	if carryObject && e.Code != ErrInternal.Code {
+		return e.Code, nil
+	}
+	return 0, ToBizStatus(e)
+}
+
+func isTransportTimeout(err error) bool {
+	return errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, context.Canceled) ||
+		kerrors.IsTimeoutError(err)
 }
 
 // fromBizCode 只用已登记的码查找哨兵。对端 msg 故意不采用。

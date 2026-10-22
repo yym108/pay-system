@@ -362,7 +362,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | ACC-08 | 冲正 | P1 | M8 | ACC-03 | TODO |
 | ACC-09 | 流水查询 | P1 | — | — | CUT |
 | ACC-10 | 余额核对（含分片与在途守恒） | P0 | M2 | ACC-03、ACC-04、ACC-14 | DONE |
-| ACC-11 | account RPC 服务 | P0 | M2 | ACC-01~07、ACC-14、BASE-12 | TODO |
+| ACC-11 | account RPC 服务 | P0 | M2 | ACC-01~07、ACC-14、BASE-12 | DONE |
 | ACC-12 | 热点账户优化 | P2 | — | — | CUT（拆为 OPT-03、OPT-05） |
 | CH-01 | 渠道支付受理与自动完成 | P0 | M3 | BASE-13、BASE-03 | TODO |
 | CH-02 | 渠道查单 | P0 | M3 | CH-01 | TODO |
@@ -1135,15 +1135,18 @@ DSN 只按驱动的文本规则装配，不连接数据库：
 
 规则：
 
-1. Kitex 服务端暴露 `docs/05-api.md` §10.1 中 AccountService 的全部方法。
-2. 服务端中间件：panic 恢复（返回 `10003`）、访问日志、trace、指标、错误码转换。
-3. 服务端处理超时 2 秒。
-4. payment 侧客户端超时：连接 100ms、调用 500ms；只对幂等方法在超时时重试 1 次（gateway 侧不重试，见 §5.4.1）：Freeze、ReleaseFreeze、ConfirmFreeze、TransferLocal、TransferInTry、TransferInConfirm、TransferInCancel、GetAccount。
+1. Kitex 服务端暴露 `docs/05-api.md` §10.1 中 AccountService 的全部方法。handler 只做协议转换和错误码转换，不改 biz 的幂等与 CAS，也不在事务里调用外部系统。`duplicated` 不进 RPC。平台汇总的 `account_no` 为空，`shard`、`sub_no` 在 biz 里是 0，表示省略，不是分片 0；映射时留空，不写成指向 0 的指针。有账户号的结果即使分片或子账户是 0，也要传指针。
+2. 服务端中间件：panic 恢复（调用方收到 `10003`，panic 值不进日志和响应，只打一条不含值的 ERROR）、访问日志（字段同约定 §7.5，不记录请求体）、错误码转换。未识别错误转成 `10003` 时，原因用 `slog` 打一条 ERROR（`path` 为方法名，`err_code` 为码，`error` 为原因），不进对外 msg；登记过的业务错误不打这条 ERROR。trace 与指标只留接口和空实现，分别由 OPS-02、OPS-03 填入。本功能点不引入 OTel SDK 和 Prometheus 客户端，不连接 `OTEL_EXPORTER_OTLP_ENDPOINT`。
+3. 服务端处理超时 2 秒：进入 handler 的 ctx 截止时间是 2 秒，调用方 ctx 更短时先到期的生效。biz 返回的截止时间或取消转换成 Kitex 超时，不是 `10003`，这样幂等调用方能按第 4 条重试。不强制杀掉不看 ctx 的 goroutine。这是服务端上限，不改 §5.4.1 的客户端超时。网关对 `CheckBalance` 的 120 秒是调用方等待上限；超过 2 秒时服务端取消并返回超时。
+4. payment 侧客户端在 `pkg/accountclient`，只依赖 `kitex_gen` 和 `pkg`，不依赖 `service/account`。连接 100ms、调用 500ms；只对幂等方法在超时时重试 1 次：Freeze、ReleaseFreeze、ConfirmFreeze、TransferLocal、TransferInTry、TransferInConfirm、TransferInCancel、GetAccount。`OpenAccount` 即使 biz 幂等也不重试。`CheckBalance`、`Reverse` 不重试。业务错误不重试。调用方 ctx 已取消不重试。连接拒绝不是超时，不重试。gateway 不使用这个客户端（网关不重试，超时见 §5.4.1，GW-01 自己建客户端）。
+5. 业务错误经 Kitex `BizStatusError` 传递，传输用 TTHeader。服务端和 payment 客户端都挂上 TTHeader meta handler。没有它，调用方会把业务错误看成成功的空响应。GW-01 建 account 客户端时必须同样启用。AccountService 没有携带对象的错误，不在响应里加 `biz_code`。约定 §5.3 第 5 条的 `biz_code` 出口在 `errno.RPCExit`，给以后的 payment handler 用。`TransferLocal` 余额不足仍是成功响应里的 `fail_code`，不是 `40002`，也不是 `biz_code`。
+6. 健康检查、`/readyz`、SIGTERM 的 10 秒排空属于 OPS-01。本功能点启动 Kitex 并阻塞到框架收到 SIGINT/SIGTERM，然后关闭连接池。不实现 `/healthz`、`/readyz`，也不按 OPS-01 的顺序排空在途请求。不启动 Kafka 消费者（MQ-04）。监听地址固定 `:8882`，不新增环境变量。管理 HTTP `POST /admin/accounts/check` 仍是 GW-07，本功能点只提供 RPC。
+7. `Reverse` 的方法存在，冲正业务是 ACC-08。在 ACC-08 完成前，任何调用返回 `10003`，不写行，不调用 biz。这不是 ACC-08 将来的 `10001` / `40001` / `40002`。
 
 验收：
 
-- [ ] 通过 Kitex 客户端调用全部方法，错误码正确透传。
-- [ ] handler 中 panic 不导致进程退出，调用方收到 `10003`。
+- [x] 通过 Kitex 客户端调用全部方法，错误码正确透传。
+- [x] handler 中 panic 不导致进程退出，调用方收到 `10003`。
 
 #### ACC-12 热点账户优化
 
@@ -2817,4 +2820,6 @@ ACC-10 在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（一
 | 2026-10-20 | v3.0 | ACC-06 口径澄清：ConfirmFreeze 是进程内方法。IDL 已有 ConfirmFreeze，本功能点不实现 RPC、不改 IDL。请求没有金额，R 只用冻结单 `amount`。校验与 Release 一样先于 nil 判断，不合法返回已有的 `10001`。参数合法后 nil service、nil ctx、nil 发号器、nil pools、`subCount < 1`、ShardDB 失败为 `10003`；已取消或已过截止时间的上下文原样返回。本方法不调用 `NewNo`，`TX` 号仍由记账在锁账户之前生成，发号错误沿用记账映射。事务由 ConfirmFreeze 自己 `dbx.WithTx` 提交。先锁冻结单，再按账户 id 升序锁账户。不存在或 RELEASED 为 `40004`，不插入。CONFIRMED 且 `txn_no` 非空则幂等，不再比较 channel。FROZEN 但不是该商户结算账户为 `10006`，不返回 `40001`。本分片平台子账户不存在为 `40001`，不是 `40003`。商户腿用 `balance` 与 `frozen_amount` 同减的更新，不要求 ACTIVE，不返回 `40002`；平台非 ACTIVE 为 `40005`，回滚后冻结单保持 FROZEN。凭证已存在而冻结单仍是 FROZEN，或确认 CAS 影响 0 行，为 `10003` 并回滚，不当成幂等成功。REFUND 凭证借商户贷渠道应收；TRANSFER 冻结单仍是 TRANSFER，凭证是 TRANSFER_OUT，贷在途。`duplicated` 只在进程内。不新增错误码，不改 CHECK，不实现 ACC-07、ACC-14、ACC-11、ACC-10、MQ-04、OPT-03 |
 | 2026-10-21 | v3.0 | ACC-07 口径澄清：TransferLocal 是进程内方法，自己用 `dbx.WithTx` 提交本分片事务。RPC handler 仍是 ACC-11，不改 IDL，不增加进程内 `duplicated`。响应是 `status`、`txn_no`、`fail_code`。校验先于 nil 判断，不合法返回已有的 `10001`。`transfer_no` 为 1–32 个码点，不强制 `TF` 前缀。双方必须同一分片且不是同一商户。事务前普通 SELECT 双方 `MERCHANT_SETTLE` / `CNY` / `sub_no = 0`，不存在优先于非 ACTIVE，不加行锁、不比较余额。事务 1 插入 LOCAL SUCCESS 后调用公开 `Post(TRANSFER)`，借付款商户、贷收款商户，可用余额扣掉 `frozen_amount`。`Duplicated` 为 true 仍回写已有 `txn_no` 并提交 SUCCESS，与 ACC-06 不同。回写 0 行是 `10003` 并回滚。只有 `40002` 在事务 1 回滚后另开事务写 `INSUFFICIENT_BALANCE` 墓碑，error 为 nil；之后余额充足仍返回 FAILED。1062 必须先回滚再在事务外读取。金额或双方不一致为 `10006`。SUCCESS 但 `txn_no` 为空是 `10003`。验收第 1 条的 CheckBalance 在 ACC-10 完成前用 SQL 断言代替。不新增错误码，不改 CHECK，不实现 ACC-14、ACC-11、ACC-10、ACC-08、TRF-02、MQ |
 | 2026-10-21 | v3.0 | ACC-14 口径澄清：TransferInTry、TransferInConfirm、TransferInCancel 是进程内方法，各自用 `dbx.WithTx` 提交收款商户所在分片事务。RPC 仍是 ACC-11。校验先于 nil 判断，不合法为已有的 `10001`。`transfer_no` 为 1–32 个码点，不强制 `TF` 前缀。Try 先查收款商户结算账户，不存在 `40001`，非 ACTIVE `40005`，通过后才插入 TRIED，不动余额。1062 先回滚再读。CANCELLED 上的 Try 一律 `40004`，不再比较金额和收款商户。Confirm 先锁分支，再由公开 Post 按账户 id 升序锁账户。借本分片 TRANSIT 子账户、贷收款商户，凭证 `TRANSFER_IN`。在途允许透支，余额 0 也能确认。在途或商户行不存在为 `40001`，分支保持 TRIED。`Duplicated` 为 true 仍回写已有 `txn_no` 并提交 CONFIRMED，与 ACC-06 不同。回写 0 行、空凭证号、两个账户 id 相同为 `10003` 并回滚。Post 的 `40002` / `40005` 原样返回，不写墓碑，不自己加 `pay_transfer_inconsistent_total`。Cancel 不查账户；没有行时插入 CANCELLED 墓碑。TRIED 金额或收款商户不一致为 `10006`。已 CONFIRMED 再 Cancel 为 `40004`。验收五条的 CheckBalance 在 ACC-10 完成前用 SQL 断言代替。不新增错误码，不改 CHECK，不实现 ACC-11、ACC-10、ACC-08、TRF-03 |
-| 2026-10-21 | v3.0 | ACC-10 口径澄清：CheckBalance 是进程内方法，不监听 RPC，不实现管理 HTTP。不用 `dbx.WithTx`。每个分片在固定连接上执行 `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ` 和 `START TRANSACTION READ ONLY, WITH CONSISTENT SNAPSHOT`，查完 ROLLBACK。商户号不合法的 `10001` 先于 nil service 和已取消的 ctx。nil 依赖、ShardDB 失败、SQL 错误、未知方向和金额溢出是 `10003`，failures 为空。`40001` 只表示点名的商户结算账户不存在。`passed = false` 不是错误码。商户模式忽略 `expect_quiescent`。最后一条分录是 `max(id)`，不是 `created_at`。一次失败的完成调用把进程内无标签计数 `pay_ledger_check_failures_total` 加 1，`/metrics` 暴露仍是 OPS-01。不新增错误码，不改 IDL，不改表，不实现 RPC 和 HTTP | 
+| 2026-10-21 | v3.0 | ACC-10 口径澄清：CheckBalance 是进程内方法，不监听 RPC，不实现管理 HTTP。不用 `dbx.WithTx`。每个分片在固定连接上执行 `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ` 和 `START TRANSACTION READ ONLY, WITH CONSISTENT SNAPSHOT`，查完 ROLLBACK。商户号不合法的 `10001` 先于 nil service 和已取消的 ctx。nil 依赖、ShardDB 失败、SQL 错误、未知方向和金额溢出是 `10003`，failures 为空。`40001` 只表示点名的商户结算账户不存在。`passed = false` 不是错误码。商户模式忽略 `expect_quiescent`。最后一条分录是 `max(id)`，不是 `created_at`。一次失败的完成调用把进程内无标签计数 `pay_ledger_check_failures_total` 加 1，`/metrics` 暴露仍是 OPS-01。不新增错误码，不改 IDL，不改表，不实现 RPC 和 HTTP |
+| 2026-10-22 | v3.0 | ACC-11 口径澄清：handler 只做协议转换和错误码转换。trace、指标只留空实现，分别属于 OPS-02、OPS-03。健康检查、`/readyz` 和 SIGTERM 10 秒排空仍属 OPS-01。管理 HTTP 仍是 GW-07。payment 客户端放在 `pkg/accountclient`，不让 payment 依赖 `service/account`。`OpenAccount` 不重试。`Reverse` 在 ACC-08 前返回已有的 `10003`，不写行。业务错误走 TTHeader 的 `BizStatusError`；AccountService 不加 `biz_code`。服务端 2 秒是处理上限，不改 §5.4.1 的客户端超时。不新增错误码，不改 IDL，不改表 |
+| 2026-10-22 | v3.0 | ACC-11 审查修正：未识别错误转成 `10003` 时，原因打一条 ERROR，不进对外 msg。登记过的业务错误不打这条日志。panic 仍只记固定句子，不记 panic 值。不新增错误码 | 

@@ -64,6 +64,12 @@
 - `txn_no` 在拿行锁之前用 `NewNo(ctx, "TX")` 生成。发号可能要等下一毫秒，不能占着账户行。
 - 1000 个 goroutine 抢同一行时不要用 `dbx.WithTx`。它把整次事务限在 3 秒，等锁的时间也算进去，等待者会被取消，500/500 就数不准。这个用例自己 `BeginTxx`，父 ctx 放长，Post 仍然不提交。
 
+## ACC-11 account RPC
+
+- Kitex 的 `BizStatusError` 不会自动出现在 Thrift 响应体里。服务端把它记在 invocation 上，靠 TTHeader meta handler 写回头。客户端不启用 TTHeader 时，业务错误会变成成功的空响应。payment 客户端因此固定 TTHeader；网关以后自己建客户端时也必须启用。
+- 服务端 2 秒超时如果直接返回 `10003`，payment 客户端不会重试，因为重试只认超时。biz 观察到的截止时间要保持为 Kitex 超时。服务端把 `ErrRPCTimeout` 写成 Thrift 异常后，客户端看到的是 `TransError`，消息仍是 `rpc timeout`，重试判断要认这一种，不能只认 `IsTimeoutError`。
+- 平台汇总的 `shard`、`sub_no` 留空。有账户号时即使是 0 也要传指针。见 ACC-02。
+
 ## ACC-02 账户查询
 
 - 平台汇总是两次独立只读，各用各的连接，不放进跨库事务，也没有跨分片快照。两个分片的余额可能不是同一时刻。这是管理查询和测试用的，不在交易链路里调用。交易只读商户所属分片的一行。
