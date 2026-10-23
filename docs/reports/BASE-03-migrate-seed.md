@@ -131,7 +131,41 @@ flowchart TD
 
 gateway 没有自己的库。它只收 HTTP、验签，再调用 payment。所以五个库里没有 gateway。
 
-账号在迁移 SQL 之外创建。迁移工具要求目标库已经存在，它自己不会建库，也不该拿着 root 跑。bootstrap 的 SQL 是：`CREATE DATABASE IF NOT EXISTS`，然后 `ALTER DATABASE` 把字符集改成 `utf8mb4` / `utf8mb4_bin`；对五个账号各执行 `DROP USER IF EXISTS` 再 `CREATE USER`。首次执行时用户还不存在，`IF EXISTS` 让 `DROP` 不报错。空库上第一次 `make migrate` 能走到 “database users ready”，和这条 SQL 一致。代码没有发 `KILL`。本次没有业务进程连着这些账号，所以没有实测旧连接会不会断。重复执行会删掉再重建账号，这是为了清掉以前多授的权限；连接会不会被断开，未验证。
+账号在迁移 SQL 之外创建。迁移工具要求目标库已经存在，它自己不会建库，也不该拿着 root 跑。bootstrap（`internal/bootstrap/bootstrap.go`）按顺序拼出一段 SQL：
+
+1. 五个库各执行 `CREATE DATABASE IF NOT EXISTS`，再 `ALTER DATABASE` 把字符集改成 `utf8mb4` / `utf8mb4_bin`。
+2. 五个账号依次执行三步：`DROP USER IF EXISTS '<账号>'@'%'`，`CREATE USER '<账号>'@'%' IDENTIFIED BY '<口令>'`，然后紧跟这个账号自己的 `GRANT`。
+
+`GRANT` 语句摘要（`%` 表示允许从任意主机连接，本地演示环境如此）：
+
+```sql
+GRANT SELECT, INSERT, UPDATE, DELETE ON `pay_account_0`.* TO 'svc_account'@'%';
+GRANT SELECT, INSERT, UPDATE, DELETE ON `pay_account_1`.* TO 'svc_account'@'%';
+GRANT SELECT, INSERT, UPDATE, DELETE ON `pay_payment`.* TO 'svc_payment'@'%';
+GRANT SELECT, INSERT, UPDATE, DELETE ON `pay_recon`.* TO 'svc_recon'@'%';
+GRANT SELECT ON `pay_payment`.*   TO 'svc_recon'@'%';
+GRANT SELECT ON `pay_account_0`.* TO 'svc_recon'@'%';
+GRANT SELECT ON `pay_account_1`.* TO 'svc_recon'@'%';
+GRANT SELECT, INSERT, UPDATE, DELETE ON `pay_channel_mock`.* TO 'svc_channel_mock'@'%';
+-- migrator 对五个库各一条
+GRANT ALL PRIVILEGES ON `pay_account_0`.* TO 'migrator'@'%';  -- 另外四个库同样写法
+```
+
+全部是库级授权（`库名.*`），没有表级和全局权限。首次执行时用户还不存在，`IF EXISTS` 让 `DROP` 不报错。
+
+重复执行时权限怎么恢复：`DROP USER` 会连同这个账号的全部权限一起删掉，`CREATE USER` 建出的新账号没有任何权限，随后的 `GRANT` 只授上面列出的那几条。所以每次 `make migrate` 之后，权限都回到代码里写的样子：以前手工多授的会被清掉，被误删的会补回来。第二轮可读性修订时在 compose 上实测：第一次 `make migrate` 后，`SHOW GRANTS FOR 'svc_recon'@'%'` 返回 5 行：
+
+```text
+GRANT USAGE ON *.* TO `svc_recon`@`%`
+GRANT SELECT ON `pay_account_0`.* TO `svc_recon`@`%`
+GRANT SELECT ON `pay_account_1`.* TO `svc_recon`@`%`
+GRANT SELECT ON `pay_payment`.* TO `svc_recon`@`%`
+GRANT SELECT, INSERT, UPDATE, DELETE ON `pay_recon`.* TO `svc_recon`@`%`
+```
+
+`USAGE` 是 MySQL 给每个账号自动加的一行，意思是“能登录，没有任何权限”。随后用 root 手工执行 `GRANT INSERT ON pay_payment.* TO 'svc_recon'@'%'`，`pay_payment` 那一行变成 `SELECT, INSERT`。再跑第二次 `make migrate`，`SHOW GRANTS` 又回到上面 5 行，多授的 `INSERT` 不见了。
+
+代码没有发 `KILL`。本次没有业务进程连着这些账号，所以没有实测旧连接会不会断，未验证。
 
 bootstrap 把这些语句放在一次 `multiStatements` 执行里。MySQL 的建库、删用户会自动提交，中途失败不能整段回滚。恢复办法是再跑一次：建库有 `IF NOT EXISTS`，用户有 `DROP USER IF EXISTS`。中途失败本身没有注入，未验证。
 
@@ -147,7 +181,14 @@ bootstrap 把这些语句放在一次 `multiStatements` 执行里。MySQL 的建
 
 选哪一行不是本功能点做的。以后记账按 `crc32(biz_no) % PLATFORM_SUB_ACCOUNTS` 选子账户。crc32 是把任意字节算成一个整数的函数，这里只用来把单号均匀分到 0 到 N−1。`biz_no` 是业务单号，除数跟着配置走，不是写死 8。选行属于后面的记账（ACC-03）和热点子账户（OPT-03）。本功能点只把行开出来。
 
-渠道应收是 `DEBIT`：借记增加这一行的 `balance`，贷记减少。对外看到的渠道应收，是两个分片、全部 `sub_no` 的 `balance` 列相加，不是再把借贷流水算一遍。某一行允许为负（`allow_overdraft = 1`），因为拆行之后，一笔借记可能先落在子账户 3，对应的贷记落在子账户 5。单行暂时为负不影响“全部子账户相加”这个对外数字。本功能点插入时 `balance` 仍是 0。
+渠道应收是 `DEBIT`：借记增加这一行的 `balance`，贷记减少。对外看到的渠道应收，是两个分片、全部 `sub_no` 的 `balance` 列相加，不是再把借贷流水算一遍。
+
+平台子账户允许为负（`allow_overdraft = 1`）。原因不在一张凭证内部：同一个 `biz_no` 只算出一个 `sub_no`，一张凭证的平台分录只落在这一行。原因在于“钱进来”和“钱出去”是两张凭证，单号不同，选中的子账户也就可能不同。需求的资金模型（§2.5.1、§2.5.2）没有单独写一句“为什么允许透支”，下面两点是从它的分录规则推出来的：
+
+- 渠道应收：支付凭证用支付单号 `pay_no` 选子账户，借记让那一行增加。退款凭证用退款单号 `refund_no` 选子账户，贷记让那一行减少。例如支付 `P1` 选中子账户 3，余额 +10000；它的部分退款 `R1`（3000 分）选中子账户 5，这一行减 3000。子账户 5 如果之前没有收过钱，就变成 −3000。只看这两笔，全部子账户相加是 7000，和“收 10000、退 3000”一致。
+- 转账在途：跨分片转账时，付款方分片贷记在途（+T），收款方分片借记在途（−T）。这笔钱在收款方分片的在途行上只有借记，对应的贷记在另一个分片。这一行起始是 0、期间没有别的转账从这个分片转出时，确认后就是 −T。这和子账户拆不拆无关，`PLATFORM_SUB_ACCOUNTS = 1` 时也一样。没有进行中的转账时，两个分片的在途合计回到 0。
+
+技术决策 D19 的说法与此一致：平台账户允许透支，单个子账户为负不影响正确性，每一行仍各自满足“余额 = 借贷合计”。对外只看汇总。商户结算账户不拆行，`allow_overdraft = 0`，要做余额检查。本功能点插入时 `balance` 仍是 0，以上记账行为属于后面的 ACC 和 OPT-03 功能点，这里没有测。
 
 演示商户：
 
@@ -189,6 +230,8 @@ ON DUPLICATE KEY UPDATE merchant_id = merchant_id
 
 冲突时不更新 `app_secret_cipher`。nonce 随机，如果冲突时重写密文，第二次种子会把密钥改掉。可读性修订时在 compose 上实测：第一次 seed 之后三个商户密文的 SHA-256 分别是 `047744dd…c39e`、`1db5703e…f82e`、`79647e0f…28c2`（各 61 字节）；第二次 seed 之后三个哈希逐字相同。61 = 1 字节版本 + 12 字节 nonce + 32 字节明文 + 16 字节标签。
 
+字节数怎么量：`app_secret_cipher` 的列类型是 `VARBINARY(256)`（迁移 `migrations/payment/000001_init.up.sql`）。这是二进制串，没有文本字符集：`information_schema.COLUMNS` 里 `CHARACTER_SET_NAME` 和 `COLLATION_NAME` 都是 NULL，`CHARSET(app_secret_cipher)` 返回 `binary`。二进制串里一个“字符”就是一个字节，所以 `CHAR_LENGTH`（数字符）和 `LENGTH`（数字节）结果相同。第一轮用的是 `CHAR_LENGTH`，第二轮改用 `LENGTH()` 并把两者一起查：三个商户都是 `LENGTH = 61`、`CHAR_LENGTH = 61`。第二轮是新建的数据卷，nonce 重新随机，所以哈希和第一轮不同（如 `M100001` 为 `0e603fd1…b99f`）。这一轮两次 seed 之间三个哈希同样逐字相同。
+
 密文算法是 AES-256-GCM。格式是以后的密钥加密包已经写明的规则，本功能点只用标准库实现，不交付那个包：
 
 `版本 1 字节（取值 1） + 随机 nonce 12 字节 + 密文 + 16 字节校验标签`
@@ -220,7 +263,14 @@ ON DUPLICATE KEY UPDATE merchant_id = merchant_id
 | 反过来：结算账户先插入、商户还没提交 | 代码不是这个顺序。每个商户都是先提交商户行，再开账户。平台账户更早，在所有商户之前按分片提交 | 不会出现“只有结算账户、没有商户行”这种由本程序主动写出的中间态。崩溃注入未做 | 未验证 |
 | 迁移 SQL 执行到一半失败 | golang-migrate 把 `schema_migrations.dirty` 标成 1，下次 up 拒绝继续。这是该工具的行为，不是我们自己写的恢复逻辑。官方用法是先 `migrate force <版本号>` 把脏标记清掉（不跑 SQL），再决定 up 或 down。`force` 本次未验证 | 没有故意写坏 SQL。集成测试做的是完整 down 再 up | 失败路径未验证。down 后再 up 由 `TestBASE03MigrateShardsAndDownUp` 覆盖 |
 | 已成功的 `make migrate` 再执行一次 | bootstrap 仍重建账号；迁移工具发现版本已是 1 | 本次实测：5 次 `no change`，退出码 0。表还在 | 见 4.4 |
-| 对账账号写交易库 | `INSERT` / `DELETE` 被数据库拒绝 | 集成测试断言错误号 1142 或 1044。写报告这次的 compose 会话没有再发这条 SQL | `TestBASE03ReconWriteDenied` |
+| 对账账号写交易库 | 写语句在权限检查阶段被拒绝，不会执行 | 集成测试只断言两条 `INSERT`：`pay_payment.merchant` 和 `pay_account_0.account`，错误号须为 1142 或 1044。测试没有覆盖 `pay_account_1`，也没有发 `DELETE`。第二轮修订时在 compose 上用 `svc_recon` 手工补发：写 `pay_account_1.account` 的 `INSERT`、`pay_payment.merchant` 的 `DELETE`、`pay_payment` 里的 `CREATE TABLE`，全部返回 1142 | `TestBASE03ReconWriteDenied`；`pay_account_1` 和 `DELETE` 只有手工实测，见 4.4 |
+
+两个错误号的含义：
+
+- 1142（`ER_TABLEACCESS_DENIED_ERROR`）：表级拒绝。账号能进这个库，但对这张表没有这种操作的权限。消息形如 `INSERT command denied to user 'svc_recon'@... for table 'merchant'`。`svc_recon` 在 `pay_payment` 和两个账户库上有 `SELECT`，所以对这些库的 `INSERT`、`DELETE`、`CREATE` 都报 1142。
+- 1044（`ER_DBACCESS_DENIED_ERROR`）：库级拒绝。账号对整个库一项权限都没有，又发了以库为对象的操作，例如 `USE` 这个库或连接时把它设成默认库。消息形如 `Access denied for user 'svc_recon'@'%' to database 'pay_channel_mock'`。
+
+第二轮在 compose 上对照了一次：`svc_recon` 执行 `USE pay_channel_mock`、或用 `pay_channel_mock` 作默认库连接，都得到 1044；对同一个库里的 `mock_txn` 表发 `INSERT`，得到的是 1142。所以按现在的授权和测试里的两条 `INSERT`，实际只会出现 1142。测试也接受 1044，是一种宽松写法：两者都表示“被权限挡住、语句没有执行”，测试关心的是被拒绝，不关心拒绝发生在库级还是表级。例如以后把测试连接的默认库换成一个 `svc_recon` 没有任何权限的库，错误会在库级出现，变成 1044，结论不变。测试要排除的是其他错误，例如 1364（缺列默认值）或 1146（表不存在），它们说明语句已经越过权限检查。
 
 为什么不能直接写余额，用一笔以后才会发生的支付说明。种子本身不算手续费。公式来自项目约定：`fee = (amount × rate_bp + 5000) / 10000`，加 5000 再整除是四舍五入到分。这里只用来举例。订单 10000 分（100.00 元），费率 60 个基点。代入后 `(10000 × 60 + 5000) / 10000 = 60` 分（0.60 元）。支付成功后，分录应该是：渠道应收借 10000，商户贷 9940，手续费贷 60。商户余额变成 9940 分。如果种子事先写成 10000 分，这笔支付再贷记 9940，余额变成 19940 分。分录只能解释 9940 分。19940 − 9940 = 10000，就是种子多写的那 100.00 元。所以种子插入时余额和冻结都写 0，并且不写任何分录。写报告时的查询：两个分片 `balance <> 0 OR frozen_amount <> 0` 的行数合计是 0，`ledger_entry` 合计是 0。
 
@@ -261,9 +311,19 @@ ON DUPLICATE KEY UPDATE merchant_id = merchant_id
 |---|---|
 | 接口 | 无 |
 | 表结构 | 从设计稿落成迁移。5 个库、21 张业务表，外加每库一张 `schema_migrations`。没有改列的可空性。商户密钥列仍然非空 |
-| 配置项 | 新增 `MYSQL_RECON_PASSWORD`、`MYSQL_CHANNEL_MOCK_PASSWORD`、`MYSQL_MIGRATOR_PASSWORD`、`DEMO_APP_SECRET_FORMAT`、`SEED_LOAD`。种子还读取已有的 `PLATFORM_SUB_ACCOUNTS`，默认 8，example 里本来就有，本功能点没有新发明这个变量。`MYSQL_HOST` 默认 `127.0.0.1`，故意不写进 example，避免编排把本机地址插进容器 |
+| 配置项 | 新增 `MYSQL_RECON_PASSWORD`、`MYSQL_CHANNEL_MOCK_PASSWORD`、`MYSQL_MIGRATOR_PASSWORD`、`DEMO_APP_SECRET_FORMAT`、`SEED_LOAD`。种子还读取已有的 `PLATFORM_SUB_ACCOUNTS`，默认 8，example 里本来就有，本功能点没有新发明这个变量。`MYSQL_HOST` 默认 `127.0.0.1`，故意不写进 example，避免编排把本机地址插进容器。`SEED_LOAD` 的含义见表下 |
 | 错误码 | 无 |
 | 指标 / 故障点 | 无 |
+
+`SEED_LOAD` 是种子程序的开关，决定要不要额外创建压测商户：
+
+- 取值：只有字符串 `1` 打开（`cmd/seed/main.go` 判断 `os.Getenv("SEED_LOAD") == "1"`）。不设、`0`、`true` 等其他值都是关闭。默认关闭，约定 §8 登记的默认值是 `0`，compose 里 seed 容器写的是 `${SEED_LOAD:-0}`。`deploy/.env.example` 里没有这一项。
+- 关闭时：只建平台子账户和三个演示商户 `M100001`–`M100003`。
+- 打开时：再加 100 个压测商户 `M200000`–`M200099`，费率 0，每个只在所属分片开一个零余额结算账户（两个分片各 50 个）。不写分录，不写余额。
+- 与 `make seed-load` 的关系：`make seed-load` 就是 `SEED_LOAD=1` 加上 `make seed` 用的同一个脚本 `deploy/seed.sh`，不需要手动设这个变量。`make seed` 不设它。
+- 注意：`deploy/seed.sh` 读环境文件时会把文件里的每一行重新 `export`。如果环境文件里写了 `SEED_LOAD=0`，会覆盖 `make seed-load` 设的 `1`。这一点是读代码得出的，没有实测。
+
+第二轮修订时在 compose 上实测（在两次 `make seed` 之后）：`make seed-load` 连续两次，都打印 `accounts_shard_0=75 accounts_shard_1=76 merchants=103 load=true`。75 = 25 + 50，76 = 26 + 50。查库：`M2` 开头商户 100 个，从 `M200000` 到 `M200099`，费率非 0 的 0 个；两个分片的压测结算账户各 50 个；两个分片非零余额或非零冻结的行 0，分录 0。再执行 `SEED_LOAD=true make seed`，日志是 `load=false`，确认 `true` 不算打开。种子打印的是表里的总行数，所以这次仍显示 75 / 76 / 103：关闭开关不会删除已经建好的压测商户。
 
 ### 4.3 验收对照
 
@@ -273,7 +333,7 @@ ON DUPLICATE KEY UPDATE merchant_id = merchant_id
 |---|---|---|---|
 | 空库 `make migrate` 成功，两个账户分片结构一致，down 后再 up 成功 | `TestBASE03MigrateShardsAndDownUp` | 集成 | 通过。写报告时 `go test -race -tags integration -count=1 ./internal/dbmigrate/` 耗时 26.306 秒，包含本测试。compose 这次只做了 up，没有再做 down |
 | `make seed` 连续两次，账户和商户数量不变，结算账户只在所属分片 | `TestBASE03SeedIdempotentAndShardPlacement` | 集成 | 通过。compose 上两次都打印分片 0 = 25、分片 1 = 26、商户 3 |
-| 用 `svc_recon` 向 `pay_payment`、`pay_account_0` 写入被拒绝 | `TestBASE03ReconWriteDenied` | 集成 | 通过，包含在上面 26.306 秒的包里。写报告这次没有在 compose 上再发拒绝 SQL |
+| 用 `svc_recon` 向 `pay_payment`、`pay_account_0` 写入被拒绝 | `TestBASE03ReconWriteDenied` | 集成 | 通过，包含在上面 26.306 秒的包里。测试先确认 `SELECT COUNT(*) FROM pay_payment.merchant` 能成功，再对 `pay_payment.merchant`、`pay_account_0.account` 各发一条 `INSERT`，断言错误号是 1142 或 1044（含义见 3.4）。测试不覆盖 `pay_account_1`；它和 `pay_account_0` 是同一条 `GRANT SELECT` 写法，第二轮修订时在 compose 上手工补测，返回 1142 |
 
 同一次 `make test` 还跑了 `TestBASE03MigrationLayout`、`TestShardOf`、`TestAccountNo`、`TestSealLayoutAndRoundTrip`、`TestInsertSQLDoesNotRewriteBalance`，全部通过。它们不连数据库。
 
@@ -290,6 +350,11 @@ ON DUPLICATE KEY UPDATE merchant_id = merchant_id
 | 空库上第二次 `make migrate`（可读性修订时） | bootstrap 仍打印 `database users ready`。迁移容器 5 次 `no change`，退出码 0 |
 | `make seed` 两次 | 两次都是 `accounts_shard_0=25 accounts_shard_1=26 merchants=3` |
 | 两次 seed 之间对比密文（可读性修订时） | `SELECT merchant_id, SHA2(app_secret_cipher, 256), CHAR_LENGTH(app_secret_cipher) FROM pay_payment.merchant`。三个商户的哈希在第二次 seed 之后逐字相同，字节长度都是 61 |
+| 第二轮：`make up-lite` 后两次 `make migrate`，中间手工多授一条权限 | 两次都打印 `database users ready`，退出码 0。第一次迁移输出 5 次 `1/u init` 和 1 次 `2/u merchant_fee_rate`（后者是之后 PAY-10 新增的支付库迁移，不属于本功能点），第二次 5 次 `no change`。`SHOW GRANTS FOR 'svc_recon'@'%'` 第一次后 5 行；root 手工 `GRANT INSERT ON pay_payment.*` 后变成 `SELECT, INSERT`；第二次 migrate 后回到原来 5 行。原文见 3.2 |
+| 第二轮：`svc_recon` 手工写入 | `SELECT COUNT(*) FROM pay_payment.merchant` 成功。`INSERT` 到 `pay_payment.merchant`、`pay_account_0.account`、`pay_account_1.account`，`DELETE FROM pay_payment.merchant`，`CREATE TABLE pay_payment.x`，`INSERT` 到 `pay_channel_mock.mock_txn`：全部 `ERROR 1142`。`USE pay_channel_mock` 和以它为默认库连接：`ERROR 1044` |
+| 第二轮：两次 `make seed` 与密文 | 两次都是 `accounts_shard_0=25 accounts_shard_1=26 merchants=3 load=false`。`SELECT merchant_id, SHA2(app_secret_cipher,256), LENGTH(app_secret_cipher), CHAR_LENGTH(app_secret_cipher) ...`：三行都是 61 / 61，两次 seed 前后哈希输出用 `cmp` 比较完全相同。列信息 `varbinary(256)`，字符集和排序规则为 NULL，`CHARSET()` 为 `binary` |
+| 第二轮：`make seed-load` 两次、`SEED_LOAD=true make seed` 一次 | 结果见 4.2 表下 |
+| 第二轮：`make down V=1 ENV_FILE=deploy/.env.example` | 退出码 0。`docker ps -a` 和 `docker volume ls` 按 `pay-system` 过滤无输出。`deploy/.env` 不存在 |
 | `ENV_FILE=deploy/.env.example sh scripts/compare-account-shards.sh` | 输出 `pay_account_0 与 pay_account_1 结构一致` |
 | 同一次库上的只读查询 | 非零余额行 0，分录 0。分片 0 的结算账户只有 `M100002`，分片 1 只有 `M100001` 和 `M100003`，余额和冻结都是 0 |
 | 检查约束统计（可读性修订时） | 查询见下方。结果：分片各 22、支付 26、对账 7、模拟渠道 2。`ck_` 前缀 79 行，`%_chk_%` 为 0 |
@@ -334,7 +399,7 @@ WHERE CONSTRAINT_SCHEMA IN ('pay_account_0','pay_account_1')
 - 默认 `make up` 仍不跑迁移，也不启动应用。一条命令拉起全部可用服务，还要等健康检查。
 - 两个种子并发、种子两步之间杀进程、迁移 SQL 中途失败，本次都没有注入。并发和崩溃后的补跑依赖唯一索引和“再执行一次”，没有测试证明。
 - bootstrap 每次 `DROP USER IF EXISTS` 再重建五个账号，代码不发 `KILL`。有没有在线连接被断开，未验证。中途失败也未注入。
-- 写报告这次的 compose 会话没有再测对账账号被拒绝写入。该条验收靠集成测试，不靠这次手工 SQL。
+- 对账账号写 `pay_account_1` 被拒绝、`DELETE` 被拒绝，集成测试没有断言，只在第二轮修订时手工实测过一次。以后改授权时，这两项没有自动化测试兜底。
 
 ## 6. 如何复现
 
@@ -377,3 +442,4 @@ make down V=1 ENV_FILE=deploy/.env.example
 |---|---|---|
 | 2026-10-14 | 代码 `28061d8`；报告尚未提交 | 初稿。验证数字来自写报告当天在该提交上的重新执行 |
 | 2026-10-14 | 同上，只改报告 | 可读性自检修订。补术语、建库 SQL、子账户选择的归属、密文 SHA-256 实测、第二次 `make migrate` 的 `no change`、检查约束查询。没测过的标成未验证 |
+| 2026-10-23 | 同上，只改报告；实测在分支 `fix/leftovers-base03-lint`（`339b262` 之上）的 compose 上执行 | 第二轮可读性修订。3.2 补 `GRANT` 摘要和重复执行恢复权限的实测；改正平台子账户允许为负的推理；3.4、4.3 按集成测试实际断言写清覆盖范围，补 1142 / 1044 的含义和手工实测；密文长度写明 `VARBINARY` 并改用 `LENGTH()` 实测；4.2 写明 `SEED_LOAD` 的取值和与 `make seed-load` 的关系 |
