@@ -117,7 +117,7 @@ IO、并发、日志：
 按顺序执行，全部通过才能进入收尾。BASE-01 完成前 Makefile 不存在，用括号中的命令代替。
 
 1. `gofmt -l .` 无输出。
-2. `make lint`（`golangci-lint run ./...`）无告警。
+2. `make lint`（`golangci-lint run --build-tags integration ./...`，同时检查集成测试文件）无告警。
 3. `make test`（`go test -race ./...`）通过。
 4. 涉及数据库、Redis、Kafka：`make test-integration`（`go test -race -tags integration ./...`）通过。
 5. 改了 IDL：`make gen && git diff --exit-code kitex_gen`。
