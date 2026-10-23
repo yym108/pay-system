@@ -111,7 +111,7 @@ package base03_verify
 
 import seed "github.com/yym108/pay-system/internal/seed"
 
-var _ = seed.CipherVersion
+var _ = seed.DefaultPlatformSubAccounts
 EOF
 
 if golangci-lint run ./pkg/base03_verify >"$output" 2>&1; then

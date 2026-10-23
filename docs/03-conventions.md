@@ -1,6 +1,6 @@
 # pay-system 全局约定与编号规范
 
-> 版本：v2.12　最后修改：2026-10-23
+> 版本：v2.13　最后修改：2026-10-23
 > 适用：全部代码、文档、配置。需求见 `docs/02-requirements.md`，接口见 `docs/05-api.md`，表结构见 `docs/database.md`。
 
 本文集中登记会被多个功能点共用的约定：编号体系、业务单号、金额、时间、错误码、幂等与事务规则、命名规范、配置项。新增或修改这些内容时，先改本文并在 §9 记录，再改代码。
@@ -368,7 +368,7 @@ Hertz `hlog` 和 Kitex `klog` 经适配器写入同一个 slog handler。`SetDef
 | `REDIS_ADDR` | gateway | `redis:6379` | |
 | `KAFKA_BROKERS` | payment、account | `kafka:9092` | 逗号分隔 |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | 全部服务 | `jaeger:4317` | 为空时关闭 trace |
-| `SECRET_MASTER_KEY` | payment、seed | 无（必填，secret） | 32 字节 base64 |
+| `SECRET_MASTER_KEY` | payment、seed | 无（必填，secret） | 标准 base64（带填充），解码后 32 字节；`pkg/secretbox.NewFromBase64` 按同一规则解码（BASE-14） |
 | `CHANNEL_MOCKPAY_KEY` | payment、gateway、channel-mock | 无（必填，secret） | 渠道签名密钥 |
 | `CHANNEL_MOCKPAY_URL` | payment | `http://channel-mock:9080` | BASE-09 的 recon 不读取。对账要访问渠道时再加到 recon |
 | `CHANNEL_NOTIFY_URL` | payment | `http://gateway:8080/callback/mockpay` | 交给渠道的回调地址 |
@@ -424,3 +424,4 @@ BASE-09 只拼 DSN 文本，不连接数据库，也不调用驱动的 `ParseDSN
 | v2.10 | 2026-10-15 | BASE-08：§6.3 写明 1213/1205 含第一次在内最多执行 4 次，三次重试前等待 10ms、20ms、40ms；事务总时长默认 3 秒，用父 ctx 派生，先到期的取消并回滚。不新增错误码 |
 | v2.11 | 2026-10-15 | BASE-11：§8 说明 `TEST_MYSQL_DSN` 只给集成测试复用已有 MySQL。不进入 `deploy/.env.example`，也不进入业务配置 |
 | v2.12 | 2026-10-23 | 遗留修复：§7.1 写明 `make lint` 带 `--build-tags integration`，集成测试文件不再漏检。不改检查规则 |
+| v2.13 | 2026-10-23 | BASE-14：§8 写明 `SECRET_MASTER_KEY` 是标准 base64（带填充），与 BASE-09 `pkg/config` 已有的校验一致，`pkg/secretbox` 按同一规则解码。不新增变量，不改默认值，不新增错误码 |

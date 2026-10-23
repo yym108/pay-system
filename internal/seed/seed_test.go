@@ -2,8 +2,12 @@ package seed
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/yym108/pay-system/pkg/secretbox"
 )
 
 // BASE-03 规则：分片 = 商户号数字部分 % 2。演示商户用来构造同分片和跨分片转账。
@@ -74,45 +78,52 @@ func TestAccountNo(t *testing.T) {
 	}
 }
 
-// BASE-03 口径澄清：密文格式与 BASE-14 规则一致，同一明文两次加密不同，篡改后无法解密。
-func TestSealLayoutAndRoundTrip(t *testing.T) {
+// BASE-14 兼容：种子写入的密文是 secretbox 格式（version=1），用另建的 secretbox 能解开，明文与 §3.7 测试向量一致。
+func TestMerchantSecretOpensWithSecretbox(t *testing.T) {
 	t.Parallel()
 	key := bytes.Repeat([]byte{0x11}, 32)
-	plain := []byte("demo_secret_M100001_0123456789ab")
-	first, err := Seal(key, plain)
+	writer, err := secretbox.New(key)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := Seal(key, plain)
+	reader, err := secretbox.New(append([]byte(nil), key...))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if bytes.Equal(first, second) {
-		t.Fatal("same plaintext encrypted twice must differ")
+	for _, id := range []string{"M100001", "M100002", "M200099"} {
+		sealed, err := merchantSecret(writer, DefaultSecretFormat, id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := "demo_secret_" + id + "_0123456789ab"
+		if sealed[0] != secretbox.Version || len(sealed) != secretbox.Overhead+len(want) {
+			t.Fatalf("%s: version %d len %d", id, sealed[0], len(sealed))
+		}
+		got, err := reader.Open(sealed)
+		if err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+		if string(got) != want {
+			t.Fatalf("%s: plaintext differs", id)
+		}
 	}
-	if first[0] != CipherVersion {
-		t.Fatalf("version byte = %d, want %d", first[0], CipherVersion)
-	}
-	if len(first) != 1+12+len(plain)+16 {
-		t.Fatalf("cipher length = %d, want %d", len(first), 1+12+len(plain)+16)
-	}
-	got, err := Open(key, first)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(got, plain) {
-		t.Fatalf("opened %q", got)
-	}
-	tampered := append([]byte(nil), first...)
-	tampered[len(tampered)-1] ^= 0x01
-	if _, err := Open(key, tampered); err == nil {
-		t.Fatal("tampered ciphertext opened")
-	}
-	if _, err := Seal(key[:31], plain); err == nil {
-		t.Fatal("31-byte key should fail")
-	}
-	if _, err := Open(key, first[:10]); err == nil {
-		t.Fatal("short blob should fail")
+}
+
+// BASE-14 验收 3（种子侧）：主密钥不是 32 字节时，种子在连接数据库之前失败，不写任何行。
+func TestRunRejectsBadMasterKeyBeforeDB(t *testing.T) {
+	t.Parallel()
+	unreachable := "seed:unused@tcp(127.0.0.1:1)/none?timeout=100ms"
+	for _, n := range []int{0, 31, 33} {
+		_, err := Run(context.Background(), Config{
+			AccountDSN0:         unreachable,
+			AccountDSN1:         unreachable,
+			PaymentDSN:          unreachable,
+			MasterKey:           bytes.Repeat([]byte{0x11}, n),
+			PlatformSubAccounts: DefaultPlatformSubAccounts,
+		})
+		if !errors.Is(err, secretbox.ErrKeySize) {
+			t.Fatalf("%d-byte key: err = %v, want secretbox.ErrKeySize", n, err)
+		}
 	}
 }
 

@@ -7,6 +7,8 @@ import (
 	"strings"
 
 	_ "github.com/go-sql-driver/mysql" // 注册 MySQL 驱动。
+
+	"github.com/yym108/pay-system/pkg/secretbox"
 )
 
 // 冲突时只把唯一键列写回自身，不更新余额和冻结金额。
@@ -81,13 +83,17 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 	if strings.Count(format, "%") != 1 || !strings.Contains(format, "%s") {
 		return Result{}, fmt.Errorf("seed: secret format must contain exactly one %%s")
 	}
+	// 主密钥在连库之前校验，长度不对时不写任何行。
+	box, err := secretbox.New(cfg.MasterKey)
+	if err != nil {
+		return Result{}, fmt.Errorf("seed: %w", err)
+	}
 	specs := demoMerchants()
 	if cfg.Load {
 		specs = append(specs, loadMerchants()...)
 	}
 
 	accountDB := [2]*sql.DB{}
-	var err error
 	accountDB[0], err = open(ctx, cfg.AccountDSN0)
 	if err != nil {
 		return Result{}, fmt.Errorf("seed: open account shard 0: %w", err)
@@ -110,7 +116,7 @@ func Run(ctx context.Context, cfg Config) (Result, error) {
 		}
 	}
 	for _, spec := range specs {
-		if err := seedMerchant(ctx, paymentDB, accountDB, cfg.MasterKey, format, spec); err != nil {
+		if err := seedMerchant(ctx, paymentDB, accountDB, box, format, spec); err != nil {
 			return Result{}, err
 		}
 	}
@@ -177,13 +183,21 @@ func seedPlatform(ctx context.Context, db *sql.DB, shard, subs int) error {
 	return nil
 }
 
-func seedMerchant(ctx context.Context, payment *sql.DB, account [2]*sql.DB, key []byte, format string, spec merchantSpec) error {
+// merchantSecret 按演示格式生成商户密钥明文并用 secretbox 加密，结果直接写入 app_secret_cipher。
+func merchantSecret(box *secretbox.Box, format, merchantID string) ([]byte, error) {
+	sealed, err := box.Seal([]byte(fmt.Sprintf(format, merchantID)))
+	if err != nil {
+		return nil, fmt.Errorf("seed: encrypt secret %s: %w", merchantID, err)
+	}
+	return sealed, nil
+}
+
+func seedMerchant(ctx context.Context, payment *sql.DB, account [2]*sql.DB, box *secretbox.Box, format string, spec merchantSpec) error {
 	shard, err := ShardOf(spec.id)
 	if err != nil {
 		return err
 	}
-	plain := fmt.Sprintf(format, spec.id)
-	cipherText, err := Seal(key, []byte(plain))
+	cipherText, err := merchantSecret(box, format, spec.id)
 	if err != nil {
 		return err
 	}

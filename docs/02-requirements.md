@@ -349,7 +349,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | BASE-11 | 集成测试基座 | P0 | M1 | BASE-03、BASE-08 | DONE |
 | BASE-12 | IDL 与代码生成 | P0 | M1 | BASE-01 | DONE |
 | BASE-13 | 签名库 | P0 | M3 | BASE-01 | DONE |
-| BASE-14 | 密钥加密 | P0 | M3 | BASE-01 | TODO |
+| BASE-14 | 密钥加密 | P0 | M3 | BASE-01 | DONE |
 | ACC-13 | 账户分片路由 | P0 | M1 | BASE-08、BASE-09 | DONE |
 | ACC-01 | 开户 | P0 | M1 | ACC-13、BASE-05 | DONE |
 | ACC-02 | 账户查询 | P0 | M1 | ACC-01 | DONE |
@@ -524,7 +524,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 
 口径澄清（2026-10-14）：不改业务规则、资金流向、接口、表结构、错误码，也不改 §3 依赖列。`app_secret_cipher` 保持 NOT NULL。
 
-- 密钥：BASE-14 属于 M3，不是本功能点依赖，本功能点不实现 `pkg/secretbox`。种子按 BASE-14 已写明的算法与密文格式（AES-256-GCM，`version(1B) + nonce(12B) + ciphertext + tag`，version 取值 1，主密钥 `SECRET_MASTER_KEY`）用标准库加密后写入。明文格式为 `DEMO_APP_SECRET_FORMAT`（默认 `demo_secret_%s_0123456789ab`，`%s` 为商户号），因此 `M100001` 的明文与 `docs/05-api.md` §3.7 测试向量一致。重复执行不覆盖已有密文（nonce 随机，覆盖会让密文变化）。BASE-14 实现时必须能解密这些种子密文，不得另起格式。
+- 密钥：BASE-14 属于 M3，不是本功能点依赖，本功能点不实现 `pkg/secretbox`。种子按 BASE-14 已写明的算法与密文格式（AES-256-GCM，`version(1B) + nonce(12B) + ciphertext + tag`，version 取值 1，主密钥 `SECRET_MASTER_KEY`）用标准库加密后写入。明文格式为 `DEMO_APP_SECRET_FORMAT`（默认 `demo_secret_%s_0123456789ab`，`%s` 为商户号），因此 `M100001` 的明文与 `docs/05-api.md` §3.7 测试向量一致。重复执行不覆盖已有密文（nonce 随机，覆盖会让密文变化）。BASE-14 实现时必须能解密这些种子密文，不得另起格式。2026-10-23 起种子改用 BASE-14 的 `pkg/secretbox` 加密，格式不变（见 BASE-14 说明）。
 - 压测入账：`make seed-load` 在本功能点只幂等创建 `M200000`–`M200099` 及其所属分片的零余额结算账户，费率 0。不写分录、不写非零余额（不变量 3）。`scripts/load-fund.sh` 不在本功能点实现；真实支付链路尚未存在，入账留给 QA-02。本功能点不调用、不伪造该脚本。
 - 启动范围：替换 profile `apps` 中 `migrate` / `seed` 的命令，使 `make migrate`、`make seed` 可单独执行。不把 profile `apps` 并入默认 `make up`（应用容器仍等 OPS-01 的 `/healthz`）。A1 仍由 BASE-02、BASE-03、OPS-01 共同完成。
 - 开户：种子仍然直接插入账户行，不调用 `OpenAccount`（余额与冻结均为 0，不写分录）。余额方向和透支标志按 §2.5.1 由账户类型决定。`docs/06-flows.md` 中“开户只由 seed 调用、不对运营开放”仍是目标态，本功能点不改图。账户号用确定性的 `AC` + 19 位数字，保证重复执行命中同一行，而不是每次新开账户。商户显示名是 `演示商户` 或 `压测商户` 加商户号；`app_id` 按约定 §2.3 取 `app_` + 商户号小写。`notify_url` 留空，不发明通知地址。
@@ -789,11 +789,19 @@ DSN 只按驱动的文本规则装配，不连接数据库：
 2. 每次加密使用随机 nonce。
 3. 解密失败返回错误，不输出密文或明文。
 
+说明（BASE-14 口径澄清）：
+
+- 入口：`secretbox.New(key []byte)` 接收解码后的 32 字节主密钥；`secretbox.NewFromBase64(s)` 接收 `SECRET_MASTER_KEY` 原值，按标准 base64（带填充，与 `pkg/config` 校验一致）解码。`(*Box).Seal(plain)`、`(*Box).Open(blob)` 加解密。`Box` 不保留调用方传入的 key 切片；内部 AES 轮密钥与主密钥等价，`Box` 应按密钥材料对待（不序列化、不打印、长期持有于进程内即可）。`Box` 可并发使用。
+- 版本字节取 `1`，与 BASE-03 种子已写入的密文相同。不使用 AAD（附加认证数据）：种子密文没有 AAD，加上会让已有密文无法解密。nonce 用 `crypto/rand`。版本字节不受 GCM tag 保护，当前靠 `Open` 显式拒绝非 1 的版本；将来 v2 应把版本字节（及商户号）纳入 AAD。
+- 错误为本包固定文本的哨兵：主密钥不是 32 字节 `ErrKeySize`，不是标准 base64 `ErrKeyEncoding`；密文短于 29 字节（1 + 12 + 16）`ErrMalformed`，版本字节不是 1 `ErrUnknownVersion`，认证失败（篡改、截断、主密钥不对）`ErrDecrypt`。文本不含主密钥、明文、密文。它们是本端配置或数据故障，平台服务按已有的 `10003` 处理并打 ERROR 日志，不新增错误码。
+- 空明文可以加密，密文 29 字节。`merchant.app_secret_cipher` 为 `VARBINARY(256)`，明文最长 227 字节；本包不限制长度，超长由写库报错。
+- BASE-14 完成后种子改用 `pkg/secretbox` 加密，`internal/seed` 不再自带加密实现，密文格式不变；种子在连库之前校验主密钥。
+
 验收：
 
-- [ ] 加密后解密得到原文；同一明文两次加密结果不同。
-- [ ] 篡改任一字节，解密失败。
-- [ ] 主密钥长度不是 32 字节时初始化失败。
+- [x] 加密后解密得到原文；同一明文两次加密结果不同。
+- [x] 篡改任一字节，解密失败。
+- [x] 主密钥长度不是 32 字节时初始化失败。
 
 ### 4.2 账户与记账（ACC）
 
@@ -2832,3 +2840,4 @@ ACC-10 在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（一
 | 2026-10-23 | v3.0 | BASE-13 口径澄清：入参取原样字符串和原始 body，nil 与空 body 等价，本包不转大写、不解析也不检查时间戳与 nonce 格式；新增 `FormatTimestamp`（十进制 Unix 秒）。方法、RequestURI、时间戳、nonce 含换行时签名与验签都返回错误，避免拼接串歧义，body 不受限。只接受 44 字符、带填充、填充位为 0 的标准 base64 签名。空密钥两侧都拒绝。错误为本包普通 `error` 哨兵，不含密钥、签名和拼接串，调用方映射为已有的 `20001` / `50001`。签名算法、请求头、测试向量不变，不新增错误码，不改接口文档 |
 | 2026-10-23 | v3.0 | BASE-13 审查修正：规则 8 的错误映射按签名、验签两侧区分。只有验签侧的 `ErrMalformedSignature`、`ErrSignatureMismatch`、`ErrInvalidField` 映射为 `20001` / `50001`；`ErrEmptyKey` 与签名侧的全部错误是本端配置或内部故障，平台服务按 `10003` 处理并打 ERROR 日志（不含密钥）。同步澄清 GW-01 第 3 条（签响应失败返回 500 / `10003`，不签名）、GW-03 第 3 条（商户密钥为空 500 / `10003`）、GW-06 第 1 条（渠道密钥为空 500 `FAIL`，渠道重试）、NTF-02 第 2 条（签名失败本次不发送，按发送失败重试）；接口文档 §7 同步一句，`docs/06-flows.md` CF-01、CF-02、CF-21 补出口。不新增错误码，不改签名算法 |
 | 2026-10-23 | v3.0 | BASE-13 规则 4 使用方补上 payment（商户通知、渠道请求）和 recon（账单请求），与报告的报文清单一致；文字修正，不改算法。 |
+| 2026-10-23 | v3.0 | BASE-14 口径澄清：入口为 `New`（32 字节）与 `NewFromBase64`（标准 base64，带填充）；版本字节取 1，与 BASE-03 种子密文相同；不使用 AAD（种子密文没有 AAD，加上会让已有密文失效）。失败返回固定文本哨兵 `ErrKeySize`、`ErrKeyEncoding`、`ErrMalformed`（短于 29 字节）、`ErrUnknownVersion`、`ErrDecrypt`，不含主密钥、明文、密文，平台服务按已有的 `10003` 处理。空明文可加密；明文最长 227 字节由 `VARBINARY(256)` 决定，本包不限长。种子改用 `pkg/secretbox`，删除 `internal/seed` 自带的加密实现，并在连库前校验主密钥。审查修正：`Box` 不保留传入的 key 切片，但内部 AES 轮密钥与主密钥等价，按密钥材料对待；版本字节不受 GCM tag 保护，靠 `Open` 显式拒绝非 1 版本，将来 v2 应把版本字节（及商户号）纳入 AAD。不改密文格式、表结构、接口和错误码 |

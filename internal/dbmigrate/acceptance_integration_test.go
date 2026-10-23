@@ -22,6 +22,7 @@ import (
 	"github.com/yym108/pay-system/internal/bootstrap"
 	"github.com/yym108/pay-system/internal/dbschema"
 	"github.com/yym108/pay-system/internal/seed"
+	"github.com/yym108/pay-system/pkg/secretbox"
 )
 
 // 集成测试口令，只存在于一次性容器里，不是生产密钥。
@@ -96,7 +97,10 @@ func TestBASE03SeedIdempotentAndShardPlacement(t *testing.T) {
 	}
 	assertSettlementPlacement(t, ctx, env)
 	assertZeroBalances(t, ctx, env)
-	assertPlaintext(t, key, ciphers["M100002"], "demo_secret_M100002_0123456789ab")
+	// BASE-14 兼容：已入库的种子密文用 pkg/secretbox 解开，明文与演示格式一致。
+	for _, id := range []string{"M100001", "M100002", "M100003"} {
+		assertPlaintext(t, key, ciphers[id], "demo_secret_"+id+"_0123456789ab")
+	}
 	assertSeedFeeTier(t, ctx, env, "M100002", 60)
 }
 
@@ -367,7 +371,11 @@ WHERE r.merchant_id = ?`, merchantID).Scan(&effective, &created)
 
 func assertPlaintext(t *testing.T, key []byte, stored, want string) {
 	t.Helper()
-	got, err := seed.Open(key, []byte(stored))
+	box, err := secretbox.New(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := box.Open([]byte(stored))
 	if err != nil {
 		t.Fatal(err)
 	}

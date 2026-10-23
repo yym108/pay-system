@@ -1,6 +1,6 @@
 # Database Schema
 
-> **Last updated:** 2026-10-20
+> **Last updated:** 2026-10-23
 > **Database engine/version:** MySQL 8.4.11（InnoDB，utf8mb4 / utf8mb4_bin）
 > **Schema sources:** `migrations/account/000001_init.up.sql`（`pay_account_0` 与 `pay_account_1` 各执行一次）、`migrations/payment/000001_init.up.sql`、`migrations/payment/000002_merchant_fee_rate.up.sql`、`migrations/recon/000001_init.up.sql`、`migrations/channel_mock/000001_init.up.sql`。设计稿 `docs/schema/schema_draft.sql` 已在 BASE-03 删除。golang-migrate 还会在每个 schema 创建工具表 `schema_migrations`（`version`、`dirty`），不在业务清单里。
 > **Owner:** pay-system 项目作者
@@ -352,7 +352,7 @@
 | `merchant_id` | VARCHAR(32) | 否 | — | `uk_merchant_id` | 商户号，如 `M100001`；数字部分决定账户分片 | 内部 |
 | `merchant_name` | VARCHAR(128) | 否 | — | — | 名称 | 内部 |
 | `app_id` | VARCHAR(32) | 否 | — | `uk_app_id` | 请求头 `X-App-Id` | 内部 |
-| `app_secret_cipher` | VARBINARY(256) | 否 | — | — | AES-256-GCM 密文（nonce + ciphertext + tag），主密钥来自环境变量 | 高敏，禁止日志输出 |
+| `app_secret_cipher` | VARBINARY(256) | 否 | — | — | AES-256-GCM 密文（`version(1B)=1` + nonce(12B) + ciphertext + tag(16B)，无 AAD），由 `pkg/secretbox` 读写，主密钥来自环境变量 `SECRET_MASTER_KEY`。比明文多 29 字节，明文最长 227 字节 | 高敏，禁止日志输出 |
 | `secret_version` | INT | 否 | 1 | — | 密钥轮换版本 | 内部 |
 | `notify_url` | VARCHAR(512) | 否 | `''` | — | 默认通知地址，订单或转账单可覆盖 | 内部 |
 | `fee_rate_bp` | INT | 否 | 0 | `ck_merchant_fee_rate` | 费率（万分之一），0–10000。种子写下的初始费率，不是生效费率 | 内部 |
@@ -377,7 +377,7 @@
 
 #### Operational Notes
 
-- **Backfill/migration considerations:** BASE-03 种子按 BASE-14 的密文格式（`version(1B)+nonce(12B)+ciphertext+tag`，version=1）用标准库加密后写入。明文格式是 `DEMO_APP_SECRET_FORMAT`，只出现在环境文件。重复执行不覆盖已有密文。`pkg/secretbox` 仍由 BASE-14 实现，且必须能解密这些种子密文。
+- **Backfill/migration considerations:** BASE-03 种子按 BASE-14 的密文格式（`version(1B)+nonce(12B)+ciphertext+tag`，version=1）用标准库加密后写入。明文格式是 `DEMO_APP_SECRET_FORMAT`，只出现在环境文件。重复执行不覆盖已有密文。BASE-14 起种子改用 `pkg/secretbox` 加密，格式不变；BASE-03 写入的密文由 `pkg/secretbox` 直接解开，无需回填。
 - **Compatibility/deprecation notes:** 密钥轮换（双密钥并行）为 P2。`fee_rate_bp` 自 PAY-10 起不是生效费率。
 
 ### 4.6.1 `merchant_fee_rate` — 商户费率历史
@@ -953,6 +953,7 @@
 | 2026-10-19 | 无（仅文档） | `account.version` 的说明 | ACC-04：冻结成功时 `version` 也 +1，与余额变更使用同一列。无 DDL，不改 CHECK | 未执行迁移 |
 | 2026-10-20 | 无（仅文档） | `account.version`、`account_freeze.version` 的说明 | ACC-05：解冻成功时冻结单和账户的 `version` 都 +1。墓碑插入不改账户，冻结单 `version` 保持 0。无 DDL，不改 CHECK | 未执行迁移 |
 | 2026-10-20 | 无（仅文档） | `account.balance`、`account.frozen_amount`、`account.version`、`account.status`、`account_freeze.txn_no`、`account_freeze.version` 的说明 | ACC-06：确认成功时冻结单 `version` +1 且写入 `txn_no`；商户 `balance` 与 `frozen_amount` 同减，两边账户 `version` 各 +1。无 DDL，不改 CHECK，不改迁移 | 未执行迁移 |
+| 2026-10-23 | 无（仅文档） | `merchant.app_secret_cipher` 的说明 | BASE-14：说明补上版本字节（取 1）、无 AAD、由 `pkg/secretbox` 读写、明文最长 227 字节。种子改用 `pkg/secretbox`，格式不变，已有密文不回填。无 DDL，不改迁移 | 未执行迁移；`go test -tags integration ./internal/dbmigrate` 用 `pkg/secretbox` 解开种子入库的三个商户密文 |
 
 ## 6. Open Questions
 
