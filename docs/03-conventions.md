@@ -1,6 +1,6 @@
 # pay-system 全局约定与编号规范
 
-> 版本：v2.11　最后修改：2026-10-15
+> 版本：v2.12　最后修改：2026-10-23
 > 适用：全部代码、文档、配置。需求见 `docs/02-requirements.md`，接口见 `docs/05-api.md`，表结构见 `docs/database.md`。
 
 本文集中登记会被多个功能点共用的约定：编号体系、业务单号、金额、时间、错误码、幂等与事务规则、命名规范、配置项。新增或修改这些内容时，先改本文并在 §9 记录，再改代码。
@@ -265,6 +265,7 @@ docker-compose 给将来会跑业务进程的 6 个占位服务写死互不相�
 - 包名小写单词，不用下划线；目录名可用下划线（`channel_mock`），对应包名去掉下划线。
 - 文件名小写下划线：`payment_order.go`、`payment_order_test.go`。
 - 集成测试文件加 `//go:build integration`；端到端测试位于 `test/e2e/`，加 `//go:build e2e`。
+- `make lint` 执行 `golangci-lint run --build-tags integration ./...`：未打标签的文件和集成测试文件一起检查。新增其他构建标签（如 `e2e`）时，同步加进 `--build-tags`。
 - 测试函数注明覆盖的功能点与验收条目：`// ACC-03 验收 3：1000 goroutine 并发扣款`。
 
 ### 7.2 数据库
@@ -422,3 +423,4 @@ BASE-09 只拼 DSN 文本，不连接数据库，也不调用驱动的 `ParseDSN
 | v2.9 | 2026-10-15 | BASE-10：§7.5 写明每条日志的固定字段，以及按字段名脱敏、太短整段 `***`、字符串兜底扫描的规则。`trace_id` / `span_id` 来自 otel trace API，`request_id` 来自 `WithRequestID`，三者按原值写入。访问日志不记录请求体。不改 v2.7、v2.8 |
 | v2.10 | 2026-10-15 | BASE-08：§6.3 写明 1213/1205 含第一次在内最多执行 4 次，三次重试前等待 10ms、20ms、40ms；事务总时长默认 3 秒，用父 ctx 派生，先到期的取消并回滚。不新增错误码 |
 | v2.11 | 2026-10-15 | BASE-11：§8 说明 `TEST_MYSQL_DSN` 只给集成测试复用已有 MySQL。不进入 `deploy/.env.example`，也不进入业务配置 |
+| v2.12 | 2026-10-23 | 遗留修复：§7.1 写明 `make lint` 带 `--build-tags integration`，集成测试文件不再漏检。不改检查规则 |

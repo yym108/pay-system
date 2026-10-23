@@ -22,8 +22,9 @@ build:
 		go build -o "bin/$$app" "./cmd/$$app" || exit $$?; \
 	done
 
+# 带 integration 标签：未打标签的文件照常检查，集成测试文件也一起检查。
 lint:
-	golangci-lint run ./...
+	golangci-lint run --build-tags integration ./...
 
 test:
 	go test -race ./...

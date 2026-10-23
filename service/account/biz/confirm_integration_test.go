@@ -859,7 +859,7 @@ func snapAccounts(t *testing.T, ctx context.Context, db *sqlx.DB) string {
 	if err != nil {
 		t.Fatal(testkit.Redact(err))
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	var b strings.Builder
 	for rows.Next() {
 		var (
@@ -904,7 +904,7 @@ FROM ledger_entry WHERE txn_no = ?`, txnNo)
 	if err != nil {
 		t.Fatal(testkit.Redact(err))
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	got := map[uint64]entryWant{}
 	for rows.Next() {
 		var (

@@ -5,6 +5,7 @@ package biz
 import (
 	"context"
 	"errors"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -280,7 +281,7 @@ func TestCheckBalanceDuringConcurrentPostAndTransfer(t *testing.T) {
 	const crossN = 3
 	const crossAmount = money.Amount(20)
 	for i := 0; i < crossN; i++ {
-		transferNo := "XR" + string(rune('0'+i))
+		transferNo := "XR" + strconv.Itoa(i)
 		openTransitSub(t, env, transferNo, 1, 0)
 		openTransitSub(t, env, transferNo, 0, 0)
 		hold, err := env.svc.Freeze(env.ctx, bizTransfer, transferNo, "M100001", crossAmount)
@@ -313,7 +314,7 @@ func TestCheckBalanceDuringConcurrentPostAndTransfer(t *testing.T) {
 	for i := 0; i < localN; i++ {
 		go func(i int) {
 			defer wg.Done()
-			res, err := env.svc.TransferLocal(ctx, "LA"+string(rune('0'+i)), "M100001", "M100005", 1)
+			res, err := env.svc.TransferLocal(ctx, "LA"+strconv.Itoa(i), "M100001", "M100005", 1)
 			localErr[i] = err
 			if err == nil && (res.Status != statusSuccess || res.TxnNo == "") {
 				localErr[i] = errors.New("local not success")
@@ -321,7 +322,7 @@ func TestCheckBalanceDuringConcurrentPostAndTransfer(t *testing.T) {
 		}(i)
 		go func(i int) {
 			defer wg.Done()
-			res, err := env.svc.TransferLocal(ctx, "LB"+string(rune('0'+i)), "M100005", "M100001", 1)
+			res, err := env.svc.TransferLocal(ctx, "LB"+strconv.Itoa(i), "M100005", "M100001", 1)
 			localErr[localN+i] = err
 			if err == nil && (res.Status != statusSuccess || res.TxnNo == "") {
 				localErr[localN+i] = errors.New("local not success")
@@ -331,14 +332,14 @@ func TestCheckBalanceDuringConcurrentPostAndTransfer(t *testing.T) {
 	for i := 0; i < postN; i++ {
 		go func(i int) {
 			defer wg.Done()
-			_, postErr[i] = postCommitted(ctx, db1, env.svc, bizPay, "RACE-POST-"+string(rune('0'+i)), "", []Entry{
+			_, postErr[i] = postCommitted(ctx, db1, env.svc, bizPay, "RACE-POST-"+strconv.Itoa(i), "", []Entry{
 				{AccountID: ch1, Direction: directionDebit, Amount: 1},
 				{AccountID: payerID, Direction: directionCredit, Amount: 1},
 			})
 		}(i)
 	}
 	for i := 0; i < crossN; i++ {
-		transferNo := "XR" + string(rune('0'+i))
+		transferNo := "XR" + strconv.Itoa(i)
 		go func(i int, transferNo string) {
 			defer wg.Done()
 			res, err := env.svc.ConfirmFreeze(ctx, bizTransfer, transferNo, "M100001", "")

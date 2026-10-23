@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -375,7 +376,8 @@ WHERE table_schema = DATABASE() AND table_name = ?`, name).Scan(&n)
 
 func execMigration(t *testing.T, env payEnv, name string) {
 	t.Helper()
-	body, err := os.ReadFile(filepath.Join(repoRoot(t), "migrations", "payment", name))
+	// os.DirFS 把读取限制在 migrations/payment 内，name 含 ".." 时直接报错。
+	body, err := fs.ReadFile(os.DirFS(filepath.Join(repoRoot(t), "migrations", "payment")), name)
 	if err != nil {
 		t.Fatal(err)
 	}

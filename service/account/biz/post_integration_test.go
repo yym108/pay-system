@@ -556,7 +556,7 @@ func assertEntryReplay(t *testing.T, ctx context.Context, db *sqlx.DB, opening m
 	if err != nil {
 		t.Fatal(testkit.Redact(err))
 	}
-	defer rows.Close()
+	defer func() { _ = rows.Close() }()
 	state := make(map[uint64]money.Amount, len(opening))
 	for id, bal := range opening {
 		state[id] = bal
