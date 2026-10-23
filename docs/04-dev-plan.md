@@ -56,7 +56,8 @@
 
 ### 第 3 周（M3）：支付主链路与模拟渠道
 
-- [ ] BASE-13 签名库（`docs/05-api.md` §3.7 测试向量）、BASE-14 密钥加密
+- [x] BASE-13 签名库（`docs/05-api.md` §3.7 测试向量）
+- [ ] BASE-14 密钥加密
 - [ ] CH-01 渠道受理 → CH-02 查单、CH-03 关单、CH-05 回调；CH-06 的 FAIL、DROP_NOTIFY、DUP_NOTIFY、NEVER_FINISH
 - [ ] PAY-01 商户与密钥（含配置缓存开关）→ PAY-02 创建支付单 → PAY-03 发起支付
 - [x] PAY-10 商户费率变更与订单手续费核对

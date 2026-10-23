@@ -1,6 +1,6 @@
 # pay-system 需求规格说明书
 
-> 版本：v3.0　最后修改：2026-10-21
+> 版本：v3.0　最后修改：2026-10-23
 > 状态：v3.0 重新聚焦支付、退款、转账三条资金链路（变更见 §8.2），2026-10-13 已确认为开发基线；开发按 §3 功能点总表逐项推进
 > 上游：`PROJECT_GOALS.md`（目标与约束）、`docs/01-tech-decisions.md`（技术选型与版本）
 > 关联：`docs/03-conventions.md`（编号、错误码、命名等全局约定）、`docs/05-api.md`（接口文档）、`docs/database.md`（表结构）、`docs/04-dev-plan.md`（周计划）、`docs/06-flows.md`（流程图）
@@ -348,7 +348,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | BASE-10 | 日志与脱敏 | P0 | M1 | BASE-01 | DONE |
 | BASE-11 | 集成测试基座 | P0 | M1 | BASE-03、BASE-08 | DONE |
 | BASE-12 | IDL 与代码生成 | P0 | M1 | BASE-01 | DONE |
-| BASE-13 | 签名库 | P0 | M3 | BASE-01 | TODO |
+| BASE-13 | 签名库 | P0 | M3 | BASE-01 | DONE |
 | BASE-14 | 密钥加密 | P0 | M3 | BASE-01 | TODO |
 | ACC-13 | 账户分片路由 | P0 | M1 | BASE-08、BASE-09 | DONE |
 | ACC-01 | 开户 | P0 | M1 | ACC-13、BASE-05 | DONE |
@@ -767,11 +767,17 @@ DSN 只按驱动的文本规则装配，不连接数据库：
 2. 签名函数只接收原始字节，不对 body 或查询串做任何规范化。时间窗口与 nonce 检查不在本包，由 GW-04、GW-06 负责。
 3. 校验使用 `hmac.Equal` 常量时间比较。
 4. 提供签名与验签两侧函数，供网关、paycli、merchant-demo、channel_mock 共用。
+5. 入参：方法、RequestURI、时间戳、nonce 为请求头或请求行的原样字符串，body 为原始字节；nil body 与空 body 都按空串计算。本包不转大写、不解析时间戳、不检查时间戳与 nonce 的格式（GW-04 负责）。`FormatTimestamp` 把时间格式化为十进制 Unix 秒，供签名方生成 `X-Timestamp` / `X-Mock-Timestamp`。
+6. 以换行分隔的字段（方法、RequestURI、时间戳、nonce）含换行时，签名与验签都返回错误：拼接串用换行分隔，字段含换行会让两组不同的字段得到同一个拼接串。合法请求的这些字段都不含换行，不改变接口契约。body 可以含换行。
+7. 只接受规范的标准 base64 签名：44 个字符、带 `=` 填充、填充位为 0、解码后 32 字节。缺填充、URL-safe 字母表、hex、含空白或换行的签名一律验签失败。空密钥在签名与验签两侧都返回错误，不用空密钥计算 HMAC。
+8. 错误是本包的普通 `error` 哨兵（`ErrEmptyKey`、`ErrInvalidField`、`ErrMalformedSignature`、`ErrSignatureMismatch`），文本固定，不含密钥、签名值和拼接串。本包不定义对外数字码，调用方按哪一侧、哪个错误映射：
+   - 验签侧的 `ErrMalformedSignature`、`ErrSignatureMismatch`、`ErrInvalidField` 是对端签名问题：网关映射为 `20001`（GW-03）或 `50001`（GW-06），对外不区分原因（约定 §5.3 第 4 条）；merchant-demo、channel_mock 返回 HTTP 401；paycli 报告响应验签失败。
+   - `ErrEmptyKey`（签名、验签两侧）以及签名侧的全部错误（网关签响应、payment 签通知、paycli 签请求、双方的渠道签名）是本端配置或内部故障，不是对端签名错误：平台服务按 `10003` 处理并打 ERROR 日志，日志不含密钥、签名值和拼接串；paycli 报错并以退出码 1 结束；merchant-demo、channel_mock 返回 HTTP 500。
 
 验收：
 
-- [ ] `docs/05-api.md` §3.7 的全部测试向量通过。
-- [ ] body 改动 1 字节、查询串参数顺序改变、时间戳改变，验签均失败。
+- [x] `docs/05-api.md` §3.7 的全部测试向量通过。
+- [x] body 改动 1 字节、查询串参数顺序改变、时间戳改变，验签均失败。
 
 #### BASE-14 密钥加密（pkg/secretbox）
 
@@ -1954,7 +1960,7 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 规则：
 
 1. 每秒抢占到期的 PENDING 记录（`FOR UPDATE SKIP LOCKED`，抢占时 `attempt_count + 1` 并推后 `next_attempt_at`，方式同 PAY-05），事务外以最多 20 个并发发送。
-2. 请求：`POST notify_url`，JSON body，按 BASE-13 平台签名方式签名；超时 5 秒；不跟随重定向；响应体最多读取 1KB。
+2. 请求：`POST notify_url`，JSON body，按 BASE-13 平台签名方式签名；超时 5 秒；不跟随重定向；响应体最多读取 1KB。签名失败（如商户密钥为空，BASE-13 规则 8）按内部错误 `10003` 处理：本次不发送，打 ERROR 日志（不含密钥），`last_error` 只记 `internal error`，按发送失败进入第 4 条的重试与 DEAD 判定。
 3. 成功判定：HTTP 200 且去除首尾空白后 body 为 `SUCCESS`，置为 SUCCESS。
 4. 固定间隔重试：首次立即发送，之后每隔 `NOTIFY_RETRY_INTERVAL`（默认 30 秒）重试，共 `NOTIFY_MAX_ATTEMPTS`（默认 5）次；5 次仍失败置为 DEAD，`pay_notify_attempts_total{result="dead"} + 1`。真实系统常用递增间隔（如 15s、15s、30s、3m …），本项目不是重点，简化为固定间隔。
 5. 发送前再次校验 `notify_url` 主机在白名单内（NFR-SEC-07）；不在白名单时不发送，直接置为 DEAD，`last_error` 记录原因，`pay_notify_attempts_total{result="dead"} + 1` 并告警（白名单不会因重试而改变）。
@@ -1976,7 +1982,7 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 
 1. 两个 Hertz 实例：8080（商户 API、渠道回调）、8090（管理接口），请求体上限 64KB，超过返回 413 / `10001`（不签名）。
 2. 商户路由中间件顺序：Recovery → RequestID → Trace → AccessLog → 时间窗口（GW-04）→ 验签（GW-03）→ 商户限流（GW-05）→ nonce（GW-04）→ handler。限流放在 nonce 之前，超限请求不消耗 Redis 调用；被限流的请求不占用 nonce，商户可用同一 nonce 重试。
-3. 统一响应：`{"code": 0, "msg": "ok", "request_id": "...", "data": {...}}`；响应头 `X-Request-Id`；验签通过的请求，响应带平台签名头 `X-Timestamp`、`X-Nonce`、`X-Signature`；验签前失败的响应不签名。
+3. 统一响应：`{"code": 0, "msg": "ok", "request_id": "...", "data": {...}}`；响应头 `X-Request-Id`；验签通过的请求，响应带平台签名头 `X-Timestamp`、`X-Nonce`、`X-Signature`；验签前失败的响应不签名。平台签名失败（BASE-13 规则 8）时改为返回 500 / `10003`，该响应不签名，打 ERROR 日志（不含密钥）；商户按 `10003` 原参数重试，由幂等键保证不重复处理。
 4. 错误码按 `docs/03-conventions.md` §5.2 映射 HTTP 状态；`10003` 只返回通用消息和 request_id。
 5. Kitex 客户端：连接超时 100ms，调用超时 1 秒；`Pay`、`ClosePayment`、`CreateRefund` 含渠道调用，调用超时 5 秒；`CreateTransfer` 调用超时 3 秒（与 §5.4.1 一致）；网关不重试写请求。
 
@@ -2015,7 +2021,7 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 
 1. 必需请求头：`X-App-Id`、`X-Timestamp`、`X-Nonce`、`X-Signature`，缺任一 → `20001`。
 2. 按 `app_id` 取商户凭证（GW-08 完成前每次调用 `GetMerchantCredential`）；不存在或 DISABLED → `20004`；调用失败（payment 不可用）→ 503 / `10004`，不缓存失败结果。
-3. 按 BASE-13 计算签名，常量时间比较，不一致 → `20001`。
+3. 按 BASE-13 计算签名，常量时间比较，不一致 → `20001`；签名格式非法、字段含换行同为 `20001`。商户密钥为空（`ErrEmptyKey`）是服务端数据问题，不是签名错误 → 500 / `10003`，打 ERROR 日志（只记 `app_id`，不记密钥），不进入 handler。
 4. 通过后把 `merchant_id` 写入请求上下文。
 5. 日志只记录 `app_id` 和结果，不记录签名值和 canonical 串。
 
@@ -2065,7 +2071,7 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 
 规则：
 
-1. 校验渠道签名与时间窗口（±300 秒），失败返回 401 / `50001`，不调用 payment。
+1. 校验渠道签名与时间窗口（±300 秒），失败返回 401 / `50001`，不调用 payment。渠道密钥为空（`ErrEmptyKey`）是本端配置故障，不是渠道签名错误：按 `10003` 返回 HTTP 500、body `FAIL`，打 ERROR 日志（不含密钥），不调用 payment，渠道按 CH-05 重试。
 2. 不做 nonce 检查（回调处理本身幂等），因此 Redis 故障不影响回调。
 3. 按 `txn_type` 分发到 `ApplyPayResult` 或 `ApplyRefundResult`（source = NOTIFY）。
 4. payment 返回成功、幂等、冲突（已记录告警）时，网关返回 HTTP 200、body `SUCCESS`；返回 `10003`、`10004` 时返回 HTTP 500，让渠道重试。
@@ -2823,3 +2829,5 @@ ACC-10 在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（一
 | 2026-10-21 | v3.0 | ACC-10 口径澄清：CheckBalance 是进程内方法，不监听 RPC，不实现管理 HTTP。不用 `dbx.WithTx`。每个分片在固定连接上执行 `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ` 和 `START TRANSACTION READ ONLY, WITH CONSISTENT SNAPSHOT`，查完 ROLLBACK。商户号不合法的 `10001` 先于 nil service 和已取消的 ctx。nil 依赖、ShardDB 失败、SQL 错误、未知方向和金额溢出是 `10003`，failures 为空。`40001` 只表示点名的商户结算账户不存在。`passed = false` 不是错误码。商户模式忽略 `expect_quiescent`。最后一条分录是 `max(id)`，不是 `created_at`。一次失败的完成调用把进程内无标签计数 `pay_ledger_check_failures_total` 加 1，`/metrics` 暴露仍是 OPS-01。不新增错误码，不改 IDL，不改表，不实现 RPC 和 HTTP |
 | 2026-10-22 | v3.0 | ACC-11 口径澄清：handler 只做协议转换和错误码转换。trace、指标只留空实现，分别属于 OPS-02、OPS-03。健康检查、`/readyz` 和 SIGTERM 10 秒排空仍属 OPS-01。管理 HTTP 仍是 GW-07。payment 客户端放在 `pkg/accountclient`，不让 payment 依赖 `service/account`。`OpenAccount` 不重试。`Reverse` 在 ACC-08 前返回已有的 `10003`，不写行。业务错误走 TTHeader 的 `BizStatusError`；AccountService 不加 `biz_code`。服务端 2 秒是处理上限，不改 §5.4.1 的客户端超时。不新增错误码，不改 IDL，不改表 |
 | 2026-10-22 | v3.0 | ACC-11 审查修正：未识别错误转成 `10003` 时，原因打一条 ERROR，不进对外 msg。登记过的业务错误不打这条日志。panic 仍只记固定句子，不记 panic 值。不新增错误码 | 
+| 2026-10-23 | v3.0 | BASE-13 口径澄清：入参取原样字符串和原始 body，nil 与空 body 等价，本包不转大写、不解析也不检查时间戳与 nonce 格式；新增 `FormatTimestamp`（十进制 Unix 秒）。方法、RequestURI、时间戳、nonce 含换行时签名与验签都返回错误，避免拼接串歧义，body 不受限。只接受 44 字符、带填充、填充位为 0 的标准 base64 签名。空密钥两侧都拒绝。错误为本包普通 `error` 哨兵，不含密钥、签名和拼接串，调用方映射为已有的 `20001` / `50001`。签名算法、请求头、测试向量不变，不新增错误码，不改接口文档 |
+| 2026-10-23 | v3.0 | BASE-13 审查修正：规则 8 的错误映射按签名、验签两侧区分。只有验签侧的 `ErrMalformedSignature`、`ErrSignatureMismatch`、`ErrInvalidField` 映射为 `20001` / `50001`；`ErrEmptyKey` 与签名侧的全部错误是本端配置或内部故障，平台服务按 `10003` 处理并打 ERROR 日志（不含密钥）。同步澄清 GW-01 第 3 条（签响应失败返回 500 / `10003`，不签名）、GW-03 第 3 条（商户密钥为空 500 / `10003`）、GW-06 第 1 条（渠道密钥为空 500 `FAIL`，渠道重试）、NTF-02 第 2 条（签名失败本次不发送，按发送失败重试）；接口文档 §7 同步一句，`docs/06-flows.md` CF-01、CF-02、CF-21 补出口。不新增错误码，不改签名算法 |

@@ -1,6 +1,6 @@
 # pay-system 流程图（状态机、泳道图、控制流图）
 
-> 版本：v2.8　最后修改：2026-10-21　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐。2026-10-21 按 ACC-14 口径改正 CF-33，CF-33 已对齐。2026-10-21 按 ACC-10 口径改正 CF-17，CF-17 已对齐
+> 版本：v2.9　最后修改：2026-10-23　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐。2026-10-21 按 ACC-14 口径改正 CF-33，CF-33 已对齐。2026-10-21 按 ACC-10 口径改正 CF-17，CF-17 已对齐。2026-10-23 按 BASE-13 规则 8 补 CF-01、CF-02、CF-21 的签名配置故障出口
 > 依据：`docs/02-requirements.md` v3.0、`docs/03-conventions.md` v2.0、`docs/01-tech-decisions.md` D17–D21；`docs/05-api.md`、`docs/database.md` 尚未同步 v3.0，冲突处以需求文档为准
 > 用途：以图的形式确认全部功能性设计。图是需求的视图，规则冲突时以需求文档为准；需求变更后同步修改对应的图。
 
@@ -1032,7 +1032,8 @@ flowchart TD
     CC -->|"命中"| ST
     ST -->|"否"| E20004["20004，不签名"]:::err
     ST -->|"是"| SG{"BASE-13 签名常量时间比较一致"}
-    SG -->|"否"| E20001b["20001，不签名"]:::err
+    SG -->|"否：签名不一致、格式非法、字段含换行"| E20001b["20001，不签名"]:::err
+    SG -->|"商户密钥为空（ErrEmptyKey）"| E10003a["500 / 10003，ERROR 日志只记 app_id<br/>不签名，不进入 handler"]:::err
     SG -->|"是"| CTX["merchant_id 写入请求上下文<br/>之后的响应都带平台签名"]
     CTX --> RL{"进程内令牌桶 rate.Limiter[app_id]<br/>默认 100/s、突发 200，RATE_LIMIT_OVERRIDES 可覆盖"}
     RL -->|"超限"| E429["429 / 10005 + Retry-After<br/>不占用 nonce"]:::err
@@ -1042,7 +1043,9 @@ flowchart TD
     NC -->|"OK"| PV{"参数校验（GW-02）<br/>merchant_id 只取验签结果"}
     PV -->|"不合法"| E10001["10001"]:::err
     PV -->|"合法"| RPC["调用 payment，连接 100ms<br/>普通 1s，Pay / ClosePayment / CreateRefund 5s，CreateTransfer 3s<br/>网关不重试写请求"]
-    RPC --> RESP(["统一响应 + 平台签名"]):::ok
+    RPC --> PS{"平台签名响应成功"}
+    PS -->|"是"| RESP(["统一响应 + 平台签名"]):::ok
+    PS -->|"否"| E10003b["500 / 10003，不签名，ERROR 日志（不含密钥）<br/>商户原参数重试，幂等键防重"]:::err
     RPC -.- QN["查询接口直接读库：非本商户单据返回 30001<br/>转账只有付款商户可查，收款商户同样 30001"]
     classDef ok fill:#e3f6e8,stroke:#2e7d32
     classDef err fill:#fde4e4,stroke:#c62828
@@ -1059,6 +1062,7 @@ flowchart TD
 flowchart TD
     S(["POST /callback/mockpay"]) --> SG{"渠道签名正确<br/>且时间窗口 ±300 秒"}
     SG -->|"否"| E401["401 / 50001，不调用 payment"]:::err
+    SG -->|"网关渠道密钥为空（ErrEmptyKey）"| E500k["HTTP 500 FAIL（10003），ERROR 日志（不含密钥）<br/>不调用 payment，渠道重试"]:::err
     SG -->|"是"| NN["不做 nonce 检查<br/>Redis 故障不影响回调"]
     NN --> TT{"txn_type"}
     TT -->|"PAY"| AP["ApplyPayResult(source = NOTIFY)（CF-06）"]
@@ -1957,10 +1961,13 @@ flowchart TD
     end
     UP --> WL{"事务外并发 ≤ 20<br/>再次校验 notify_url 主机在白名单内"}
     WL -->|"否"| DEAD1["不发送，置 DEAD，last_error 记录原因<br/>pay_notify_attempts_total result=dead +1，告警"]:::err
-    WL -->|"是"| SEND["POST notify_url，平台签名，超时 5s<br/>不跟随重定向，响应体最多读 1KB"]
+    WL -->|"是"| SGN{"平台签名成功"}
+    SGN -->|"否（如商户密钥为空）"| SF["10003：本次不发送，ERROR 日志（不含密钥）<br/>last_error = internal error"]:::err
+    SGN -->|"是"| SEND["POST notify_url，平台签名，超时 5s<br/>不跟随重定向，响应体最多读 1KB"]
     SEND --> R{"HTTP 200 且 body 去除首尾空白后为 SUCCESS"}
     R -->|"是"| SUC(["SUCCESS"]):::ok
     R -->|"否"| MX{"attempt_count 达到 NOTIFY_MAX_ATTEMPTS（5）"}
+    SF --> MX
     MX -->|"是"| DEAD2["DEAD，pay_notify_attempts_total result=dead +1"]:::err
     MX -->|"否"| KP["保持 PENDING，30 秒后再试"]
     classDef ok fill:#e3f6e8,stroke:#2e7d32
@@ -2276,3 +2283,4 @@ R1–R14 来自 v1.x 绘图，已落入需求文档 v2.2；R15 起来自 v2.0 �
 | 2026-10-21 | v2.6 | ACC-07：CF-32 补上参数 10001 先于 nil 判断、nil 依赖 10003、已取消上下文原样返回、ShardDB 10003、不存在 40001 优先于非 ACTIVE、账户 id 相同 10003、事务 1 插入 SUCCESS 后公开 Post、Duplicated 仍回写 txn_no 并提交、回写 0 行 10003 并回滚、Post 的其他错误不写墓碑、只有 40002 开事务 2 写失败墓碑、1062 先回滚再读、金额或双方不一致 10006、SUCCESS 且 txn_no 空为 10003、FAILED 返回库里的 fail_code。不改资金流向 |
 | 2026-10-21 | v2.7 | ACC-14：CF-33 补上参数 10001 先于 nil 判断、nil 依赖 10003、已取消上下文原样返回、ShardDB 10003、Try 不存在 40001 优先于非 ACTIVE、插入 TRIED 且不动余额、1062 先回滚再读、CANCELLED 一律 40004、Confirm 先锁分支再由 Post 按 id 锁账户、在途或商户行不存在 40001 且保持 TRIED、id 相同 10003、借在途贷收款商户、40002 与 40005 原样返回并保持 TRIED、Duplicated 仍回写并提交 CONFIRMED、回写 0 行 10003、Cancel 不查账户的空回滚墓碑、TRIED 不一致 10006。不改资金流向 |
 | 2026-10-21 | v2.8 | ACC-10：CF-17 补上 10001 在 nil 之前、10003、40001、商户模式与全量、快照 SQL 而不是 WithTx、TRANSIT_ZERO 仅当全量且 expect_quiescent、计数 +1 一次。不改资金流向 |
+| 2026-10-23 | v2.9 | BASE-13 规则 8：CF-01 在验签处补商户密钥为空 → 500 / 10003 的出口，验签“否”注明含格式非法与字段含换行（仍为 20001），并补平台签名响应失败 → 500 / 10003（不签名）；CF-02 补网关渠道密钥为空 → HTTP 500 FAIL（10003）、不调用 payment；CF-21 补平台签名失败 → 本次不发送、按发送失败进入重试与 DEAD 判定。不改资金流向 |
