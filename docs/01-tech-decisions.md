@@ -287,6 +287,13 @@ BASE-01（2026-10-13）：根据本机实际安装版本，将本表 Go 本机�
 - 理由：契约属于 account RPC，但实现不能放进 account 的内部包，否则 payment 要么破坏分层，要么复制一份超时表。放在 `pkg` 让 payment 以后直接调用，测试现在就能用假服务计数。
 - 代价：`pkg` 多了一个只给 payment 用的客户端。gateway 如果误用它，会按 500ms 重试，和网关“不重试、CheckBalance 120 秒”不一致。包注释写明了这一点。
 
+### D23 模拟渠道自动完成用进程内定时器加启动扫描（2026-10-23）
+
+- 背景：CH-01 要求受理后延迟 200–1999ms 自动完成，重启后未完成的交易仍要完成。channel_mock 单实例运行，`mock_txn` 没有 version 列，也没有 status 索引。
+- 决策：每笔一个 `time.AfterFunc`，到期时刻 = `created_at + delay`，`delay` 由 `req_no` 的 CRC-32 决定，同一单号结果固定。启动时、开始接收请求前按主键分页扫描 PROCESSING 重建调度。完成用 CAS `WHERE id = ? AND status = 'PROCESSING'`，写库失败 1 秒后重试。HTTP 服务先用 `net.ListenConfig` 自己监听，再交给 Hertz 的标准库传输层。
+- 理由：任务状态已经在 `mock_txn` 里，定时器丢了可以从表里还原，不需要 Redis 或任务表。delay 可由 `req_no` 重算，重启后 due 不变，测试也能预先算出完成时刻。CAS 让重复调度、与关单并发都只生效一次，所以不加 version 列和迁移。Hertz 的 netpoll 传输层监听失败会直接 panic，自己监听才能把端口占用当错误返回。
+- 代价：只适合单实例；多实例会重复调度（CAS 能防止重复完成，但会重复执行）。启动扫描没有 status 索引，表大时较慢。进程内定时器在退出时丢弃，靠下一次启动补上，期间交易停在 PROCESSING。
+
 ## 4. Redis 使用边界
 
 Redis 只承担以下职责，任何账务事实不得只存在于 Redis：

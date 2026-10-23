@@ -1,6 +1,6 @@
 # pay-system 流程图（状态机、泳道图、控制流图）
 
-> 版本：v2.9　最后修改：2026-10-23　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐。2026-10-21 按 ACC-14 口径改正 CF-33，CF-33 已对齐。2026-10-21 按 ACC-10 口径改正 CF-17，CF-17 已对齐。2026-10-23 按 BASE-13 规则 8 补 CF-01、CF-02、CF-21 的签名配置故障出口
+> 版本：v2.10　最后修改：2026-10-23　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐。2026-10-21 按 ACC-14 口径改正 CF-33，CF-33 已对齐。2026-10-21 按 ACC-10 口径改正 CF-17，CF-17 已对齐。2026-10-23 按 BASE-13 规则 8 补 CF-01、CF-02、CF-21 的签名配置故障出口。2026-10-23 按 CH-01 口径改正 CF-22
 > 依据：`docs/02-requirements.md` v3.0、`docs/03-conventions.md` v2.0、`docs/01-tech-decisions.md` D17–D21；`docs/05-api.md`、`docs/database.md` 尚未同步 v3.0，冲突处以需求文档为准
 > 用途：以图的形式确认全部功能性设计。图是需求的视图，规则冲突时以需求文档为准；需求变更后同步修改对应的图。
 
@@ -1985,12 +1985,14 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    S(["POST /mockpay/v1/pay 或 /mockpay/v1/refund"]) --> SG{"渠道签名正确"}
-    SG -->|"否"| E401["HTTP 401"]:::err
-    SG -->|"是"| ID{"(txn_type, req_no) 已存在"}
-    ID -->|"是，金额一致"| EX(["返回已有结果，不再校验额度"]):::ok
-    ID -->|"是，金额不一致"| RJ1["REJECTED / PARAM_CONFLICT"]:::err
-    ID -->|"是，已 CLOSED"| RJ2["REJECTED / ORDER_CLOSED"]:::err
+    S(["POST /mockpay/v1/pay 或 /mockpay/v1/refund"]) --> SG{"渠道签名正确<br/>且时间戳在 ±300 秒内（整秒比较）"}
+    SG -->|"否（含缺签名头）"| E401["HTTP 401<br/>空 body、不签名、不写库"]:::err
+    SG -->|"是"| PV{"参数合法<br/>body 为合法 UTF-8 的单个对象，顶层无重复键<br/>字段名全小写，req_no、notify_url 不含 U+FFFD"}
+    PV -->|"否"| E400["HTTP 400<br/>空 body、不签名、不写库"]:::err
+    PV -->|"是"| ID{"(txn_type, req_no) 已存在<br/>PAY：先 INSERT，唯一键冲突再读已有行"}
+    ID -->|"是，已 CLOSED（优先，不论金额）"| RJ2["REJECTED / ORDER_CLOSED<br/>不带 channel_txn_no"]:::err
+    ID -->|"是，金额一致"| EX(["OK、已有 channel_txn_no、当前 status<br/>不改行、不重复调度，不再校验额度"]):::ok
+    ID -->|"是，金额不一致"| RJ1["REJECTED / PARAM_CONFLICT<br/>不带 channel_txn_no"]:::err
     ID -->|"否"| TY{"txn_type"}
     TY -->|"PAY"| SC
     TY -->|"REFUND"| ORG{"原支付 orig_req_no 为 SUCCESS"}
@@ -1998,17 +2000,31 @@ flowchart TD
     ORG -->|"是"| QT{"非 FAILED 退款合计 + 本次 ≤ 原支付金额"}
     QT -->|"否"| RJ4["REJECTED / REFUND_EXCEEDED"]:::err
     QT -->|"是"| SC["按金额末两位确定 scenario（CH-06）<br/>退款只有 01、02 生效"]
-    SC --> INS["INSERT mock_txn(PROCESSING)，生成 channel_txn_no"]
-    INS --> AT{"scenario = ACCEPT_TIMEOUT"}
+    SC --> INS["INSERT mock_txn(PROCESSING)，生成 channel_txn_no<br/>created_at 取渠道时钟，截到毫秒"]
+    INS -->|"成功"| NEW["新受理已落库"]
+    INS -->|"唯一键冲突以外的错误"| RR{"不随请求取消、1 秒超时<br/>按 (PAY, req_no) 再读一次<br/>是本次写入的行（channel_txn_no 相同）"}
+    RR -->|"是"| NEW
+    RR -->|"否、读不到或读失败"| E500["HTTP 500<br/>空 body、不签名"]:::err
+    NEW --> AT{"scenario = ACCEPT_TIMEOUT"}
     AT -->|"是"| BL["阻塞 5 秒再响应"]
-    AT -->|"否"| RSP(["OK、channel_txn_no"]):::ok
+    AT -->|"否"| RSP(["OK、channel_txn_no、PROCESSING"]):::ok
     BL --> RSP
-    INS --> SCH["进程内调度自动完成<br/>delay = MIN + hash(req_no) % (MAX − MIN)，默认 200–2000ms<br/>重启时扫描 PROCESSING 重建调度"]
-    SCH --> NF{"scenario"}
-    NF -->|"NEVER_FINISH"| PR["保持 PROCESSING，可被关单"]
-    NF -->|"FAIL"| FL["置 FAILED，写 finished_at"]
-    NF -->|"其他"| SU["置 SUCCESS，写 finished_at<br/>BILL_MISSING 之外写 bill_date = finished_at 的日期"]
-    FL --> CB["回调（CF-24）"]
+    NEW --> NF{"scenario"}
+    NF -->|"NEVER_FINISH"| PR["不调度，保持 PROCESSING，可被关单"]
+    NF -->|"其他"| SCH["进程内调度：due = created_at + delay<br/>delay = MIN + crc32(req_no) % (MAX − MIN)，MAX = MIN 时取 MIN，默认 200–1999ms<br/>重启时在接收请求前按 id 分页扫描 PROCESSING 重建调度，已过期立即完成"]
+    SCH --> CAS{"CAS：UPDATE … WHERE id = ? AND status = PROCESSING"}
+    CAS -->|"写库报错（结果不确定）"| RT["记下本次 status、finished_at<br/>1 秒后重新调度"]
+    RT --> CAS
+    CAS -->|"0 行"| UN{"之前有结果不确定的尝试"}
+    UN -->|"否（已被关单等）"| SK["不覆盖、不回调"]
+    UN -->|"是"| RB{"按 id 读回：status 与 finished_at<br/>和某次尝试一致"}
+    RB -->|"读失败"| RT2["1 秒后重新调度"]
+    RT2 --> CAS
+    RB -->|"否（已被关单等）"| SK
+    RB -->|"是（那次已生效）"| CB
+    CAS -->|"FAIL"| FL["置 FAILED，写 finished_at，不写 bill_date"]
+    CAS -->|"其他场景"| SU["置 SUCCESS，写 finished_at（截到毫秒）<br/>BILL_MISSING 之外写 bill_date = finished_at 的东八区日期"]
+    FL --> CB["提交后回调（CF-24）<br/>钩子上下文不随任务取消，自行设超时"]
     SU --> CB
     classDef ok fill:#e3f6e8,stroke:#2e7d32
     classDef err fill:#fde4e4,stroke:#c62828
@@ -2284,3 +2300,4 @@ R1–R14 来自 v1.x 绘图，已落入需求文档 v2.2；R15 起来自 v2.0 �
 | 2026-10-21 | v2.7 | ACC-14：CF-33 补上参数 10001 先于 nil 判断、nil 依赖 10003、已取消上下文原样返回、ShardDB 10003、Try 不存在 40001 优先于非 ACTIVE、插入 TRIED 且不动余额、1062 先回滚再读、CANCELLED 一律 40004、Confirm 先锁分支再由 Post 按 id 锁账户、在途或商户行不存在 40001 且保持 TRIED、id 相同 10003、借在途贷收款商户、40002 与 40005 原样返回并保持 TRIED、Duplicated 仍回写并提交 CONFIRMED、回写 0 行 10003、Cancel 不查账户的空回滚墓碑、TRIED 不一致 10006。不改资金流向 |
 | 2026-10-21 | v2.8 | ACC-10：CF-17 补上 10001 在 nil 之前、10003、40001、商户模式与全量、快照 SQL 而不是 WithTx、TRANSIT_ZERO 仅当全量且 expect_quiescent、计数 +1 一次。不改资金流向 |
 | 2026-10-23 | v2.9 | BASE-13 规则 8：CF-01 在验签处补商户密钥为空 → 500 / 10003 的出口，验签“否”注明含格式非法与字段含换行（仍为 20001），并补平台签名响应失败 → 500 / 10003（不签名）；CF-02 补网关渠道密钥为空 → HTTP 500 FAIL（10003）、不调用 payment；CF-21 补平台签名失败 → 本次不发送、按发送失败进入重试与 DEAD 判定。不改资金流向 |
+| 2026-10-23 | v2.10 | CH-01：CF-22 补上参数非法 → HTTP 400（空 body、不签名、不写库），401 注明含缺签名头与时间窗 ±300 秒；PAY 幂等改为先 INSERT、唯一键冲突再读，已有行按 CLOSED 优先、再比金额判断，REJECTED 不带 channel_txn_no；NEVER_FINISH 不调度；due = created_at + delay，hash 为 CRC-32，默认 200–1999ms；完成走 CAS，0 行不覆盖不回调，写库失败 1 秒后重试；FAIL 不写 bill_date，bill_date 取东八区日期。审查修正：时间窗按整秒比较；参数校验补 UTF-8、重复键、字段名大小写、U+FFFD；INSERT 报非 1062 错误后再读一次，是本次写入的行就调度并返回 OK，否则 500；完成写库结果不确定后 CAS 得 0 行时按 id 读回，与某次尝试一致才回调，读回失败 1 秒后再试。不改资金流向 |

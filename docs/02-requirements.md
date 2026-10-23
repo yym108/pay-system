@@ -184,7 +184,7 @@ pay-system/
   service/
     account/      handler/ biz/ dal/ consumer/
     payment/      handler/ biz/ dal/ channel/ job/ notify/
-    channel_mock/ handler/ scenario/ bill/ dal/
+    channel_mock/ handler/ biz/ scenario/ bill/ dal/
   job/recon/      biz/ dal/ bill/ handler/
   pkg/            money idgen errno clock dbx config logx sign secretbox outbox mq fault obs shard
   migrations/     account/（两个分片共用） payment/ recon/ channel_mock/
@@ -364,7 +364,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | ACC-10 | 余额核对（含分片与在途守恒） | P0 | M2 | ACC-03、ACC-04、ACC-14 | DONE |
 | ACC-11 | account RPC 服务 | P0 | M2 | ACC-01~07、ACC-14、BASE-12 | DONE |
 | ACC-12 | 热点账户优化 | P2 | — | — | CUT（拆为 OPT-03、OPT-05） |
-| CH-01 | 渠道支付受理与自动完成 | P0 | M3 | BASE-13、BASE-03 | TODO |
+| CH-01 | 渠道支付受理与自动完成 | P0 | M3 | BASE-13、BASE-03 | DONE |
 | CH-02 | 渠道查单 | P0 | M3 | CH-01 | TODO |
 | CH-03 | 渠道关单 | P0 | M3 | CH-01 | TODO |
 | CH-04 | 渠道退款受理与查询 | P0 | M4 | CH-01 | TODO |
@@ -1178,16 +1178,16 @@ channel_mock 代表外部支付机构，拥有独立 schema `pay_channel_mock`�
 
 规则：
 
-1. 验签失败返回 HTTP 401。
-2. 按 `(PAY, req_no)` 幂等：已存在且金额一致 → 返回已有结果；金额不一致 → `REJECTED / PARAM_CONFLICT`；已是 CLOSED → `REJECTED / ORDER_CLOSED`。
-3. 新交易状态 PROCESSING，`scenario` 由金额末两位决定（CH-06），返回 `channel_txn_no`。
-4. 自动完成：延迟 `delay = MOCK_DELAY_MIN_MS + hash(req_no) % (MOCK_DELAY_MAX_MS − MOCK_DELAY_MIN_MS)`（默认 200–2000ms）后，按场景置为 SUCCESS 或 FAILED，写入 `finished_at`；SUCCESS 且场景不是 BILL_MISSING 时写入 `bill_date = finished_at 的日期`。
-5. 定时完成由进程内调度实现；进程重启时扫描全部 PROCESSING 记录重建调度。
+1. 验签失败返回 HTTP 401：缺 `X-Mock-Timestamp` 或 `X-Mock-Signature`、时间戳不是十进制整数、签名不符、时间戳与本地时钟相差超过 300 秒（按整秒比较：本地时间取 Unix 秒再相减，±300 秒边界内接受）。签名通过但参数非法返回 HTTP 400：body 不是合法 UTF-8、不是单个 JSON 对象、顶层有重复键（按转义还原后的键名，未知字段也算）、已知字段名大小写不对（只认全小写，如 `Amount`、`REQ_NO` 拒绝）、字段类型不符（如小数或字符串金额）、`req_no` 为空或超过 32 个字符或含 U+FFFD、`amount < 1`、`subject` 为空、`notify_url` 为空或超过 512 个字符或含 U+FFFD 或不是 http / https 绝对地址。JSON 里的孤立代理转义（如 `\udc00`）解码后是 U+FFFD，因此 `req_no`、`notify_url` 里的这类转义也返回 400。其余未知字段忽略。400、401、500 的 body 为空、不签名，也不写 `mock_txn`；200 的响应按 BASE-13 渠道签名，时间戳取渠道当前时间。
+2. 按 `(PAY, req_no)` 幂等：先插入，唯一键 `uk_type_req_no` 冲突再读已有行，不做先查后插。已有行按以下顺序判断：已是 CLOSED → `REJECTED / ORDER_CLOSED`（不论金额）；金额一致 → `OK`，返回已有 `channel_txn_no` 和当前 `status`；金额不一致 → `REJECTED / PARAM_CONFLICT`。`REJECTED` 不带 `channel_txn_no`，`status` 为已有行的当前状态。重复受理不改原行，也不重复调度。插入报唯一键冲突以外的错误（提交结果不确定、请求被取消等）时，行可能已经提交：用不随请求取消的上下文、1 秒超时按 `(PAY, req_no)` 再读一次，读到本次写入的行（`channel_txn_no` 与本次生成的相同）就按新受理处理，调度并返回 `OK`（按该行回答，通常是 `PROCESSING`）；读不到、读失败或读到别的请求写入的行，返回 HTTP 500。
+3. 新交易状态 PROCESSING，`scenario` 由金额末两位决定（CH-06），返回 `channel_txn_no`（`MC` 前缀）。`created_at` 由渠道按自己的时钟写入（不用列默认值），截到毫秒。
+4. 自动完成：延迟 `delay = MOCK_DELAY_MIN_MS + hash(req_no) % (MOCK_DELAY_MAX_MS − MOCK_DELAY_MIN_MS)`，`hash` 为 `req_no` 的 CRC-32（IEEE）；MAX 等于 MIN 时 `delay = MIN`。默认取值范围 200–1999ms。到期时刻 = `created_at + delay`。到期后按场景置为终态：FAIL → FAILED；NEVER_FINISH 不调度、保持 PROCESSING；其余场景 → SUCCESS；未登记的场景值按 NORMAL。`finished_at` 写实际完成时间（截到毫秒，避免 DATETIME(3) 进位跨天）；SUCCESS 且场景不是 BILL_MISSING 时写入 `bill_date = finished_at 的东八区日期`，FAILED 不写。状态推进只用 CAS（`WHERE id = ? AND status = 'PROCESSING'`），已被关单等改走时不覆盖；写库失败 1 秒后重试。写库报错时结果不确定，记下这次尝试的 `status` 和 `finished_at`；之后重试的 CAS 得 0 行时按 id 读回，状态与 `finished_at` 和某次尝试一致就视为那次已生效，照常调用钩子；不一致（已被关单或别处改走）则不覆盖、不回调；读回失败 1 秒后再试。CAS 生效并提交后调用一次完成钩子，供 CH-05 发回调；钩子拿到的上下文不随完成任务结束而取消，自行设超时。
+5. 定时完成由进程内调度实现；进程重启时、开始接收请求前，按 id 分页扫描全部 PAY 的 PROCESSING 记录重建调度，已过期的立即完成。
 
 验收：
 
-- [ ] 同一 req_no 重复受理返回同一 `channel_txn_no`。
-- [ ] NORMAL 场景 2 秒内变为 SUCCESS；重启 channel_mock 后未完成的交易仍会完成。
+- [x] 同一 req_no 重复受理返回同一 `channel_txn_no`。
+- [x] NORMAL 场景 2 秒内变为 SUCCESS；重启 channel_mock 后未完成的交易仍会完成。
 
 #### CH-02 渠道查单
 
@@ -1383,7 +1383,7 @@ M3 完成 01、02、03、08，其余在 M4 完成（06、07 的账单部分在 C
 6. 渠道结果：
    - `OK`：回填 `channel_txn_no`（`WHERE channel_txn_no IS NULL`），返回 PAYING。
    - `REJECTED`：调用 PAY-04 推进为 FAILED（`fail_code = CHANNEL_REJECTED`，`fail_msg` 记录渠道 `reason`），返回 `30006` 和订单。
-   - 超时、网络错误、5xx：结果未知，不改状态，返回 PAYING，由回调或查单得到最终结果。
+   - 超时、网络错误、5xx：结果未知，不改状态，返回 PAYING，由回调或查单得到最终结果。其他非 200（含 400、401）也视为结果未知。
 
 验收：
 
@@ -2841,3 +2841,5 @@ ACC-10 在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（一
 | 2026-10-23 | v3.0 | BASE-13 审查修正：规则 8 的错误映射按签名、验签两侧区分。只有验签侧的 `ErrMalformedSignature`、`ErrSignatureMismatch`、`ErrInvalidField` 映射为 `20001` / `50001`；`ErrEmptyKey` 与签名侧的全部错误是本端配置或内部故障，平台服务按 `10003` 处理并打 ERROR 日志（不含密钥）。同步澄清 GW-01 第 3 条（签响应失败返回 500 / `10003`，不签名）、GW-03 第 3 条（商户密钥为空 500 / `10003`）、GW-06 第 1 条（渠道密钥为空 500 `FAIL`，渠道重试）、NTF-02 第 2 条（签名失败本次不发送，按发送失败重试）；接口文档 §7 同步一句，`docs/06-flows.md` CF-01、CF-02、CF-21 补出口。不新增错误码，不改签名算法 |
 | 2026-10-23 | v3.0 | BASE-13 规则 4 使用方补上 payment（商户通知、渠道请求）和 recon（账单请求），与报告的报文清单一致；文字修正，不改算法。 |
 | 2026-10-23 | v3.0 | BASE-14 口径澄清：入口为 `New`（32 字节）与 `NewFromBase64`（标准 base64，带填充）；版本字节取 1，与 BASE-03 种子密文相同；不使用 AAD（种子密文没有 AAD，加上会让已有密文失效）。失败返回固定文本哨兵 `ErrKeySize`、`ErrKeyEncoding`、`ErrMalformed`（短于 29 字节）、`ErrUnknownVersion`、`ErrDecrypt`，不含主密钥、明文、密文，平台服务按已有的 `10003` 处理。空明文可加密；明文最长 227 字节由 `VARBINARY(256)` 决定，本包不限长。种子改用 `pkg/secretbox`，删除 `internal/seed` 自带的加密实现，并在连库前校验主密钥。审查修正：`Box` 不保留传入的 key 切片，但内部 AES 轮密钥与主密钥等价，按密钥材料对待；版本字节不受 GCM tag 保护，靠 `Open` 显式拒绝非 1 版本，将来 v2 应把版本字节（及商户号）纳入 AAD。不改密文格式、表结构、接口和错误码 |
+| 2026-10-23 | v3.0 | CH-01 口径澄清（接口文档 2.1.0）：签名正确但参数非法返回 HTTP 400（body 为空、不签名、不写 `mock_txn`），列出参数校验项；时间窗 ±300 秒（含边界）外按验签失败 401。幂等判断顺序：CLOSED 优先返回 `ORDER_CLOSED`（不论金额），其次金额一致返回 `OK`、不一致返回 `PARAM_CONFLICT`；`REJECTED` 不带 `channel_txn_no`，`status` 为已有行当前状态。`hash` 定为 CRC-32（IEEE），MAX 等于 MIN 时取 MIN，默认范围 200–1999ms；到期时刻 = `created_at + delay`，`created_at` 由渠道时钟写入；`finished_at` 截到毫秒，`bill_date` 取其东八区日期，FAILED 与 BILL_MISSING 不写。状态推进用 CAS（表无 version 列，不加迁移），写库失败 1 秒后重试，CAS 提交后调用完成钩子（CH-05 使用）。NEVER_FINISH 不调度。重启扫描按 id 分页、在接收请求前完成。§2.3 目录 `channel_mock/` 增加 `biz/`。PAY-03 规则 6 补一句：渠道其他非 200（含 400、401）也视为结果未知 |
+| 2026-10-23 | v3.0 | CH-01 审查修正（接口文档 2.1.0 同步）：规则 1 的 400 补上 body 非法 UTF-8、顶层重复键、已知字段名大小写不对、`req_no` / `notify_url` 含 U+FFFD（含孤立代理转义）；时间窗按整秒比较。规则 2 补插入报非 1062 错误后的再读：读到本次写入的行就调度并返回 `OK`，否则 500。规则 4 补完成写库结果不确定时按 id 读回确认、一致才调用钩子，钩子上下文不随任务取消。不改资金流向、表结构与错误码 |
