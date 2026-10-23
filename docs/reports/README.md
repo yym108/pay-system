@@ -28,3 +28,4 @@
 | ACC-14 | 收款方转账分支 | 基础设施 | `3cfa46b` | 2026-10-21 | [ACC-14-transfer-in.md](ACC-14-transfer-in.md) |
 | ACC-10 | 余额核对 | 基础设施 | `db8c0db` | 2026-10-21 | [ACC-10-check-balance.md](ACC-10-check-balance.md) |
 | ACC-11 | account RPC 服务 | 基础设施 | `5c7e33a` | 2026-10-22 | [ACC-11-account-rpc.md](ACC-11-account-rpc.md) |
+| BASE-13 | 签名库 | 基础设施 | `46e1cc4` | 2026-10-23 | [BASE-13-sign.md](BASE-13-sign.md) |
