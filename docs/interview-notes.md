@@ -6,12 +6,12 @@
 
 - DATETIME(3) 写入时四舍五入，不是截断。东八区 23:59:59.9996 写进库会变成次日 00:00:00.000，而应用按原值算出的 `bill_date` 还是当天，同一行的两列对不上。应用先截到毫秒再写，`finished_at` 和 `bill_date` 用同一个截断后的值。
 - 到期时刻用 `created_at + delay`，delay 由 `req_no` 的 CRC-32 决定。重启扫描时不用另存 due，按同一公式就能还原；`created_at` 因此改由应用时钟写入，不用列默认值，否则测试时钟和数据库时钟会对不上。
-- 表上没有 version 列，状态推进只用 `WHERE id = ? AND status = 'PROCESSING'`。集成测试让 30 笔自动完成与外部关单 SQL 并发，一次运行里关单赢 11 笔、完成赢 19 笔，每笔都只有一方生效，关单赢的那笔没有 `finished_at`，也没调用钩子。
+- 表上没有 version 列，状态推进只用 `WHERE id = ? AND status = 'PROCESSING'`。集成测试让 30 笔自动完成与外部关单 SQL 并发，2026-10-23 在 `a3433af` 上跑了 4 轮，关单赢 / 完成赢分别是 8 / 22、12 / 18、11 / 19、6 / 24，每笔都只有一方生效，关单赢的那笔没有 `finished_at`，也没调用钩子。
 - Hertz 默认的 netpoll 传输层监听失败直接 panic，`Spin` 遇到 `Run` 错误也只打日志。服务改为先用 `net.ListenConfig` 自己监听、再交给标准库传输层，用 `SetCustomSignalWaiter` 把 `Run` 的错误带出来，端口被占用才能作为错误返回。
 - `encoding/json` 对签名过的 body 也“宽容”：非法 UTF-8 字节换成 U+FFFD，孤立代理转义 `\udc00` 也解码成 U+FFFD，字段名不区分大小写（连 `ſubject` 都算 `subject`），重复键取最后一个。业务层的 `utf8.ValidString` 因此永远为真。改为解码前 `utf8.Valid(body)`，再用 `Decoder.Token` 逐个读顶层键，拒绝重复键和大小写变体；`req_no`、`notify_url` 另外拒绝 U+FFFD。
 - 报错不等于没写进去。INSERT 或 CAS 在提交之后、返回之前断开时，调用方拿到错误，行却已生效。INSERT 这边用不随请求取消的上下文再读一次，`channel_txn_no` 是本次生成的就照常调度；CAS 这边记下每次尝试的 `finished_at`（毫秒，每次不同），重试得 0 行时按 id 读回比较，一致说明那次生效了，补调钩子，否则当作被关单。
 - 时间窗原来用 `Now().Sub(time.Unix(sec, 0))`，本地时间带毫秒、请求时间戳只有整秒，恰好 300 秒前的请求会算成 300.9 秒被拒。改成 `Now().Unix()` 与整秒比较。
-- 本机 compose 实测（2026-10-23）：NORMAL 受理到完成 1363ms；受理两笔后立即 SIGTERM（退出用时约 65ms），3 秒后重启，扫描到 2 笔并在启动当刻完成（都已过期）。
+- 本机 compose 实测（2026-10-23，`a3433af`，channel-mock 二进制跑在宿主机上）：`PA0000000000000000001` 算出的延迟 1832ms，库里 `finished_at − created_at` 为 1833ms（重跑一次 1834ms）；受理两笔后立即 SIGTERM，退出用时 30ms（重跑 33ms），约 10 秒后重启，扫描到 2 笔并在启动当刻完成（都已过期）。
 
 ## BASE-14 密钥加密
 

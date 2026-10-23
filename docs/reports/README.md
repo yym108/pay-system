@@ -30,3 +30,4 @@
 | ACC-11 | account RPC 服务 | 基础设施 | `5c7e33a` | 2026-10-22 | [ACC-11-account-rpc.md](ACC-11-account-rpc.md) |
 | BASE-13 | 签名库 | 基础设施 | `46e1cc4` | 2026-10-23 | [BASE-13-sign.md](BASE-13-sign.md) |
 | BASE-14 | 密钥加密 | 基础设施 | `20a5de7` | 2026-10-23 | [BASE-14-secretbox.md](BASE-14-secretbox.md) |
+| CH-01 | 渠道支付受理与自动完成 | 支付 | `a3433af` | 2026-10-23 | [CH-01-mock-pay.md](CH-01-mock-pay.md) |
