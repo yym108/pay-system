@@ -1,6 +1,6 @@
 # pay-system 流程图（状态机、泳道图、控制流图）
 
-> 版本：v2.12　最后修改：2026-10-26　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐。2026-10-21 按 ACC-14 口径改正 CF-33，CF-33 已对齐。2026-10-21 按 ACC-10 口径改正 CF-17，CF-17 已对齐。2026-10-23 按 BASE-13 规则 8 补 CF-01、CF-02、CF-21 的签名配置故障出口。2026-10-23 按 CH-01 口径改正 CF-22。2026-10-26 CF-23 注明防悬挂 CLOSED 记录 amount = 0。2026-10-26 渠道查单单独画 CF-38，CH-02 的控制流改指 CF-38；SL-02 仍留给以后的补偿
+> 版本：v2.13　最后修改：2026-10-26　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐。2026-10-21 按 ACC-14 口径改正 CF-33，CF-33 已对齐。2026-10-21 按 ACC-10 口径改正 CF-17，CF-17 已对齐。2026-10-23 按 BASE-13 规则 8 补 CF-01、CF-02、CF-21 的签名配置故障出口。2026-10-23 按 CH-01 口径改正 CF-22。2026-10-26 CF-23 注明防悬挂 CLOSED 记录 amount = 0。2026-10-26 渠道查单单独画 CF-38，CH-02 的控制流改指 CF-38；SL-02 仍留给以后的补偿。2026-10-26 按 CH-03 口径补全 CF-23 的验签、参数、CAS 与再读出口，六个业务结果不变
 > 依据：`docs/02-requirements.md` v3.0、`docs/03-conventions.md` v2.0、`docs/01-tech-decisions.md` D17–D21；`docs/05-api.md`、`docs/database.md` 尚未同步 v3.0，冲突处以需求文档为准
 > 用途：以图的形式确认全部功能性设计。图是需求的视图，规则冲突时以需求文档为准；需求变更后同步修改对应的图。
 
@@ -39,7 +39,7 @@ flowchart LR
 
 ### 0.3 渲染
 
-GitHub、GitLab、IDEA/GoLand（Markdown 插件）、VS Code（Markdown Preview Mermaid Support）可直接渲染。本文全部图已用 `@mermaid-js/mermaid-cli` 12.0.0 渲染校验。
+GitHub、GitLab、IDEA/GoLand（Markdown 插件）、VS Code（Markdown Preview Mermaid Support）可直接渲染。截至 v2.12，图已用 `@mermaid-js/mermaid-cli` 12.0.0 渲染校验。v2.13 的 CF-23 未再渲染：当前环境没有 `mmdc`，也不新增 SVG。
 
 ## 1. 覆盖矩阵
 
@@ -2056,21 +2056,52 @@ flowchart TD
 
 #### CF-23 渠道关单
 
-覆盖：CH-03。
+覆盖：CH-03。六个业务结果不变：`OK / CLOSED`、`ALREADY_PAID`（status 为 SUCCESS）、`OK / FAILED`。只查 `(PAY, req_no)`，同号 REFUND 不参与。
 
 ```mermaid
 flowchart TD
-    S(["POST /mockpay/v1/close(req_no)"]) --> ST{"mock_txn 当前状态"}
-    ST -->|"PROCESSING"| CR{"scenario = CLOSE_RACE"}
-    CR -->|"否"| CL["置为 CLOSED"]
-    CL --> R1(["OK / CLOSED"]):::ok
-    CR -->|"是"| SU["立即置为 SUCCESS 并触发回调"]
-    SU --> R2(["ALREADY_PAID"]):::ok
+    S(["POST /mockpay/v1/close"]) --> TS{"X-Mock-Timestamp 是十进制整数"}
+    TS -->|"否（含缺头）"| E401["HTTP 401<br/>空 body、不签名、不写库"]:::err
+    TS -->|"是"| KY{"渠道密钥为空"}
+    KY -->|"是"| E500K["HTTP 500<br/>空 body、不签名、不写库<br/>ERROR 日志不含密钥"]:::err
+    KY -->|"否"| SG{"签名相符<br/>且与本地时钟整秒相差不超过 300 秒"}
+    SG -->|"否"| E401
+    SG -->|"是"| PV{"参数合法<br/>req_no 非空、不超过 32 个字符、不含 U+FFFD<br/>JSON 规则同受理"}
+    PV -->|"否"| E400["HTTP 400<br/>空 body、不签名、不写库"]:::err
+    PV -->|"是"| RD["只读 (PAY, req_no)"]
+    RD -->|"读失败"| E500["HTTP 500<br/>空 body、不签名"]:::err
+    RD -->|"不存在"| INS["插入 CLOSED 防悬挂行<br/>amount = 0，scenario 与 notify_url 取列默认<br/>created_at 取渠道时钟<br/>不写 finished_at、bill_date<br/>不调度、不调钩子"]
+    INS -->|"成功"| R1(["OK / CLOSED"]):::ok
+    INS -->|"唯一键 1062"| RD2["再读 (PAY, req_no)"]
+    RD2 -->|"读失败或没有 PAY 行"| E500
+    RD2 -->|"读到行"| ST{"当前状态"}
+    INS -->|"其他写入错误"| RR{"不随请求取消、1 秒超时再读<br/>channel_txn_no 与本次相同"}
+    RR -->|"是"| R1
+    RR -->|"读不到、读失败或是别的行"| E500
+    RD -->|"有行"| ST
+    ST -->|"PROCESSING，场景不是 CLOSE_RACE"| CAS1["CAS 置 CLOSED<br/>WHERE id = ? AND status = PROCESSING<br/>不写 finished_at、bill_date，不调钩子"]
+    CAS1 -->|"1 行"| R1
+    CAS1 -->|"0 行，这次结果不是不确定"| MISS["按 id 再读，按新状态回答，不调钩子"]
+    CAS1 -->|"写入报错，结果不确定"| U1{"再读为 CLOSED<br/>且 finished_at 仍是写入前的值"}
+    U1 -->|"是"| R1
+    U1 -->|"读失败"| E500
+    U1 -->|"否"| MISS
+    ST -->|"PROCESSING 且 CLOSE_RACE"| CAS2["CAS 置 SUCCESS<br/>写 finished_at 与 bill_date<br/>与自动完成相同"]
+    CAS2 -->|"1 行，提交后"| HK["调用一次完成钩子<br/>上下文不随请求取消<br/>不 POST notify_url"]
+    HK --> R2(["ALREADY_PAID，status = SUCCESS"]):::ok
+    CAS2 -->|"0 行，这次结果不是不确定"| MISS
+    CAS2 -->|"写入报错，结果不确定"| U2{"再读为 SUCCESS<br/>且 finished_at 与这次一致"}
+    U2 -->|"是"| HK
+    U2 -->|"读失败"| E500
+    U2 -->|"否"| MISS
     ST -->|"SUCCESS"| R2
     ST -->|"CLOSED"| R1
     ST -->|"FAILED"| R3(["OK / FAILED"]):::ok
-    ST -->|"不存在"| TB["插入 CLOSED 记录（渠道侧防悬挂，amount = 0）<br/>之后同一 req_no 的受理返回 ORDER_CLOSED"]
-    TB --> R1
+    MISS -->|"SUCCESS"| R2
+    MISS -->|"CLOSED"| R1
+    MISS -->|"FAILED"| R3
+    MISS -->|"读失败或仍是 PROCESSING"| E500
+    R1 -.- NOTE["不取消已排的自动完成<br/>到期 CAS 得 0 行时不改回 SUCCESS、不再调钩子"]
     classDef ok fill:#e3f6e8,stroke:#2e7d32
     classDef err fill:#fde4e4,stroke:#c62828
     classDef fault fill:#fff4d6,stroke:#b8860b
@@ -2326,3 +2357,4 @@ R1–R14 来自 v1.x 绘图，已落入需求文档 v2.2；R15 起来自 v2.0 �
 | 2026-10-23 | v2.10 | CH-01：CF-22 补上参数非法 → HTTP 400（空 body、不签名、不写库），401 注明含缺签名头与时间窗 ±300 秒；PAY 幂等改为先 INSERT、唯一键冲突再读，已有行按 CLOSED 优先、再比金额判断，REJECTED 不带 channel_txn_no；NEVER_FINISH 不调度；due = created_at + delay，hash 为 CRC-32，默认 200–1999ms；完成走 CAS，0 行不覆盖不回调，写库失败 1 秒后重试；FAIL 不写 bill_date，bill_date 取东八区日期。审查修正：时间窗按整秒比较；参数校验补 UTF-8、重复键、字段名大小写、U+FFFD；INSERT 报非 1062 错误后再读一次，是本次写入的行就调度并返回 OK，否则 500；完成写库结果不确定后 CAS 得 0 行时按 id 读回，与某次尝试一致才回调，读回失败 1 秒后再试。不改资金流向 |
 | 2026-10-26 | v2.11 | CF-23：未知 req_no 关单插入的防悬挂 CLOSED 记录注明 `amount = 0`（用户确认）。不改分支与资金流向 |
 | 2026-10-26 | v2.12 | CH-02：新增 CF-38 渠道查单（验签 401、空密钥 500、参数 400、读库失败 500、无行 NOT_FOUND、有行 OK）。覆盖矩阵里 CH-02 的控制流从 CF-07 改为 CF-38，SL-02 保留给以后的补偿。CF-07 的分支不改，只把它的覆盖说明收回到 PAY-05。不改资金流向 |
+| 2026-10-26 | v2.13 | CH-03：CF-23 补上验签失败 401、空密钥 500、参数非法 400、读库或写库失败 500、CAS 得 0 行后再读并按新状态回答、普通关单不写 finished_at。六个业务结果不变。覆盖矩阵仍指向 CF-23。当前环境没有 mmdc，未渲染 SVG。不改资金流向 |

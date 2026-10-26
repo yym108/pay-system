@@ -37,13 +37,18 @@ type fakePayer struct {
 	res   biz.PayResult
 	err   error
 	panic bool
-	// validate 为真时模拟 biz 的参数校验：支付 amount 不是正数、查单 txn_type / req_no 非法，都返回 ErrInvalidRequest。
+	// validate 为真时模拟 biz 的参数校验：支付 amount 不是正数、查单 txn_type / req_no 非法、
+	// 关单 req_no 非法，都返回 ErrInvalidRequest。
 	validate bool
 	got      []biz.PayRequest
 	qres     biz.QueryResult
 	qerr     error
 	qgot     []biz.QueryRequest
 	queryCtx context.Context
+	cres     biz.CloseResult
+	cerr     error
+	cgot     []biz.CloseRequest
+	closeCtx context.Context
 }
 
 func (f *fakePayer) Pay(_ context.Context, req biz.PayRequest) (biz.PayResult, error) {
@@ -84,6 +89,27 @@ func (f *fakePayer) queryCalls() []biz.QueryRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]biz.QueryRequest(nil), f.qgot...)
+}
+
+func (f *fakePayer) Close(ctx context.Context, req biz.CloseRequest) (biz.CloseResult, error) {
+	f.mu.Lock()
+	f.cgot = append(f.cgot, req)
+	f.closeCtx = ctx
+	res, err := f.cres, f.cerr
+	f.mu.Unlock()
+	if f.panic {
+		panic("payer exploded")
+	}
+	if f.validate && !closeAccepted(req) {
+		return biz.CloseResult{}, fmt.Errorf("%w: req_no", biz.ErrInvalidRequest)
+	}
+	return res, err
+}
+
+func (f *fakePayer) closeCalls() []biz.CloseRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]biz.CloseRequest(nil), f.cgot...)
 }
 
 func testClock() *clock.Fake {

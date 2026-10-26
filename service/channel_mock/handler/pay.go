@@ -1,4 +1,4 @@
-// Package handler 是模拟渠道的 HTTP 入口（Hertz），见 docs/05-api.md §9。受理见 CH-01，查单见 CH-02。
+// Package handler 是模拟渠道的 HTTP 入口（Hertz），见 docs/05-api.md §9。受理见 CH-01，查单见 CH-02，关单见 CH-03。
 //
 // 请求与 200 响应都用渠道密钥签名（§3.5）。验签失败（含时间窗外）401，参数非法 400，
 // 内部错误 500；非 200 的响应 body 为空、不签名。日志不含密钥、签名值和请求体。
@@ -32,6 +32,8 @@ const (
 	PayPath = "/mockpay/v1/pay"
 	// QueryPath 是查单路由。
 	QueryPath = "/mockpay/v1/query"
+	// ClosePath 是关单路由。
+	ClosePath = "/mockpay/v1/close"
 )
 
 const (
@@ -43,10 +45,11 @@ const (
 )
 
 // Payer 是渠道 HTTP 的业务入口，由 biz.Service 实现。
-// 受理和查单共用这一份依赖，New 不用再增加参数。
+// 受理、查单和关单共用这一份依赖，New 不用再增加参数。
 type Payer interface {
 	Pay(ctx context.Context, req biz.PayRequest) (biz.PayResult, error)
 	Query(ctx context.Context, req biz.QueryRequest) (biz.QueryResult, error)
+	Close(ctx context.Context, req biz.CloseRequest) (biz.CloseResult, error)
 }
 
 // Handler 持有路由依赖。
@@ -66,6 +69,7 @@ func (h *Handler) Register(srv *server.Hertz) {
 	srv.Use(recoverPanic)
 	srv.POST(PayPath, h.handlePay)
 	srv.POST(QueryPath, h.handleQuery)
+	srv.POST(ClosePath, h.handleClose)
 }
 
 func recoverPanic(ctx context.Context, c *app.RequestContext) {

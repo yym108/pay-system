@@ -162,6 +162,7 @@ func (d *DB) GetByID(ctx context.Context, id uint64) (Txn, bool, error) {
 
 // Finish 把 PROCESSING 推进到终态（CAS）。返回 true 表示本次生效且事务已提交；
 // false 表示该行已不是 PROCESSING（例如已被关单），什么也没改。
+// 这条 SQL 会写 finished_at。普通关单不要用它，用 Close。
 func (d *DB) Finish(ctx context.Context, f Finish) (bool, error) {
 	var bill any
 	if f.BillDate != "" {
@@ -185,6 +186,30 @@ WHERE id = ? AND status = 'PROCESSING'`,
 	})
 	if err != nil {
 		return false, fmt.Errorf("finish mock_txn: %w", err)
+	}
+	return applied, nil
+}
+
+// Close 把 PROCESSING 置为 CLOSED（CAS）。不写 finished_at、不写 bill_date。
+// 返回 true 表示本次生效且事务已提交；false 表示该行已不是 PROCESSING，什么也没改。
+func (d *DB) Close(ctx context.Context, id uint64) (bool, error) {
+	applied := false
+	err := dbx.WithTx(ctx, d.db, func(tx *sqlx.Tx) error {
+		res, err := tx.ExecContext(ctx, `
+UPDATE mock_txn SET status = ?
+WHERE id = ? AND status = 'PROCESSING'`, StatusClosed, id)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		applied = n == 1
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("close mock_txn: %w", err)
 	}
 	return applied, nil
 }

@@ -1,4 +1,4 @@
-// Package biz 是模拟渠道的业务逻辑：支付受理与自动完成（CH-01）、查单（CH-02）。
+// Package biz 是模拟渠道的业务逻辑：支付受理与自动完成（CH-01）、查单（CH-02）、关单（CH-03）。
 //
 // 幂等靠 uk_type_req_no：先 INSERT，冲突（1062）再读已有行，不做先查后插。
 // 状态推进只用 CAS（WHERE id = ? AND status = 'PROCESSING'），事务内不调用外部系统；
@@ -41,7 +41,7 @@ const (
 	rereadTimeout = time.Second
 )
 
-// ErrInvalidRequest 表示受理或查单的参数非法。handler 映射为 HTTP 400，不写库。
+// ErrInvalidRequest 表示受理、查单或关单的参数非法。handler 映射为 HTTP 400，不写库。
 var ErrInvalidRequest = errors.New("biz: invalid pay request")
 
 // errDuplicateWithoutRow 表示 INSERT 报 1062 但按 (PAY, req_no) 读不到行，
@@ -59,8 +59,10 @@ type Store interface {
 	Get(ctx context.Context, txnType, reqNo string) (dal.Txn, bool, error)
 	// GetByID 按主键读一行，不存在返回 ok = false。
 	GetByID(ctx context.Context, id uint64) (dal.Txn, bool, error)
-	// Finish 只在 PROCESSING 时推进终态，返回是否生效（已提交）。
+	// Finish 只在 PROCESSING 时推进终态，返回是否生效（已提交）。会写 finished_at。
 	Finish(ctx context.Context, f dal.Finish) (bool, error)
+	// Close 只在 PROCESSING 时置为 CLOSED，返回是否生效（已提交）。不写 finished_at、bill_date。
+	Close(ctx context.Context, id uint64) (bool, error)
 	// ListProcessing 按 id 升序分页列出 PROCESSING 行。
 	ListProcessing(ctx context.Context, txnType string, afterID uint64, limit int) ([]dal.Txn, error)
 }
@@ -86,7 +88,7 @@ type Options struct {
 	OnFinished func(ctx context.Context, t dal.Txn)
 }
 
-// Service 是模拟渠道的支付受理与自动完成。并发安全。
+// Service 是模拟渠道的支付受理、查单与关单。并发安全。
 type Service struct {
 	store Store
 	ids   IDGenerator

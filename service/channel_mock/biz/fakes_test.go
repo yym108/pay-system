@@ -36,8 +36,21 @@ type memStore struct {
 	finishErrs []error
 	// finishCommitErrs 依次在 Finish 生效后返回，模拟提交结果不确定。
 	finishCommitErrs []error
+	// closeErrs 依次作为 Close 的返回错误（不改行），用完后正常执行。
+	closeErrs []error
+	// closeCommitErrs 依次在 Close 生效后返回，模拟提交结果不确定。
+	closeCommitErrs []error
+	closes          int
 	// hideOnGet 为真时 Get 报告不存在，模拟 1062 后读不到行。
 	hideOnGet bool
+	// hideGets 让接下来若干次 Get 报告不存在，用来走“先读没有、插入撞上 1062、再读”的路径。
+	hideGets int
+	// getErrs 依次作为 Get 的错误；nil 元素表示这一次不失败，继续往下读。
+	getErrs []error
+	// beforeClose 在 Close 加锁前调用，用来在 CAS 前改掉状态。
+	beforeClose func()
+	// beforeGetByID 在 GetByID 加锁前调用。
+	beforeGetByID func()
 	// afterInsert 在 Insert 写入行之后、返回之前调用（不持锁），用来模拟请求在提交后被取消。
 	afterInsert func()
 }
@@ -89,8 +102,19 @@ func (m *memStore) Get(ctx context.Context, txnType, reqNo string) (dal.Txn, boo
 	if err := ctx.Err(); err != nil {
 		return dal.Txn{}, false, err
 	}
+	if len(m.getErrs) > 0 {
+		err := m.getErrs[0]
+		m.getErrs = m.getErrs[1:]
+		if err != nil {
+			return dal.Txn{}, false, err
+		}
+	}
 	if m.getErr != nil {
 		return dal.Txn{}, false, m.getErr
+	}
+	if m.hideGets > 0 {
+		m.hideGets--
+		return dal.Txn{}, false, nil
 	}
 	if m.hideOnGet {
 		return dal.Txn{}, false, nil
@@ -130,7 +154,41 @@ func (m *memStore) Finish(_ context.Context, f dal.Finish) (bool, error) {
 	return false, nil
 }
 
+func (m *memStore) Close(_ context.Context, id uint64) (bool, error) {
+	if m.beforeClose != nil {
+		m.beforeClose()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.closes++
+	if len(m.closeErrs) > 0 {
+		err := m.closeErrs[0]
+		m.closeErrs = m.closeErrs[1:]
+		return false, err
+	}
+	for _, r := range m.rows {
+		if r.ID != id {
+			continue
+		}
+		if r.Status != dal.StatusProcessing {
+			return false, nil
+		}
+		// 普通关单只改状态，不写 finished_at、bill_date。
+		r.Status = dal.StatusClosed
+		if len(m.closeCommitErrs) > 0 {
+			err := m.closeCommitErrs[0]
+			m.closeCommitErrs = m.closeCommitErrs[1:]
+			return false, err
+		}
+		return true, nil
+	}
+	return false, nil
+}
+
 func (m *memStore) GetByID(ctx context.Context, id uint64) (dal.Txn, bool, error) {
+	if m.beforeGetByID != nil {
+		m.beforeGetByID()
+	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.getByIDs++
@@ -196,6 +254,22 @@ func (m *memStore) setStatus(reqNo, status string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.rows[key(dal.TxnTypePay, reqNo)].Status = status
+}
+
+func (m *memStore) update(reqNo string, fn func(*dal.Txn)) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	fn(m.rows[key(dal.TxnTypePay, reqNo)])
+}
+
+func (m *memStore) rowOf(txnType, reqNo string) (dal.Txn, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	r, ok := m.rows[key(txnType, reqNo)]
+	if !ok {
+		return dal.Txn{}, false
+	}
+	return *r, true
 }
 
 func (m *memStore) count() int {

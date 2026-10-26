@@ -177,6 +177,60 @@ func TestFinishCAS(t *testing.T) {
 	}
 }
 
+// Close 是普通关单的 CAS：只把 PROCESSING 改成 CLOSED，不写 finished_at、bill_date。
+func TestCloseCAS(t *testing.T) {
+	ctx, raw, db := openDB(t)
+	id, err := db.Insert(ctx, sample("PA001"))
+	if err != nil {
+		t.Fatal(testkit.Redact(err))
+	}
+	ok, err := db.Close(ctx, id)
+	if err != nil || !ok {
+		t.Fatalf("close = %v, %v", ok, err)
+	}
+	var finished, bill sql.NullTime
+	if err := raw.QueryRowContext(ctx, `SELECT finished_at, bill_date FROM mock_txn WHERE id = ?`, id).Scan(&finished, &bill); err != nil {
+		t.Fatal(err)
+	}
+	got, _, err := db.Get(ctx, TxnTypePay, "PA001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusClosed || finished.Valid || bill.Valid {
+		t.Fatalf("after close: %+v finished=%v bill=%v", got, finished, bill)
+	}
+	ok, err = db.Close(ctx, id)
+	if err != nil || ok {
+		t.Fatalf("second close = %v, %v", ok, err)
+	}
+	if err := raw.QueryRowContext(ctx, `SELECT finished_at, bill_date FROM mock_txn WHERE id = ?`, id).Scan(&finished, &bill); err != nil {
+		t.Fatal(err)
+	}
+	if finished.Valid || bill.Valid || got.Status != StatusClosed {
+		t.Fatal("second close wrote finished_at or bill_date")
+	}
+
+	paid := sample("PA002")
+	id2, err := db.Insert(ctx, paid)
+	if err != nil {
+		t.Fatal(testkit.Redact(err))
+	}
+	finishedAt := time.Date(2026, 10, 23, 10, 0, 0, 123000000, shanghaiTZ)
+	if ok, err := db.Finish(ctx, Finish{ID: id2, Status: StatusSuccess, FinishedAt: finishedAt, BillDate: "2026-10-23"}); err != nil || !ok {
+		t.Fatalf("finish = %v, %v", ok, err)
+	}
+	if ok, err := db.Close(ctx, id2); err != nil || ok {
+		t.Fatalf("close success = %v, %v", ok, err)
+	}
+	got, _, err = db.Get(ctx, TxnTypePay, "PA002")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Status != StatusSuccess || !got.FinishedAt.Equal(finishedAt) || got.BillDate != "2026-10-23" {
+		t.Fatalf("close changed a finished row: %+v", got)
+	}
+}
+
 // ListProcessing 按 id 升序分页，只返回该类型的 PROCESSING。
 func TestListProcessingKeyset(t *testing.T) {
 	ctx, raw, db := openDB(t)

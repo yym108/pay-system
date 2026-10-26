@@ -366,7 +366,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | ACC-12 | 热点账户优化 | P2 | — | — | CUT（拆为 OPT-03、OPT-05） |
 | CH-01 | 渠道支付受理与自动完成 | P0 | M3 | BASE-13、BASE-03 | DONE |
 | CH-02 | 渠道查单 | P0 | M3 | CH-01 | DONE |
-| CH-03 | 渠道关单 | P0 | M3 | CH-01 | TODO |
+| CH-03 | 渠道关单 | P0 | M3 | CH-01 | DONE |
 | CH-04 | 渠道退款受理与查询 | P0 | M4 | CH-01 | TODO |
 | CH-05 | 渠道异步回调 | P0 | M3 | CH-01 | TODO |
 | CH-06 | 确定性故障场景 | P0 | M3–M4 | CH-01~05 | TODO |
@@ -1211,23 +1211,34 @@ channel_mock 代表外部支付机构，拥有独立 schema `pay_channel_mock`�
 
 `P0 · M3 · 依赖：CH-01`
 
-接口：`POST /mockpay/v1/close`，入参 `req_no`。
+接口：`POST /mockpay/v1/close`，只入参 `req_no`。只查 `(PAY, req_no)`。同号的 REFUND 行不关、不当成已存在。
 
 规则：
 
 | 当前状态 | 结果 |
 |---|---|
-| PROCESSING | 置为 CLOSED，返回 `OK / CLOSED`（CLOSE_RACE 场景除外） |
-| PROCESSING 且场景为 CLOSE_RACE | 立即置为 SUCCESS 并触发回调，返回 `ALREADY_PAID` |
-| SUCCESS | 返回 `ALREADY_PAID` |
-| CLOSED | 返回 `OK / CLOSED` |
-| FAILED | 返回 `OK / FAILED` |
-| 不存在 | 插入一条 CLOSED 记录后返回 `OK / CLOSED`，之后同一 req_no 的受理请求返回 `ORDER_CLOSED`（渠道侧防悬挂）。关单请求不带金额，这条记录的 `amount` 固定写 0，`scenario`、`notify_url` 取列默认值。`amount = 0` 只出现在这种记录上；它不进入账单（只有 SUCCESS 有 `bill_date`），查单（CH-02）原样返回 0 |
+| PROCESSING，场景不是 CLOSE_RACE | CAS 置为 CLOSED，返回 `OK / CLOSED`。不写 `finished_at`，不写 `bill_date`，不调用完成钩子 |
+| PROCESSING 且场景为 CLOSE_RACE | CAS 置为 SUCCESS，写 `finished_at`（渠道时钟，截到毫秒）和 `bill_date`（该时间的东八区日期，与自动完成相同）。提交成功后调用一次完成钩子。返回 `ALREADY_PAID`，status 为 SUCCESS |
+| SUCCESS | 不改行，不调用钩子，返回 `ALREADY_PAID`，status 为 SUCCESS |
+| CLOSED | 不改行，返回 `OK / CLOSED` |
+| FAILED | 不改行，返回 `OK / FAILED` |
+| 不存在 | 插入 CLOSED 防悬挂行，返回 `OK / CLOSED`。之后同一 req_no 的受理返回 `ORDER_CLOSED`（不论金额）。这条记录 `txn_type = PAY`，`amount` 固定写 0，`channel_txn_no` 用 `MC` 前缀，`created_at` 用渠道时钟，`scenario`、`notify_url` 取列默认值（`NORMAL`、空串）。不写 `finished_at`、`bill_date`。不调度，不调用钩子。请求里的未知字段忽略，不能拿来填这行。`amount = 0` 只出现在这种记录上；它不进入账单（只有 SUCCESS 有 `bill_date`），查单（CH-02）原样返回 0 |
+
+补充（不改变上表的六个结果）：
+
+1. 先读。没有行就插入。唯一键冲突（1062）再读，按读到的当前状态走上表，不当成错误抛出。
+2. INSERT 报非 1062：不随请求取消，1 秒后再读。`channel_txn_no` 与本次生成的相同，就按墓碑已写入返回 `OK / CLOSED`。读不到、读失败或是别的行，返回原错误（HTTP 500）。
+3. PROCESSING 的更新只用 CAS：`WHERE id = ? AND status = 'PROCESSING'`。影响 0 行就按 id 再读，按新状态回答。0 行且没有“这次写入结果不确定”的尝试时，不调用钩子。
+4. 写入报错、结果不确定时：记下这次想写的状态和 `finished_at`。再读到的行与这次尝试一致，普通关单视为已生效（不调钩子）；CLOSE_RACE 与这次的 SUCCESS 和 `finished_at` 一致才调一次钩子。不一致则按读到的状态回答，不覆盖、不调钩子。读回失败返回 500，不猜测。
+5. 完成钩子在 CAS 确认提交之后调用，事务内不调用。钩子使用的 context 不随本次请求取消。本次“触发回调”只调用钩子，不 POST `notify_url`，不增加 `notify_sent_count`（HTTP 回调是 CH-05）。
+6. 关单不取消已经排好的自动完成定时器。定时器之后触发时 CAS 得 0 行，不得把 CLOSED 改回 SUCCESS，也不得再调钩子。CLOSE_RACE 若自动完成已经先写成 SUCCESS，关单只返回 `ALREADY_PAID`，钩子次数保持自动完成那一次。
+7. 重复关单不改金额、状态、流水号、`finished_at`、`notify_sent_count`。
+8. HTTP 与受理、查单相同：验签失败 401；密钥为空 500（ERROR 日志不含密钥）；参数非法 400；内部错误 500。400/401/500 body 为空、不签名、不写库。只有 200 带渠道签名。200 的 body 只有 `result` 和 `status`。`req_no` 非空、不超过 32 个字符、不含 U+FFFD。
 
 验收：
 
-- [ ] 表中每一行一个测试。
-- [ ] 对未知 req_no 关单后再受理，返回 `ORDER_CLOSED`。
+- [x] 表中每一行一个测试。
+- [x] 对未知 req_no 关单后再受理，返回 `ORDER_CLOSED`。
 
 #### CH-04 渠道退款受理与查询
 
@@ -2850,3 +2861,4 @@ ACC-10 在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（一
 | 2026-10-23 | v3.0 | CH-01 审查修正（接口文档 2.1.0 同步）：规则 1 的 400 补上 body 非法 UTF-8、顶层重复键、已知字段名大小写不对、`req_no` / `notify_url` 含 U+FFFD（含孤立代理转义）；时间窗按整秒比较。规则 2 补插入报非 1062 错误后的再读：读到本次写入的行就调度并返回 `OK`，否则 500。规则 4 补完成写库结果不确定时按 id 读回确认、一致才调用钩子，钩子上下文不随任务取消。不改资金流向、表结构与错误码 |
 | 2026-10-26 | v3.0 | CH-03 口径确认（用户决定）：对未知 `req_no` 关单插入的防悬挂 CLOSED 记录 `amount` 固定为 0，`scenario`、`notify_url` 取列默认值；该记录不进入账单，查单原样返回 0。同步接口文档 2.1.1 §9.4、`docs/database.md` `mock_txn.amount`、`docs/06-flows.md` CF-23。不改表结构与状态机 |
 | 2026-10-26 | v3.0 | CH-02 口径澄清：查单按 `(txn_type, req_no)` 只读当前行，不更新、不调度、不调用完成钩子、不发回调，也不按 DROP_NOTIFY、SLOW 等场景藏状态或推迟返回。无行时 `result` 为 `NOT_FOUND`，不插入，body 不带 status、amount、channel_txn_no、finished_at。找到时返回 status、amount（含 0）、channel_txn_no；finished_at 仅当列非 NULL，格式为约定 §4 的 RFC 3339 毫秒、东八区 `+08:00`，PROCESSING 因该列为空而省略。PAY 与 REFUND 不串单。平台错误码 `10002` 与渠道 `result = NOT_FOUND` 不是一回事。同步接口文档 2.1.2 §9.3。不改资金流向、表结构与错误码 |
+| 2026-10-26 | v3.0 | CH-03 口径澄清：只关 `(PAY, req_no)`，同号 REFUND 不参与。PROCESSING 且不是 CLOSE_RACE 时 CAS 置 CLOSED，不写 `finished_at`、`bill_date`，不调钩子。CLOSE_RACE 时 CAS 置 SUCCESS，写 `finished_at` 与 `bill_date`（与自动完成相同），提交后调用一次完成钩子，返回 `ALREADY_PAID`。SUCCESS / CLOSED / FAILED 不改行。未知 `req_no` 插入 `amount = 0` 的 CLOSED 防悬挂行。1062 与结果不确定的写入再读后按当前状态回答。不新增错误码，不改表结构，不发 HTTP 回调 |
