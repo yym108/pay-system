@@ -33,3 +33,4 @@
 | CH-01 | 渠道支付受理与自动完成 | 支付 | `a3433af` | 2026-10-23 | [CH-01-mock-pay.md](CH-01-mock-pay.md) |
 | CH-02 | 渠道查单 | 支付 | `6eec88d` | 2026-10-26 | [CH-02-query.md](CH-02-query.md) |
 | CH-03 | 渠道关单 | 支付 | `ffbecce` | 2026-10-26 | [CH-03-close.md](CH-03-close.md) |
+| CH-05 | 渠道异步回调 | 支付 | `9ef8bff` | 2026-10-26 | [CH-05-notify.md](CH-05-notify.md) |
