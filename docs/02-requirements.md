@@ -1,6 +1,6 @@
 # pay-system 需求规格说明书
 
-> 版本：v3.0　最后修改：2026-10-23
+> 版本：v3.0　最后修改：2026-10-26
 > 状态：v3.0 重新聚焦支付、退款、转账三条资金链路（变更见 §8.2），2026-10-13 已确认为开发基线；开发按 §3 功能点总表逐项推进
 > 上游：`PROJECT_GOALS.md`（目标与约束）、`docs/01-tech-decisions.md`（技术选型与版本）
 > 关联：`docs/03-conventions.md`（编号、错误码、命名等全局约定）、`docs/05-api.md`（接口文档）、`docs/database.md`（表结构）、`docs/04-dev-plan.md`（周计划）、`docs/06-flows.md`（流程图）
@@ -1217,7 +1217,7 @@ channel_mock 代表外部支付机构，拥有独立 schema `pay_channel_mock`�
 | SUCCESS | 返回 `ALREADY_PAID` |
 | CLOSED | 返回 `OK / CLOSED` |
 | FAILED | 返回 `OK / FAILED` |
-| 不存在 | 插入一条 CLOSED 记录后返回 `OK / CLOSED`，之后同一 req_no 的受理请求返回 `ORDER_CLOSED`（渠道侧防悬挂） |
+| 不存在 | 插入一条 CLOSED 记录后返回 `OK / CLOSED`，之后同一 req_no 的受理请求返回 `ORDER_CLOSED`（渠道侧防悬挂）。关单请求不带金额，这条记录的 `amount` 固定写 0，`scenario`、`notify_url` 取列默认值。`amount = 0` 只出现在这种记录上；它不进入账单（只有 SUCCESS 有 `bill_date`），查单（CH-02）原样返回 0 |
 
 验收：
 
@@ -2843,3 +2843,4 @@ ACC-10 在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（一
 | 2026-10-23 | v3.0 | BASE-14 口径澄清：入口为 `New`（32 字节）与 `NewFromBase64`（标准 base64，带填充）；版本字节取 1，与 BASE-03 种子密文相同；不使用 AAD（种子密文没有 AAD，加上会让已有密文失效）。失败返回固定文本哨兵 `ErrKeySize`、`ErrKeyEncoding`、`ErrMalformed`（短于 29 字节）、`ErrUnknownVersion`、`ErrDecrypt`，不含主密钥、明文、密文，平台服务按已有的 `10003` 处理。空明文可加密；明文最长 227 字节由 `VARBINARY(256)` 决定，本包不限长。种子改用 `pkg/secretbox`，删除 `internal/seed` 自带的加密实现，并在连库前校验主密钥。审查修正：`Box` 不保留传入的 key 切片，但内部 AES 轮密钥与主密钥等价，按密钥材料对待；版本字节不受 GCM tag 保护，靠 `Open` 显式拒绝非 1 版本，将来 v2 应把版本字节（及商户号）纳入 AAD。不改密文格式、表结构、接口和错误码 |
 | 2026-10-23 | v3.0 | CH-01 口径澄清（接口文档 2.1.0）：签名正确但参数非法返回 HTTP 400（body 为空、不签名、不写 `mock_txn`），列出参数校验项；时间窗 ±300 秒（含边界）外按验签失败 401。幂等判断顺序：CLOSED 优先返回 `ORDER_CLOSED`（不论金额），其次金额一致返回 `OK`、不一致返回 `PARAM_CONFLICT`；`REJECTED` 不带 `channel_txn_no`，`status` 为已有行当前状态。`hash` 定为 CRC-32（IEEE），MAX 等于 MIN 时取 MIN，默认范围 200–1999ms；到期时刻 = `created_at + delay`，`created_at` 由渠道时钟写入；`finished_at` 截到毫秒，`bill_date` 取其东八区日期，FAILED 与 BILL_MISSING 不写。状态推进用 CAS（表无 version 列，不加迁移），写库失败 1 秒后重试，CAS 提交后调用完成钩子（CH-05 使用）。NEVER_FINISH 不调度。重启扫描按 id 分页、在接收请求前完成。§2.3 目录 `channel_mock/` 增加 `biz/`。PAY-03 规则 6 补一句：渠道其他非 200（含 400、401）也视为结果未知 |
 | 2026-10-23 | v3.0 | CH-01 审查修正（接口文档 2.1.0 同步）：规则 1 的 400 补上 body 非法 UTF-8、顶层重复键、已知字段名大小写不对、`req_no` / `notify_url` 含 U+FFFD（含孤立代理转义）；时间窗按整秒比较。规则 2 补插入报非 1062 错误后的再读：读到本次写入的行就调度并返回 `OK`，否则 500。规则 4 补完成写库结果不确定时按 id 读回确认、一致才调用钩子，钩子上下文不随任务取消。不改资金流向、表结构与错误码 |
+| 2026-10-26 | v3.0 | CH-03 口径确认（用户决定）：对未知 `req_no` 关单插入的防悬挂 CLOSED 记录 `amount` 固定为 0，`scenario`、`notify_url` 取列默认值；该记录不进入账单，查单原样返回 0。同步接口文档 2.1.1 §9.4、`docs/database.md` `mock_txn.amount`、`docs/06-flows.md` CF-23。不改表结构与状态机 |

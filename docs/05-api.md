@@ -2,9 +2,9 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 2.1.0 |
+| 文档版本 | 2.1.1 |
 | API 版本 | v1（路径前缀 `/v1`） |
-| 最后修改 | 2026-10-23 |
+| 最后修改 | 2026-10-26 |
 | 状态 | 设计基线，实现须与本文一致 |
 
 关联文档：需求 `docs/02-requirements.md`（各接口的业务规则以功能点为准）、约定 `docs/03-conventions.md`（错误码、单号、时间格式）。
@@ -45,6 +45,7 @@
 | 2.0.7 | 2026-10-21 | 文字对齐：CheckBalance 是进程内方法，自己打开 REPEATABLE READ 一致性快照，不用 `dbx.WithTx`，RPC handler 仍是 ACC-11。业务错误列仍只有 `40001`。`passed = false` 不是错误码。商户模式忽略 `expect_quiescent`。最后一条分录是 `max(id)`。一次失败的完成调用把进程内计数加 1。不新增字段、不改错误码数字、不改 IDL。§1 各接口的“最后修改”不变 | AccountService.CheckBalance、`POST /admin/accounts/check` | ACC-10 |
 | 2.0.8 | 2026-10-22 | 文字对齐：AccountService 的 Kitex handler 由 ACC-11 提供，只做协议转换和错误码转换。业务错误走 TTHeader 的 `BizStatusError`；本服务没有携带对象的错误，响应不加 `biz_code`。`POST /admin/accounts/check` 仍是 GW-07，不在 account 进程上提供。不新增字段、不改错误码数字、不改 IDL。§1 各接口的“最后修改”不变 | §8.4、§10、§10.1 | ACC-11 |
 | 2.0.9 | 2026-10-23 | 文字澄清：渠道回调入口的网关渠道密钥为空属于平台内部错误，返回 500 / `FAIL` 让渠道重试，不按渠道签名错误返回 401。签名算法、请求头、§3.7 测试向量不变；不新增字段、不改错误码数字、不改 IDL | §7 | BASE-13、GW-06 |
+| 2.1.1 | 2026-10-26 | 文字澄清：对未知 `req_no` 关单时插入的防悬挂 CLOSED 记录 `amount` 固定为 0，查单原样返回 0。不新增字段、不改状态与结果枚举、不改签名 | §9.4 | CH-03、CH-02 |
 | 2.1.0 | 2026-10-23 | 模拟渠道新增 HTTP 400：签名正确但参数非法（body 不是单个 JSON 对象、字段类型不符、必填项为空或超长、`amount < 1`、`notify_url` 不是 http / https 绝对地址、body 不是合法 UTF-8、顶层重复键、已知字段名大小写不对、`req_no` / `notify_url` 含 U+FFFD）时返回 400，body 为空、不签名、不受理。支付受理补充：已有行时 CLOSED 优先返回 `ORDER_CLOSED`（不论金额），其次比较金额；`REJECTED` 不带 `channel_txn_no`，`status` 为已有行当前状态；时间窗 ±300 秒含边界，按整秒比较；渠道写库结果不确定但行已提交时仍返回 `OK`。平台侧把渠道的其他非 200（含 400、401）视为结果未知（PAY-03）。不改签名算法与已有字段 | §9.1、§9.2 | CH-01、PAY-03 |
 
 ## 1. 接口总览
@@ -77,7 +78,7 @@
 | `POST /admin/recon/run` 执行对账 | §8.2 | `ReconService.RunBatch` | REC-01、REC-08 | 1.0.0 | 2026-10-12 |
 | `POST /admin/outbox/replay` 事件重放 | §8.3 | `PaymentService.ReplayEvent` | MQ-05 | 1.0.0 | 2026-10-12 |
 | `POST /admin/accounts/check` 余额核对 | §8.4 | `AccountService.CheckBalance` | ACC-10 | 1.0.0 | 2026-10-12 |
-| 模拟渠道 `pay` / `query` / `close` / `refund` / `bills` | §9.2–§9.6 | — | CH-01~04、CH-08 | 1.0.0 | 2026-10-23 |
+| 模拟渠道 `pay` / `query` / `close` / `refund` / `bills` | §9.2–§9.6 | — | CH-01~04、CH-08 | 1.0.0 | 2026-10-26 |
 | 模拟渠道回调 | §9.7 | — | CH-05 | 1.0.0 | 2026-10-12 |
 | 模拟渠道管理 `config` / `bill-inject` | §9.8 | — | CH-07、CH-09 | 1.0.0 | 2026-10-12 |
 | AccountService / PaymentService / ReconService | §10 | — | 见各方法 | 1.0.0 | 2026-10-12 |
@@ -724,7 +725,7 @@ ACC-10 交付进程内 `biz.CheckBalance`。RPC handler 由 ACC-11 转发到该�
 
 `POST /mockpay/v1/close` · CH-03
 
-请求：`req_no`。响应：`result`（`OK` / `ALREADY_PAID`）、`status`。未知 `req_no` 也返回 `OK / CLOSED`，并阻止之后的受理。
+请求：`req_no`。响应：`result`（`OK` / `ALREADY_PAID`）、`status`。未知 `req_no` 也返回 `OK / CLOSED`，并阻止之后的受理。渠道为此插入的防悬挂 CLOSED 记录 `amount` 固定为 0（关单请求不带金额），查单对这种记录返回 `amount = 0`。
 
 ### 9.5 退款受理
 

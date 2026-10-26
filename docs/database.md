@@ -1,6 +1,6 @@
 # Database Schema
 
-> **Last updated:** 2026-10-23
+> **Last updated:** 2026-10-26
 > **Database engine/version:** MySQL 8.4.11（InnoDB，utf8mb4 / utf8mb4_bin）
 > **Schema sources:** `migrations/account/000001_init.up.sql`（`pay_account_0` 与 `pay_account_1` 各执行一次）、`migrations/payment/000001_init.up.sql`、`migrations/payment/000002_merchant_fee_rate.up.sql`、`migrations/recon/000001_init.up.sql`、`migrations/channel_mock/000001_init.up.sql`。设计稿 `docs/schema/schema_draft.sql` 已在 BASE-03 删除。golang-migrate 还会在每个 schema 创建工具表 `schema_migrations`（`version`、`dirty`），不在业务清单里。
 > **Owner:** pay-system 项目作者
@@ -909,7 +909,7 @@
 | `txn_type` | VARCHAR(16) | 否 | — | `uk_type_req_no` 1 | PAY / REFUND | 测试 |
 | `req_no` | VARCHAR(32) | 否 | — | `uk_type_req_no` 2 | 平台请求号，受理幂等 | 测试 |
 | `orig_req_no` | VARCHAR(32) | 是 | NULL | — | 退款对应的原支付 req_no | 测试 |
-| `amount` | BIGINT | 否 | — | — | | 测试 |
+| `amount` | BIGINT | 否 | — | — | 交易金额（分）。受理写入的行 ≥ 1；对未知 `req_no` 关单时插入的防悬挂 CLOSED 行固定为 0（关单请求不带金额，CH-03）。不加 CHECK | 测试 |
 | `status` | VARCHAR(16) | 否 | — | `ck_mock_status` | 只用 CAS 推进：`WHERE id = ? AND status = 'PROCESSING'`（无 version 列） | 测试 |
 | `scenario` | VARCHAR(32) | 否 | `'NORMAL'` | — | 由金额末两位决定的故障场景（CH-06） | 测试 |
 | `notify_url` | VARCHAR(512) | 否 | `''` | — | | 测试 |
@@ -956,6 +956,7 @@
 | 2026-10-20 | 无（仅文档） | `account.balance`、`account.frozen_amount`、`account.version`、`account.status`、`account_freeze.txn_no`、`account_freeze.version` 的说明 | ACC-06：确认成功时冻结单 `version` +1 且写入 `txn_no`；商户 `balance` 与 `frozen_amount` 同减，两边账户 `version` 各 +1。无 DDL，不改 CHECK，不改迁移 | 未执行迁移 |
 | 2026-10-23 | 无（仅文档） | `merchant.app_secret_cipher` 的说明 | BASE-14：说明补上版本字节（取 1）、无 AAD、由 `pkg/secretbox` 读写、明文最长 227 字节。种子改用 `pkg/secretbox`，格式不变，已有密文不回填。无 DDL，不改迁移 | 未执行迁移；`go test -tags integration ./internal/dbmigrate` 用 `pkg/secretbox` 解开种子入库的三个商户密文 |
 | 2026-10-23 | 无（仅文档） | `mock_txn`（说明） | CH-01：`created_at` 由应用时钟显式写入，`finished_at` 截到毫秒，`bill_date` 为其东八区日期且只在 SUCCESS（非 BILL_MISSING）时写；`status` 只用 CAS 推进，不加 version 列；启动扫描 PROCESSING 走主键分页。新增两处读：INSERT 报非 1062 错误后按 `uk_type_req_no` 再读，完成写库结果不确定后按主键读回。无 DDL | 未执行迁移 |
+| 2026-10-26 | 无（仅文档） | `mock_txn.amount`（说明） | 用户确认：对未知 `req_no` 关单插入的防悬挂 CLOSED 行 `amount` 固定为 0（CH-03）；受理写入的行 ≥ 1。不加 CHECK，无 DDL | 未执行迁移 |
 
 ## 6. Open Questions
 
