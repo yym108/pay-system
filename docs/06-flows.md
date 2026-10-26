@@ -1,6 +1,6 @@
 # pay-system 流程图（状态机、泳道图、控制流图）
 
-> 版本：v2.11　最后修改：2026-10-26　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐。2026-10-21 按 ACC-14 口径改正 CF-33，CF-33 已对齐。2026-10-21 按 ACC-10 口径改正 CF-17，CF-17 已对齐。2026-10-23 按 BASE-13 规则 8 补 CF-01、CF-02、CF-21 的签名配置故障出口。2026-10-23 按 CH-01 口径改正 CF-22。2026-10-26 CF-23 注明防悬挂 CLOSED 记录 amount = 0
+> 版本：v2.12　最后修改：2026-10-26　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐。2026-10-21 按 ACC-14 口径改正 CF-33，CF-33 已对齐。2026-10-21 按 ACC-10 口径改正 CF-17，CF-17 已对齐。2026-10-23 按 BASE-13 规则 8 补 CF-01、CF-02、CF-21 的签名配置故障出口。2026-10-23 按 CH-01 口径改正 CF-22。2026-10-26 CF-23 注明防悬挂 CLOSED 记录 amount = 0。2026-10-26 渠道查单单独画 CF-38，CH-02 的控制流改指 CF-38；SL-02 仍留给以后的补偿
 > 依据：`docs/02-requirements.md` v3.0、`docs/03-conventions.md` v2.0、`docs/01-tech-decisions.md` D17–D21；`docs/05-api.md`、`docs/database.md` 尚未同步 v3.0，冲突处以需求文档为准
 > 用途：以图的形式确认全部功能性设计。图是需求的视图，规则冲突时以需求文档为准；需求变更后同步修改对应的图。
 
@@ -60,7 +60,7 @@ GitHub、GitLab、IDEA/GoLand（Markdown 插件）、VS Code（Markdown Preview 
 | ACC-11 RPC 服务 | — | 各泳道中的 account 调用 | — |
 | ~~ACC-12 热点账户~~（CUT，拆为 OPT-03、OPT-05） | — | — | — |
 | CH-01 受理与自动完成、CH-04 退款受理 | SM-09 | SL-01、SL-05 | CF-22 |
-| CH-02 查单 | — | SL-02 | CF-07 |
+| CH-02 查单 | — | SL-02 | CF-38 |
 | CH-03 关单 | SM-09 | SL-04 | CF-23 |
 | CH-05 回调、CH-06 故障场景、CH-07 全局配置 | — | SL-01、SL-02、SL-03 | CF-24 |
 | CH-08 账单下载、CH-09 账单注入 | — | SL-09 | CF-25 |
@@ -1193,7 +1193,7 @@ flowchart TD
 
 #### CF-07 查单补偿
 
-覆盖：PAY-05、CH-02。
+覆盖：PAY-05。渠道查单自己的分支见 CF-38。
 
 ```mermaid
 flowchart TD
@@ -2031,6 +2031,29 @@ flowchart TD
     classDef fault fill:#fff4d6,stroke:#b8860b
 ```
 
+#### CF-38 渠道查单
+
+覆盖：CH-02。只读，不改 `mock_txn`。SL-02 仍是以后 PAY-05 的补偿泳道，不在这里。
+
+```mermaid
+flowchart TD
+    S(["POST /mockpay/v1/query"]) --> TS{"X-Mock-Timestamp 是十进制整数"}
+    TS -->|"否（含缺头）"| E401["HTTP 401<br/>空 body、不签名、不写库"]:::err
+    TS -->|"是"| KY{"渠道密钥为空"}
+    KY -->|"是"| E500K["HTTP 500<br/>空 body、不签名、不写库<br/>ERROR 日志不含密钥"]:::err
+    KY -->|"否"| SG{"签名相符<br/>且与本地时钟整秒相差不超过 300 秒"}
+    SG -->|"否"| E401
+    SG -->|"是"| PV{"参数合法<br/>txn_type 为 PAY 或 REFUND<br/>req_no 非空、不超过 32 个字符、不含 U+FFFD<br/>JSON 规则同受理"}
+    PV -->|"否"| E400["HTTP 400<br/>空 body、不签名、不写库"]:::err
+    PV -->|"是"| RD["按 txn_type、req_no 只读 mock_txn<br/>不更新、不调度、不看 scenario"]
+    RD -->|"读失败"| E500["HTTP 500<br/>空 body、不签名"]:::err
+    RD -->|"无行"| NF(["result = NOT_FOUND<br/>不带其他字段，不插入"]):::ok
+    RD -->|"有行"| OK(["result = OK<br/>status、amount（含 0）、channel_txn_no<br/>finished_at 仅当列非 NULL"]):::ok
+    classDef ok fill:#e3f6e8,stroke:#2e7d32
+    classDef err fill:#fde4e4,stroke:#c62828
+    classDef fault fill:#fff4d6,stroke:#b8860b
+```
+
 #### CF-23 渠道关单
 
 覆盖：CH-03。
@@ -2302,3 +2325,4 @@ R1–R14 来自 v1.x 绘图，已落入需求文档 v2.2；R15 起来自 v2.0 �
 | 2026-10-23 | v2.9 | BASE-13 规则 8：CF-01 在验签处补商户密钥为空 → 500 / 10003 的出口，验签“否”注明含格式非法与字段含换行（仍为 20001），并补平台签名响应失败 → 500 / 10003（不签名）；CF-02 补网关渠道密钥为空 → HTTP 500 FAIL（10003）、不调用 payment；CF-21 补平台签名失败 → 本次不发送、按发送失败进入重试与 DEAD 判定。不改资金流向 |
 | 2026-10-23 | v2.10 | CH-01：CF-22 补上参数非法 → HTTP 400（空 body、不签名、不写库），401 注明含缺签名头与时间窗 ±300 秒；PAY 幂等改为先 INSERT、唯一键冲突再读，已有行按 CLOSED 优先、再比金额判断，REJECTED 不带 channel_txn_no；NEVER_FINISH 不调度；due = created_at + delay，hash 为 CRC-32，默认 200–1999ms；完成走 CAS，0 行不覆盖不回调，写库失败 1 秒后重试；FAIL 不写 bill_date，bill_date 取东八区日期。审查修正：时间窗按整秒比较；参数校验补 UTF-8、重复键、字段名大小写、U+FFFD；INSERT 报非 1062 错误后再读一次，是本次写入的行就调度并返回 OK，否则 500；完成写库结果不确定后 CAS 得 0 行时按 id 读回，与某次尝试一致才回调，读回失败 1 秒后再试。不改资金流向 |
 | 2026-10-26 | v2.11 | CF-23：未知 req_no 关单插入的防悬挂 CLOSED 记录注明 `amount = 0`（用户确认）。不改分支与资金流向 |
+| 2026-10-26 | v2.12 | CH-02：新增 CF-38 渠道查单（验签 401、空密钥 500、参数 400、读库失败 500、无行 NOT_FOUND、有行 OK）。覆盖矩阵里 CH-02 的控制流从 CF-07 改为 CF-38，SL-02 保留给以后的补偿。CF-07 的分支不改，只把它的覆盖说明收回到 PAY-05。不改资金流向 |

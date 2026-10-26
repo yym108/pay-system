@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 2.1.1 |
+| 文档版本 | 2.1.2 |
 | API 版本 | v1（路径前缀 `/v1`） |
 | 最后修改 | 2026-10-26 |
 | 状态 | 设计基线，实现须与本文一致 |
@@ -45,6 +45,7 @@
 | 2.0.7 | 2026-10-21 | 文字对齐：CheckBalance 是进程内方法，自己打开 REPEATABLE READ 一致性快照，不用 `dbx.WithTx`，RPC handler 仍是 ACC-11。业务错误列仍只有 `40001`。`passed = false` 不是错误码。商户模式忽略 `expect_quiescent`。最后一条分录是 `max(id)`。一次失败的完成调用把进程内计数加 1。不新增字段、不改错误码数字、不改 IDL。§1 各接口的“最后修改”不变 | AccountService.CheckBalance、`POST /admin/accounts/check` | ACC-10 |
 | 2.0.8 | 2026-10-22 | 文字对齐：AccountService 的 Kitex handler 由 ACC-11 提供，只做协议转换和错误码转换。业务错误走 TTHeader 的 `BizStatusError`；本服务没有携带对象的错误，响应不加 `biz_code`。`POST /admin/accounts/check` 仍是 GW-07，不在 account 进程上提供。不新增字段、不改错误码数字、不改 IDL。§1 各接口的“最后修改”不变 | §8.4、§10、§10.1 | ACC-11 |
 | 2.0.9 | 2026-10-23 | 文字澄清：渠道回调入口的网关渠道密钥为空属于平台内部错误，返回 500 / `FAIL` 让渠道重试，不按渠道签名错误返回 401。签名算法、请求头、§3.7 测试向量不变；不新增字段、不改错误码数字、不改 IDL | §7 | BASE-13、GW-06 |
+| 2.1.2 | 2026-10-26 | 文字澄清：查单只读当前行，不按场景藏状态或推迟返回。无行时 `result` 为 `NOT_FOUND`，不带 status、amount、channel_txn_no、finished_at，也不插入行。找到时返回 status、amount（含 0）、channel_txn_no；finished_at 仅当列非 NULL，格式为 RFC 3339 毫秒、东八区 `+08:00`，PROCESSING 省略。不新增字段、不改枚举、不改签名、不加错误码 | §9.3 | CH-02 |
 | 2.1.1 | 2026-10-26 | 文字澄清：对未知 `req_no` 关单时插入的防悬挂 CLOSED 记录 `amount` 固定为 0，查单原样返回 0。不新增字段、不改状态与结果枚举、不改签名 | §9.4 | CH-03、CH-02 |
 | 2.1.0 | 2026-10-23 | 模拟渠道新增 HTTP 400：签名正确但参数非法（body 不是单个 JSON 对象、字段类型不符、必填项为空或超长、`amount < 1`、`notify_url` 不是 http / https 绝对地址、body 不是合法 UTF-8、顶层重复键、已知字段名大小写不对、`req_no` / `notify_url` 含 U+FFFD）时返回 400，body 为空、不签名、不受理。支付受理补充：已有行时 CLOSED 优先返回 `ORDER_CLOSED`（不论金额），其次比较金额；`REJECTED` 不带 `channel_txn_no`，`status` 为已有行当前状态；时间窗 ±300 秒含边界，按整秒比较；渠道写库结果不确定但行已提交时仍返回 `OK`。平台侧把渠道的其他非 200（含 400、401）视为结果未知（PAY-03）。不改签名算法与已有字段 | §9.1、§9.2 | CH-01、PAY-03 |
 
@@ -717,9 +718,21 @@ ACC-10 交付进程内 `biz.CheckBalance`。RPC handler 由 ACC-11 转发到该�
 | 请求字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
 | `txn_type` | string | 是 | `PAY` / `REFUND` |
-| `req_no` | string | 是 | 平台请求号 |
+| `req_no` | string | 是 | 平台请求号，1–32 个字符，不含 U+FFFD |
 
-响应：`result`（`OK` / `NOT_FOUND`）、`status`、`amount`、`channel_txn_no`、`finished_at`（终态时）。
+参数不满足上表时返回 400（§9.1）。body 的解析规则与 §9.2 相同：合法 UTF-8、单个 JSON 对象、之后只允许空白、顶层重复键拒绝、已知字段名大小写不对拒绝、类型不符拒绝、未知字段忽略、`null` 或缺失按空值再校验。
+
+查单只读 `(txn_type, req_no)` 的当前行，不更新、不插入、不调度，也不看 scenario。DROP_NOTIFY、SLOW 等回调场景不改变返回的状态，也不推迟响应。`txn_type = REFUND` 只按该键查询：没有退款行就是 `NOT_FOUND`，即使同 `req_no` 的 PAY 行存在。
+
+| 响应字段 | 说明 |
+|---|---|
+| `result` | `OK` / `NOT_FOUND` |
+| `status` | 找到时的当前状态；`NOT_FOUND` 省略 |
+| `amount` | 找到时的金额（int64 分，含 0）；`NOT_FOUND` 省略 |
+| `channel_txn_no` | 找到时返回；`NOT_FOUND` 省略 |
+| `finished_at` | 仅当该列非 NULL。RFC 3339 毫秒、东八区固定偏移 `+08:00`（例 `2026-10-12T10:00:00.000+08:00`）。PROCESSING 的该列为空，所以省略。`NOT_FOUND` 省略 |
+
+`NOT_FOUND` 的 body 只有 `{"result":"NOT_FOUND"}`。这里的 `result = NOT_FOUND` 不是平台错误码 `10002`。
 
 ### 9.4 关单
 

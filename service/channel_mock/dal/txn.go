@@ -17,9 +17,10 @@ import (
 	"github.com/yym108/pay-system/pkg/money"
 )
 
-// txn_type 取值。
+// txn_type 取值，与 ck_mock_type 一致。
 const (
-	TxnTypePay = "PAY"
+	TxnTypePay    = "PAY"
+	TxnTypeRefund = "REFUND"
 )
 
 // status 取值，与 ck_mock_status 一致。

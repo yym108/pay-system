@@ -1,4 +1,4 @@
-// Package biz 是模拟渠道的业务逻辑：支付受理（CH-01）与按场景自动完成。
+// Package biz 是模拟渠道的业务逻辑：支付受理与自动完成（CH-01）、查单（CH-02）。
 //
 // 幂等靠 uk_type_req_no：先 INSERT，冲突（1062）再读已有行，不做先查后插。
 // 状态推进只用 CAS（WHERE id = ? AND status = 'PROCESSING'），事务内不调用外部系统；
@@ -41,7 +41,7 @@ const (
 	rereadTimeout = time.Second
 )
 
-// ErrInvalidRequest 表示请求参数非法。handler 映射为 HTTP 400，不写库。
+// ErrInvalidRequest 表示受理或查单的参数非法。handler 映射为 HTTP 400，不写库。
 var ErrInvalidRequest = errors.New("biz: invalid pay request")
 
 // errDuplicateWithoutRow 表示 INSERT 报 1062 但按 (PAY, req_no) 读不到行，

@@ -937,7 +937,7 @@
 #### Operational Notes
 
 - **Backfill/migration considerations:** 账单注入（CH-09）的记录直接写入本表，`req_no` 使用平台不存在的单号。
-- **Query patterns:** 受理先 INSERT，`uk_type_req_no` 冲突再按 `(txn_type, req_no)` 读已有行；INSERT 报其他错误时也按 `(txn_type, req_no)` 再读一次，确认本次的行是否已提交。自动完成写库结果不确定时，按主键 `id` 读回该行，比较 `status`、`finished_at` 确认那次是否已生效。进程启动时按主键分页扫描 `status = 'PROCESSING'` 重建调度；没有 `status` 索引，只在启动时执行，表很小时可接受。
+- **Query patterns:** 受理先 INSERT，`uk_type_req_no` 冲突再按 `(txn_type, req_no)` 读已有行；INSERT 报其他错误时也按 `(txn_type, req_no)` 再读一次，确认本次的行是否已提交。自动完成写库结果不确定时，按主键 `id` 读回该行，比较 `status`、`finished_at` 确认那次是否已生效。进程启动时按主键分页扫描 `status = 'PROCESSING'` 重建调度；没有 `status` 索引，只在启动时执行，表很小时可接受。查单（CH-02）按 `(txn_type, req_no)` 只读，不更新行，不存在也不插入。
 - **Compatibility/deprecation notes:** 无。
 
 ## 5. Change History
@@ -957,6 +957,7 @@
 | 2026-10-23 | 无（仅文档） | `merchant.app_secret_cipher` 的说明 | BASE-14：说明补上版本字节（取 1）、无 AAD、由 `pkg/secretbox` 读写、明文最长 227 字节。种子改用 `pkg/secretbox`，格式不变，已有密文不回填。无 DDL，不改迁移 | 未执行迁移；`go test -tags integration ./internal/dbmigrate` 用 `pkg/secretbox` 解开种子入库的三个商户密文 |
 | 2026-10-23 | 无（仅文档） | `mock_txn`（说明） | CH-01：`created_at` 由应用时钟显式写入，`finished_at` 截到毫秒，`bill_date` 为其东八区日期且只在 SUCCESS（非 BILL_MISSING）时写；`status` 只用 CAS 推进，不加 version 列；启动扫描 PROCESSING 走主键分页。新增两处读：INSERT 报非 1062 错误后按 `uk_type_req_no` 再读，完成写库结果不确定后按主键读回。无 DDL | 未执行迁移 |
 | 2026-10-26 | 无（仅文档） | `mock_txn.amount`（说明） | 用户确认：对未知 `req_no` 关单插入的防悬挂 CLOSED 行 `amount` 固定为 0（CH-03）；受理写入的行 ≥ 1。不加 CHECK，无 DDL | 未执行迁移 |
+| 2026-10-26 | 无（仅文档） | `mock_txn`（查询说明） | CH-02：查单按 `(txn_type, req_no)` 只读，不更新行，不存在也不插入。无 DDL | 未执行迁移 |
 
 ## 6. Open Questions
 

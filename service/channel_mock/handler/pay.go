@@ -1,4 +1,4 @@
-// Package handler 是模拟渠道的 HTTP 入口（Hertz），见 docs/05-api.md §9。
+// Package handler 是模拟渠道的 HTTP 入口（Hertz），见 docs/05-api.md §9。受理见 CH-01，查单见 CH-02。
 //
 // 请求与 200 响应都用渠道密钥签名（§3.5）。验签失败（含时间窗外）401，参数非法 400，
 // 内部错误 500；非 200 的响应 body 为空、不签名。日志不含密钥、签名值和请求体。
@@ -27,8 +27,12 @@ import (
 	"github.com/yym108/pay-system/service/channel_mock/biz"
 )
 
-// PayPath 是支付受理路由。
-const PayPath = "/mockpay/v1/pay"
+const (
+	// PayPath 是支付受理路由。
+	PayPath = "/mockpay/v1/pay"
+	// QueryPath 是查单路由。
+	QueryPath = "/mockpay/v1/query"
+)
 
 const (
 	// timestampWindowSec 是 X-Mock-Timestamp 与本地时钟的最大偏差（秒，§3.5，含边界）。
@@ -38,9 +42,11 @@ const (
 	requestTimeout = 3 * time.Second
 )
 
-// Payer 是支付受理，由 biz.Service 实现。
+// Payer 是渠道 HTTP 的业务入口，由 biz.Service 实现。
+// 受理和查单共用这一份依赖，New 不用再增加参数。
 type Payer interface {
 	Pay(ctx context.Context, req biz.PayRequest) (biz.PayResult, error)
+	Query(ctx context.Context, req biz.QueryRequest) (biz.QueryResult, error)
 }
 
 // Handler 持有路由依赖。
@@ -59,6 +65,7 @@ func New(pay Payer, key []byte, clk clock.Clock) *Handler {
 func (h *Handler) Register(srv *server.Hertz) {
 	srv.Use(recoverPanic)
 	srv.POST(PayPath, h.handlePay)
+	srv.POST(QueryPath, h.handleQuery)
 }
 
 func recoverPanic(ctx context.Context, c *app.RequestContext) {
@@ -150,7 +157,19 @@ func (h *Handler) verify(ctx context.Context, c *app.RequestContext, body []byte
 	return http.StatusOK
 }
 
-// decodePay 严格解析 JSON（§9.2）。以下都算非法：
+// decodePay 严格解析支付受理 JSON（§9.2）。规则见 decodeObject。
+func decodePay(body []byte) (payBody, bool) {
+	var in payBody
+	ok := decodeObject(body, map[string]any{
+		"req_no":     &in.ReqNo,
+		"amount":     &in.Amount,
+		"subject":    &in.Subject,
+		"notify_url": &in.NotifyURL,
+	})
+	return in, ok
+}
+
+// decodeObject 严格解析一个 JSON 对象。以下都算非法：
 //   - body 不是合法 UTF-8（encoding/json 会把非法字节换成 U+FFFD，必须在解码前拒绝）；
 //   - 顶层不是单个对象，或对象之后还有非空白数据；
 //   - 同一个键出现两次（按转义还原后的键名比较，未知字段也算）；
@@ -159,52 +178,45 @@ func (h *Handler) verify(ctx context.Context, c *app.RequestContext, body []byte
 //   - 已知字段类型不符（小数、字符串金额、溢出等）。
 //
 // 其余未知字段忽略（含嵌套），缺字段或 null 留零值交给业务校验。
-func decodePay(body []byte) (payBody, bool) {
+func decodeObject(body []byte, fields map[string]any) bool {
 	if !utf8.Valid(body) {
-		return payBody{}, false
-	}
-	var in payBody
-	fields := map[string]any{
-		"req_no":     &in.ReqNo,
-		"amount":     &in.Amount,
-		"subject":    &in.Subject,
-		"notify_url": &in.NotifyURL,
+		return false
 	}
 	dec := json.NewDecoder(bytes.NewReader(body))
-	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
-		return payBody{}, false
+	tok, err := dec.Token()
+	if err != nil || tok != json.Delim('{') {
+		return false
 	}
 	seen := map[string]bool{}
 	for dec.More() {
-		tok, err := dec.Token()
+		tok, err = dec.Token()
 		if err != nil {
-			return payBody{}, false
+			return false
 		}
 		name, ok := tok.(string)
 		if !ok || seen[name] {
-			return payBody{}, false
+			return false
 		}
 		seen[name] = true
 		dst, known := fields[name]
 		if !known {
 			if foldsToField(name, fields) {
-				return payBody{}, false
+				return false
 			}
 			var skip json.RawMessage
 			dst = &skip
 		}
-		if err := dec.Decode(dst); err != nil {
-			return payBody{}, false
+		if err = dec.Decode(dst); err != nil {
+			return false
 		}
 	}
-	if tok, err := dec.Token(); err != nil || tok != json.Delim('}') {
-		return payBody{}, false
+	tok, err = dec.Token()
+	if err != nil || tok != json.Delim('}') {
+		return false
 	}
 	// 对象之后只允许空白：再读一个 token 必须正好是 EOF。
-	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
-		return payBody{}, false
-	}
-	return in, true
+	_, err = dec.Token()
+	return errors.Is(err, io.EOF)
 }
 
 // foldsToField 判断 name 是否是某个已知字段的大小写变体（Unicode 简单折叠，与 encoding/json 一致）。
@@ -217,17 +229,18 @@ func foldsToField(name string, fields map[string]any) bool {
 	return false
 }
 
-// writeSigned 写 200 和签名头。签名失败时改为 500。
-func (h *Handler) writeSigned(ctx context.Context, c *app.RequestContext, v payResponse) int {
+// writeSigned 写 200 和签名头。v 按 encoding/json 编码，调用方用 omitempty 控制省略字段。
+// 签名失败时改为 500。受理响应仍用 payResponse：REJECTED 的空 channel_txn_no 被省略，status 始终在。
+func (h *Handler) writeSigned(ctx context.Context, c *app.RequestContext, v any) int {
 	out, err := json.Marshal(v)
 	if err != nil {
-		slog.ErrorContext(ctx, "marshal mock pay response failed")
+		slog.ErrorContext(ctx, "marshal mock response failed")
 		return bare(c, http.StatusInternalServerError)
 	}
 	ts := sign.FormatTimestamp(h.clk.Now())
 	sig, err := sign.SignChannel(h.key, sign.ChannelMessage{Timestamp: ts, Body: out})
 	if err != nil {
-		slog.ErrorContext(ctx, "sign mock pay response failed")
+		slog.ErrorContext(ctx, "sign mock response failed")
 		return bare(c, http.StatusInternalServerError)
 	}
 	c.Response.Header.Set(sign.HeaderMockTimestamp, ts)

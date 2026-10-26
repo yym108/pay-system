@@ -365,7 +365,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | ACC-11 | account RPC 服务 | P0 | M2 | ACC-01~07、ACC-14、BASE-12 | DONE |
 | ACC-12 | 热点账户优化 | P2 | — | — | CUT（拆为 OPT-03、OPT-05） |
 | CH-01 | 渠道支付受理与自动完成 | P0 | M3 | BASE-13、BASE-03 | DONE |
-| CH-02 | 渠道查单 | P0 | M3 | CH-01 | TODO |
+| CH-02 | 渠道查单 | P0 | M3 | CH-01 | DONE |
 | CH-03 | 渠道关单 | P0 | M3 | CH-01 | TODO |
 | CH-04 | 渠道退款受理与查询 | P0 | M4 | CH-01 | TODO |
 | CH-05 | 渠道异步回调 | P0 | M3 | CH-01 | TODO |
@@ -1191,16 +1191,21 @@ channel_mock 代表外部支付机构，拥有独立 schema `pay_channel_mock`�
 
 #### CH-02 渠道查单
 
-`P0 · M3 · 依赖：CH-01`
+`P0 · M3 · 依赖：CH-01 · 表：mock_txn`
 
 接口：`POST /mockpay/v1/query`，入参 `txn_type`、`req_no`。
 
-规则：返回当前状态、金额、`channel_txn_no`、`finished_at`；不存在返回 `NOT_FOUND`。查单结果不受 DROP_NOTIFY、SLOW 等回调场景影响。
+规则：
+
+1. 验签、空密钥、参数非法和内部错误的 HTTP 状态与 CH-01 规则 1 相同：验签失败（缺头、时间戳不是十进制整数、签名不符、与本地时钟整秒相差超过 300 秒）401；密钥为空 500，ERROR 日志不含密钥；签名正确但参数非法 400；内部错误 500。400、401、500 的 body 为空、不签名、不写库。200 的响应按渠道签名，时间戳取注入时钟。JSON 解析规则与受理相同。`txn_type` 只接受 `PAY` 或 `REFUND`；`req_no` 非空、不超过 32 个字符、不含 U+FFFD。
+2. 按 `(txn_type, req_no)` 只读当前行，不更新、不插入、不调度、不调用完成钩子、不发回调。查单不看 scenario：DROP_NOTIFY、SLOW 等不改变返回的状态，也不推迟响应。
+3. 找到时 `result` 为 `OK`，并带 `status`、`amount`（int64 分，含 0）、`channel_txn_no`。`finished_at` 仅当列非 NULL，格式为约定 §4 的 RFC 3339 毫秒、东八区固定偏移 `+08:00`。PROCESSING 的该列为空，所以省略；省略看的是列，不是状态名。
+4. 无行时 `result` 为 `NOT_FOUND`，body 只有这个字段，不插入。`REFUND` 与 `PAY` 按键分开：没有退款行就是 `NOT_FOUND`，即使同 `req_no` 的 PAY 行存在。平台错误码 `10002` 与这里的 `result = NOT_FOUND` 不是一回事。
 
 验收：
 
-- [ ] DROP_NOTIFY 场景下查单返回 SUCCESS。
-- [ ] 未受理的 req_no 返回 `NOT_FOUND`。
+- [x] DROP_NOTIFY 场景下查单返回 SUCCESS。
+- [x] 未受理的 req_no 返回 `NOT_FOUND`。
 
 #### CH-03 渠道关单
 
@@ -2844,3 +2849,4 @@ ACC-10 在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（一
 | 2026-10-23 | v3.0 | CH-01 口径澄清（接口文档 2.1.0）：签名正确但参数非法返回 HTTP 400（body 为空、不签名、不写 `mock_txn`），列出参数校验项；时间窗 ±300 秒（含边界）外按验签失败 401。幂等判断顺序：CLOSED 优先返回 `ORDER_CLOSED`（不论金额），其次金额一致返回 `OK`、不一致返回 `PARAM_CONFLICT`；`REJECTED` 不带 `channel_txn_no`，`status` 为已有行当前状态。`hash` 定为 CRC-32（IEEE），MAX 等于 MIN 时取 MIN，默认范围 200–1999ms；到期时刻 = `created_at + delay`，`created_at` 由渠道时钟写入；`finished_at` 截到毫秒，`bill_date` 取其东八区日期，FAILED 与 BILL_MISSING 不写。状态推进用 CAS（表无 version 列，不加迁移），写库失败 1 秒后重试，CAS 提交后调用完成钩子（CH-05 使用）。NEVER_FINISH 不调度。重启扫描按 id 分页、在接收请求前完成。§2.3 目录 `channel_mock/` 增加 `biz/`。PAY-03 规则 6 补一句：渠道其他非 200（含 400、401）也视为结果未知 |
 | 2026-10-23 | v3.0 | CH-01 审查修正（接口文档 2.1.0 同步）：规则 1 的 400 补上 body 非法 UTF-8、顶层重复键、已知字段名大小写不对、`req_no` / `notify_url` 含 U+FFFD（含孤立代理转义）；时间窗按整秒比较。规则 2 补插入报非 1062 错误后的再读：读到本次写入的行就调度并返回 `OK`，否则 500。规则 4 补完成写库结果不确定时按 id 读回确认、一致才调用钩子，钩子上下文不随任务取消。不改资金流向、表结构与错误码 |
 | 2026-10-26 | v3.0 | CH-03 口径确认（用户决定）：对未知 `req_no` 关单插入的防悬挂 CLOSED 记录 `amount` 固定为 0，`scenario`、`notify_url` 取列默认值；该记录不进入账单，查单原样返回 0。同步接口文档 2.1.1 §9.4、`docs/database.md` `mock_txn.amount`、`docs/06-flows.md` CF-23。不改表结构与状态机 |
+| 2026-10-26 | v3.0 | CH-02 口径澄清：查单按 `(txn_type, req_no)` 只读当前行，不更新、不调度、不调用完成钩子、不发回调，也不按 DROP_NOTIFY、SLOW 等场景藏状态或推迟返回。无行时 `result` 为 `NOT_FOUND`，不插入，body 不带 status、amount、channel_txn_no、finished_at。找到时返回 status、amount（含 0）、channel_txn_no；finished_at 仅当列非 NULL，格式为约定 §4 的 RFC 3339 毫秒、东八区 `+08:00`，PROCESSING 因该列为空而省略。PAY 与 REFUND 不串单。平台错误码 `10002` 与渠道 `result = NOT_FOUND` 不是一回事。同步接口文档 2.1.2 §9.3。不改资金流向、表结构与错误码 |
