@@ -214,6 +214,31 @@ WHERE id = ? AND status = 'PROCESSING'`, StatusClosed, id)
 	return applied, nil
 }
 
+// AddNotifySent 在单独的短事务里把 notify_sent_count 条件加一。
+// expected 是这次发送前读到的计数。返回 true 表示本次占到发送名额且事务已提交，调用方再发 HTTP。
+// 不改 status，也不写其他列。影响 0 行时返回 false、err = nil，不覆盖状态。
+func (d *DB) AddNotifySent(ctx context.Context, id uint64, expected int) (bool, error) {
+	applied := false
+	err := dbx.WithTx(ctx, d.db, func(tx *sqlx.Tx) error {
+		res, err := tx.ExecContext(ctx, `
+UPDATE mock_txn SET notify_sent_count = notify_sent_count + 1
+WHERE id = ? AND notify_sent_count = ?`, id, expected)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		applied = n == 1
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("add mock_txn notify_sent_count: %w", err)
+	}
+	return applied, nil
+}
+
 // ListProcessing 按 id 升序返回 id > afterID 的该类型 PROCESSING 行，最多 limit 行。
 // 表上没有 status 索引，这里走主键范围扫描；只在进程启动时调用。
 func (d *DB) ListProcessing(ctx context.Context, txnType string, afterID uint64, limit int) ([]Txn, error) {

@@ -11,7 +11,8 @@ import (
 )
 
 // TimerScheduler 是进程内调度器：每个任务一个 time.AfterFunc，等待时长按注入时钟计算。
-// 任务不落盘，进程退出即丢失；重启后由 Service.Recover 从 mock_txn 重建。
+// 任务不落盘，进程退出即丢失。自动完成由 Service.Recover 从 PROCESSING 行重建。
+// 渠道回调还没发出的重试不在 Recover 里扫描终态行（CH-05）。
 // 任务 panic 会被恢复并计数，不影响其他任务。并发安全。
 type TimerScheduler struct {
 	clk    clock.Clock

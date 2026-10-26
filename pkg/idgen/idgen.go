@@ -45,6 +45,7 @@ var prefixes = map[string]struct{}{
 	"RB": {},
 	"RD": {},
 	"MC": {},
+	"CN": {},
 }
 
 var (

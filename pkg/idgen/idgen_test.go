@@ -250,7 +250,7 @@ func TestRollbackWaitCanBeCancelled(t *testing.T) {
 }
 
 func TestPrefixTable(t *testing.T) {
-	registered := []string{"PA", "RF", "TF", "TX", "FZ", "AC", "EV", "NT", "RB", "RD", "MC"}
+	registered := []string{"PA", "RF", "TF", "TX", "FZ", "AC", "EV", "NT", "RB", "RD", "MC", "CN"}
 	g := mustGenerator(t, 9, stubClock{t: testEpoch.Add(8 * time.Millisecond)})
 	ctx := context.Background()
 	for _, prefix := range registered {

@@ -913,7 +913,7 @@
 | `status` | VARCHAR(16) | 否 | — | `ck_mock_status` | 只用 CAS 推进：`WHERE id = ? AND status = 'PROCESSING'`（无 version 列） | 测试 |
 | `scenario` | VARCHAR(32) | 否 | `'NORMAL'` | — | 由金额末两位决定的故障场景（CH-06） | 测试 |
 | `notify_url` | VARCHAR(512) | 否 | `''` | — | | 测试 |
-| `notify_sent_count` | INT | 否 | 0 | — | 已发送回调次数 | 测试 |
+| `notify_sent_count` | INT | 否 | 0 | — | 已发送回调次数。发出 HTTP 前按当前值条件加一（CH-05），不改 `status`。发号失败、空密钥、更新失败，以及 DROP_NOTIFY / DUP_NOTIFY / SLOW 不加 | 测试 |
 | `finished_at` | DATETIME(3) | 是 | NULL | — | 自动完成或 CLOSE_RACE 关单的实际时间，应用截到毫秒后写入（CH-01、CH-03）。普通关单不写，保持 NULL | 测试 |
 | `bill_date` | DATE | 是 | NULL | `idx_bill_date` | 计入账单的日期，= `finished_at` 的东八区日期；只在 SUCCESS 时写（自动完成或 CLOSE_RACE 关单），BILL_MISSING、FAILED 与普通 CLOSED 为 NULL | 测试 |
 | `created_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | — | 受理或关单防悬挂行由 channel_mock 按自己的时钟显式写入（截到毫秒），不用列默认值。自动完成的到期时刻 = `created_at` + delay | 测试 |
@@ -937,7 +937,7 @@
 #### Operational Notes
 
 - **Backfill/migration considerations:** 账单注入（CH-09）的记录直接写入本表，`req_no` 使用平台不存在的单号。
-- **Query patterns:** 受理先 INSERT，`uk_type_req_no` 冲突再按 `(txn_type, req_no)` 读已有行；INSERT 报其他错误时也按 `(txn_type, req_no)` 再读一次，确认本次的行是否已提交。自动完成写库结果不确定时，按主键 `id` 读回该行，比较 `status`、`finished_at` 确认那次是否已生效。进程启动时按主键分页扫描 `status = 'PROCESSING'` 重建调度；没有 `status` 索引，只在启动时执行，表很小时可接受。查单（CH-02）按 `(txn_type, req_no)` 只读，不更新行，不存在也不插入。关单（CH-03）只按 `(PAY, req_no)` 读写，同号 REFUND 行不参与。未知 `req_no` 先读再 INSERT 一条 CLOSED 防悬挂行：`amount = 0`，`scenario` 与 `notify_url` 用列默认值，`created_at` 由应用时钟写入，不写 `finished_at`、`bill_date`。唯一键 1062 再按 `(PAY, req_no)` 读，按当前状态处理。INSERT 报其他错误时同样再读，`channel_txn_no` 相同则视为墓碑已写入。已有 PROCESSING 且场景不是 CLOSE_RACE 时，`UPDATE status = CLOSED WHERE id = ? AND status = 'PROCESSING'`，不写 `finished_at`、`bill_date`。CLOSE_RACE 走与自动完成相同的 SUCCESS 更新（写 `finished_at` 与 `bill_date`）。CAS 得 0 行或写入结果不确定时按主键再读，按读到的状态回答，不覆盖。SUCCESS、CLOSED、FAILED 不更新行。
+- **Query patterns:** 受理先 INSERT，`uk_type_req_no` 冲突再按 `(txn_type, req_no)` 读已有行；INSERT 报其他错误时也按 `(txn_type, req_no)` 再读一次，确认本次的行是否已提交。自动完成写库结果不确定时，按主键 `id` 读回该行，比较 `status`、`finished_at` 确认那次是否已生效。进程启动时按主键分页扫描 `status = 'PROCESSING'` 重建调度；没有 `status` 索引，只在启动时执行，表很小时可接受。查单（CH-02）按 `(txn_type, req_no)` 只读，不更新行，不存在也不插入。关单（CH-03）只按 `(PAY, req_no)` 读写，同号 REFUND 行不参与。未知 `req_no` 先读再 INSERT 一条 CLOSED 防悬挂行：`amount = 0`，`scenario` 与 `notify_url` 用列默认值，`created_at` 由应用时钟写入，不写 `finished_at`、`bill_date`。唯一键 1062 再按 `(PAY, req_no)` 读，按当前状态处理。INSERT 报其他错误时同样再读，`channel_txn_no` 相同则视为墓碑已写入。已有 PROCESSING 且场景不是 CLOSE_RACE 时，`UPDATE status = CLOSED WHERE id = ? AND status = 'PROCESSING'`，不写 `finished_at`、`bill_date`。CLOSE_RACE 走与自动完成相同的 SUCCESS 更新（写 `finished_at` 与 `bill_date`）。CAS 得 0 行或写入结果不确定时按主键再读，按读到的状态回答，不覆盖。SUCCESS、CLOSED、FAILED 不因查单或关单更新行。渠道回调（CH-05）在发出 HTTP 之前另开短事务：`UPDATE mock_txn SET notify_sent_count = notify_sent_count + 1 WHERE id = ? AND notify_sent_count = ?`，不改 `status` 和其他列。影响 0 行则按主键再读，不覆盖状态。
 - **Compatibility/deprecation notes:** 无。
 
 ## 5. Change History
@@ -959,6 +959,7 @@
 | 2026-10-26 | 无（仅文档） | `mock_txn.amount`（说明） | 用户确认：对未知 `req_no` 关单插入的防悬挂 CLOSED 行 `amount` 固定为 0（CH-03）；受理写入的行 ≥ 1。不加 CHECK，无 DDL | 未执行迁移 |
 | 2026-10-26 | 无（仅文档） | `mock_txn`（查询说明） | CH-02：查单按 `(txn_type, req_no)` 只读，不更新行，不存在也不插入。无 DDL | 未执行迁移 |
 | 2026-10-26 | 无（仅文档） | `mock_txn`（写路径说明） | CH-03：关单只写 `(PAY, req_no)`。普通关单 CAS 置 CLOSED，不写 `finished_at`、`bill_date`。CLOSE_RACE 与自动完成一样写 SUCCESS、`finished_at`、`bill_date`。未知 `req_no` 插入 `amount = 0` 的 CLOSED 防悬挂行。无 DDL | 未执行迁移 |
+| 2026-10-26 | 无（仅文档） | `mock_txn.notify_sent_count`（写路径说明） | CH-05：发出回调前按 `notify_sent_count` 条件加一，不改 `status`。无迁移 | 未执行迁移 |
 
 ## 6. Open Questions
 

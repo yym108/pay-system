@@ -76,10 +76,13 @@ func serve(cfg config.ChannelMock, logOut io.Writer) error {
 	// 先停调度（等正在写库的完成任务结束）再关连接池：defer 按后进先出执行。
 	sched := biz.NewTimerScheduler(clk)
 	defer sched.Stop()
-	svc := biz.New(dal.New(db), ids, clk, sched, biz.Options{
+	store := dal.New(db)
+	svc := biz.New(store, ids, clk, sched, biz.Options{
 		DelayMinMS: cfg.MockDelayMinMS,
 		DelayMaxMS: cfg.MockDelayMaxMS,
 	})
+	// 钩子只入队。Recover 仍只重建 PROCESSING 的自动完成，不扫描已终态的回调。
+	svc.SetOnFinished(biz.NewNotifier(store, ids, clk, sched, []byte(cfg.ChannelMockpayKey)).Handle)
 
 	// 开始接收请求前重建调度（CH-01 规则 5）。
 	recoverCtx, cancelRecover := context.WithTimeout(context.Background(), recoverTimeout)

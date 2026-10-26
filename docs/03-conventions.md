@@ -1,6 +1,6 @@
 # pay-system 全局约定与编号规范
 
-> 版本：v2.13　最后修改：2026-10-23
+> 版本：v2.14　最后修改：2026-10-26
 > 适用：全部代码、文档、配置。需求见 `docs/02-requirements.md`，接口见 `docs/05-api.md`，表结构见 `docs/database.md`。
 
 本文集中登记会被多个功能点共用的约定：编号体系、业务单号、金额、时间、错误码、幂等与事务规则、命名规范、配置项。新增或修改这些内容时，先改本文并在 §9 记录，再改代码。
@@ -87,6 +87,7 @@
 | `RB` | 对账批次 | `recon_batch.batch_no` | recon |
 | `RD` | 对账差错 | `recon_diff.diff_no` | recon |
 | `MC` | 模拟渠道流水 | `mock_txn.channel_txn_no` | channel-mock |
+| `CN` | 渠道回调发送号 | 不落库，只出现在回调 body 的 `notify_id` | channel-mock |
 
 新增前缀必须先在此表登记；`idgen.Generator.NewNo` 拒绝未登记的前缀。
 
@@ -425,3 +426,4 @@ BASE-09 只拼 DSN 文本，不连接数据库，也不调用驱动的 `ParseDSN
 | v2.11 | 2026-10-15 | BASE-11：§8 说明 `TEST_MYSQL_DSN` 只给集成测试复用已有 MySQL。不进入 `deploy/.env.example`，也不进入业务配置 |
 | v2.12 | 2026-10-23 | 遗留修复：§7.1 写明 `make lint` 带 `--build-tags integration`，集成测试文件不再漏检。不改检查规则 |
 | v2.13 | 2026-10-23 | BASE-14：§8 写明 `SECRET_MASTER_KEY` 是标准 base64（带填充），与 BASE-09 `pkg/config` 已有的校验一致，`pkg/secretbox` 按同一规则解码。不新增变量，不改默认值，不新增错误码 |
+| v2.14 | 2026-10-26 | CH-05：§2.2 登记前缀 `CN`（渠道回调发送号，不落库，只出现在回调 body 的 `notify_id`）。总长仍是前缀 + 19 位。不新增错误码 |

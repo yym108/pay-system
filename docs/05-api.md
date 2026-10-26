@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 2.1.3 |
+| 文档版本 | 2.1.4 |
 | API 版本 | v1（路径前缀 `/v1`） |
 | 最后修改 | 2026-10-26 |
 | 状态 | 设计基线，实现须与本文一致 |
@@ -45,6 +45,7 @@
 | 2.0.7 | 2026-10-21 | 文字对齐：CheckBalance 是进程内方法，自己打开 REPEATABLE READ 一致性快照，不用 `dbx.WithTx`，RPC handler 仍是 ACC-11。业务错误列仍只有 `40001`。`passed = false` 不是错误码。商户模式忽略 `expect_quiescent`。最后一条分录是 `max(id)`。一次失败的完成调用把进程内计数加 1。不新增字段、不改错误码数字、不改 IDL。§1 各接口的“最后修改”不变 | AccountService.CheckBalance、`POST /admin/accounts/check` | ACC-10 |
 | 2.0.8 | 2026-10-22 | 文字对齐：AccountService 的 Kitex handler 由 ACC-11 提供，只做协议转换和错误码转换。业务错误走 TTHeader 的 `BizStatusError`；本服务没有携带对象的错误，响应不加 `biz_code`。`POST /admin/accounts/check` 仍是 GW-07，不在 account 进程上提供。不新增字段、不改错误码数字、不改 IDL。§1 各接口的“最后修改”不变 | §8.4、§10、§10.1 | ACC-11 |
 | 2.0.9 | 2026-10-23 | 文字澄清：渠道回调入口的网关渠道密钥为空属于平台内部错误，返回 500 / `FAIL` 让渠道重试，不按渠道签名错误返回 401。签名算法、请求头、§3.7 测试向量不变；不新增字段、不改错误码数字、不改 IDL | §7 | BASE-13、GW-06 |
+| 2.1.4 | 2026-10-26 | 渠道回调写明 body 字段顺序、紧凑 JSON、无 HTML 转义、`finished_at` 为东八区毫秒、`notify_id` 前缀 `CN`（不落库）。送达仅当 HTTP 200 且 body 字节恰好是 `SUCCESS`。不跟随重定向，响应体最多 1024 字节，单次超时 5 秒。连第一次最多 5 次，间隔 5s、15s、30s、60s。`notify_sent_count` 在发出 HTTP 前按当前计数条件加一。不新增平台错误码，不改签名算法。§3.7 的 V4 不变 | §9.7 | CH-05 |
 | 2.1.3 | 2026-10-26 | 文字澄清：关单只处理 `(PAY, req_no)`，同号 REFUND 不参与。200 的 body 只有 `result` 与 `status` 三个取值组合：`OK` / `CLOSED`、`OK` / `FAILED`、`ALREADY_PAID` / `SUCCESS`。普通关单不写 `finished_at`；只有 CLOSE_RACE 写 `finished_at` 与 `bill_date` 并在提交后调用完成钩子。未知 `req_no` 插入 `amount = 0` 的 CLOSED 防悬挂行。§1 该行与查单、受理合在一起，最后修改日期仍是 2026-10-26。不新增字段、不改枚举、不改签名、不加错误码 | §9.4 | CH-03 |
 | 2.1.2 | 2026-10-26 | 文字澄清：查单只读当前行，不按场景藏状态或推迟返回。无行时 `result` 为 `NOT_FOUND`，不带 status、amount、channel_txn_no、finished_at，也不插入行。找到时返回 status、amount（含 0）、channel_txn_no；finished_at 仅当列非 NULL，格式为 RFC 3339 毫秒、东八区 `+08:00`，PROCESSING 省略。不新增字段、不改枚举、不改签名、不加错误码 | §9.3 | CH-02 |
 | 2.1.1 | 2026-10-26 | 文字澄清：对未知 `req_no` 关单时插入的防悬挂 CLOSED 记录 `amount` 固定为 0，查单原样返回 0。不新增字段、不改状态与结果枚举、不改签名 | §9.4 | CH-03、CH-02 |
@@ -81,7 +82,7 @@
 | `POST /admin/outbox/replay` 事件重放 | §8.3 | `PaymentService.ReplayEvent` | MQ-05 | 1.0.0 | 2026-10-12 |
 | `POST /admin/accounts/check` 余额核对 | §8.4 | `AccountService.CheckBalance` | ACC-10 | 1.0.0 | 2026-10-12 |
 | 模拟渠道 `pay` / `query` / `close` / `refund` / `bills` | §9.2–§9.6 | — | CH-01~04、CH-08 | 1.0.0 | 2026-10-26 |
-| 模拟渠道回调 | §9.7 | — | CH-05 | 1.0.0 | 2026-10-12 |
+| 模拟渠道回调 | §9.7 | — | CH-05 | 1.0.0 | 2026-10-26 |
 | 模拟渠道管理 `config` / `bill-inject` | §9.8 | — | CH-07、CH-09 | 1.0.0 | 2026-10-12 |
 | AccountService / PaymentService / ReconService | §10 | — | 见各方法 | 1.0.0 | 2026-10-12 |
 | 事件 `payment.succeeded`、`refund.succeeded`、`refund.failed`、`transfer.succeeded`、`transfer.failed` | §11 | — | MQ-01、MQ-04、NTF-01 | 1.0.0 | 2026-10-12 |
@@ -811,19 +812,27 @@ UTF-8 无 BOM，`\n` 换行，首行为表头，按 `finished_at`、`channel_txn
 
 `POST <notify_url>` · CH-05
 
-请求头 `X-Mock-Timestamp`、`X-Mock-Signature`。
+请求头 `X-Mock-Timestamp`、`X-Mock-Signature`。签名用 `pkg/sign.SignChannel`：canonical = `X-Mock-Timestamp` 的值 + 一个换行 + 原始 body。时间戳是注入时钟的 Unix 秒。§3.7 的 V4 仍是签名算法的三个字段短示例，不是本回调的 body。
 
-| 字段 | 类型 | 说明 |
-|---|---|---|
-| `notify_id` | string | 本次发送的 ID，每次重试不同 |
-| `txn_type` | string | `PAY` / `REFUND` |
-| `req_no` | string | 平台请求号 |
-| `channel_txn_no` | string | 渠道流水号 |
-| `amount` | int64 | 金额 |
-| `status` | string | `SUCCESS` / `FAILED` |
-| `finished_at` | string | 渠道完成时间 |
+body 是 `encoding/json` 对下面这个顺序的结构体做紧凑编码，不转义 HTML，字段都不 `omitempty`。顺序就是表的顺序。`amount` 是 JSON 数字（int64 分），不是字符串。`finished_at` 与 §9.3 查单相同：东八区固定偏移 `+08:00`，先截到毫秒，布局 `2006-01-02T15:04:05.000Z07:00`。
 
-平台应答 HTTP 200 且 body 为 `SUCCESS` 视为送达，否则按 5s、15s、30s、60s 重试，共最多 5 次。
+| 顺序 | 字段 | 类型 | 说明 |
+|---|---|---|---|
+| 1 | `notify_id` | string | 本次发送的 ID。前缀 `CN` 加 19 位，共 21 字符。每次发送不同。不落库，只出现在 body |
+| 2 | `txn_type` | string | `PAY` / `REFUND` |
+| 3 | `req_no` | string | 平台请求号 |
+| 4 | `channel_txn_no` | string | 渠道流水号 |
+| 5 | `amount` | int64 | 金额（分） |
+| 6 | `status` | string | `SUCCESS` / `FAILED` |
+| 7 | `finished_at` | string | 渠道完成时间 |
+
+```json
+{"notify_id":"CN0000000123456789012","txn_type":"PAY","req_no":"PA0000000123456789012","channel_txn_no":"MC0000000123456789012","amount":10000,"status":"SUCCESS","finished_at":"2026-10-26T11:22:33.123+08:00"}
+```
+
+送达只认 HTTP 200，并且读到的 body 字节恰好是 `SUCCESS`。`success`、`"SUCCESS"`、`SUCCESS\n` 都不是。不跟随重定向，3xx 不是送达。响应体最多读 1024 字节，超出或读失败都算未送达。单次超时 5 秒。
+
+未送达时按已经发出的次数再等：1 次后 5s，2 次后 15s，3 次后 30s，4 次后 60s。连第一次最多 5 次，第 5 次仍未送达就停止。超时、连接失败、非 200、body 不符都算这一次已经发出。每次真正发出之前把 `notify_sent_count` 条件加一；发号失败、空密钥或这次更新没成功不算发出。哪些场景发送见需求 CH-05。同一笔的未完成重试只记在进程内，进程退出后丢失，不扫描已终态的行；平台仍用查单补偿。不新增平台错误码。
 
 ### 9.8 模拟渠道管理接口
 

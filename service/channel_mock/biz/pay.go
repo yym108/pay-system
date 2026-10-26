@@ -1,4 +1,4 @@
-// Package biz 是模拟渠道的业务逻辑：支付受理与自动完成（CH-01）、查单（CH-02）、关单（CH-03）。
+// Package biz 是模拟渠道的业务逻辑：支付受理与自动完成（CH-01）、查单（CH-02）、关单（CH-03）、渠道回调（CH-05）。
 //
 // 幂等靠 uk_type_req_no：先 INSERT，冲突（1062）再读已有行，不做先查后插。
 // 状态推进只用 CAS（WHERE id = ? AND status = 'PROCESSING'），事务内不调用外部系统；
@@ -100,6 +100,12 @@ type Service struct {
 // New 组装服务。参数都不能为 nil（OnFinished 除外）。
 func New(store Store, ids IDGenerator, clk clock.Clock, sched Scheduler, opts Options) *Service {
 	return &Service{store: store, ids: ids, clk: clk, sched: sched, opts: opts}
+}
+
+// SetOnFinished 在 New 之后、Recover 和开始接收请求之前设置完成钩子。
+// 传 nil 表示不回调。钩子在调度 goroutine 里执行，只能入队，不能发 HTTP。
+func (s *Service) SetOnFinished(fn func(context.Context, dal.Txn)) {
+	s.opts.OnFinished = fn
 }
 
 // PayRequest 是 POST /mockpay/v1/pay 的请求。
