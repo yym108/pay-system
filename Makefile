@@ -32,8 +32,9 @@ test:
 test-integration:
 	go test -race -tags integration ./...
 
+# 含集成测试，需要 Docker 或 TEST_MYSQL_DSN。
 cover:
-	go test -race -coverprofile=coverage.out ./...
+	go test -race -tags integration -coverprofile=coverage.out ./...
 	go tool cover -func=coverage.out
 
 up:
