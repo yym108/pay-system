@@ -3,8 +3,11 @@ package main
 import (
 	"bytes"
 	"encoding/base64"
+	"errors"
 	"strings"
 	"testing"
+
+	"github.com/yym108/pay-system/pkg/config"
 )
 
 func paymentMasterKey() string {
@@ -62,9 +65,16 @@ func TestPaymentStartupRedactsSecrets(t *testing.T) {
 	t.Setenv("SECRET_MASTER_KEY", base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x11}, 32)))
 
 	var stdout, stderr bytes.Buffer
-	code := run(paymentFixture(true), &stdout, &stderr)
+	started := false
+	code := runWith(paymentFixture(true), &stdout, &stderr, func(cfg config.Payment) error {
+		started = cfg.WorkerID == 2 && cfg.SecretMasterKey != ""
+		return nil
+	})
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
+	}
+	if !started {
+		t.Fatal("start did not receive the loaded config")
 	}
 	out := stdout.String() + stderr.String()
 	if !strings.Contains(out, "***") {
@@ -82,4 +92,48 @@ func TestPaymentStartupRedactsSecrets(t *testing.T) {
 	if !strings.Contains(out, "KAFKA_BROKERS=kafka:9092") {
 		t.Fatal("non-secret KAFKA_BROKERS is not visible")
 	}
+}
+
+// PAY-01：启动失败时退出码非 0，输出不含 DSN 口令和密钥。
+func TestPaymentStartFailureHidesSecrets(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := runWith(paymentFixture(true), &stdout, &stderr, func(config.Payment) error {
+		return errors.New("open payment database failed")
+	})
+	if code == 0 {
+		t.Fatal("exit code = 0")
+	}
+	if !strings.Contains(stderr.String(), "open payment database failed") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+	assertNoSecret(t, stdout.String()+stderr.String(), paymentMasterKey(), "payment-plain-password", "mockpay-plain-key")
+}
+
+// PAY-01：serve 打不开库时返回固定文本，不带地址和口令。端口 1 拒绝连接，不等 3 秒超时。
+func TestPaymentServeHidesOpenError(t *testing.T) {
+	cfg, err := config.LoadPayment([]string{
+		"WORKER_ID=2",
+		"MYSQL_DSN=svc_payment:payment-plain-password@tcp(127.0.0.1:1)/pay_payment?parseTime=true",
+		"CHANNEL_MOCKPAY_KEY=mockpay-plain-key",
+		"SECRET_MASTER_KEY=" + paymentMasterKey(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var logs bytes.Buffer
+	err = serve(cfg, &logs)
+	if !errors.Is(err, errOpenDB) {
+		t.Fatalf("serve error = %v", err)
+	}
+	assertNoSecret(t, err.Error()+logs.String(), "payment-plain-password", "127.0.0.1:1", paymentMasterKey())
+}
+
+// PAY-01：主密钥解不开时不连库，直接失败。
+func TestPaymentServeRejectsBadMasterKey(t *testing.T) {
+	cfg := config.Payment{SecretMasterKey: "not-base64", MySQLDSN: "svc_payment:payment-plain-password@tcp(127.0.0.1:1)/pay_payment"}
+	err := serve(cfg, &bytes.Buffer{})
+	if err == nil || errors.Is(err, errOpenDB) {
+		t.Fatalf("serve error = %v", err)
+	}
+	assertNoSecret(t, err.Error(), "payment-plain-password", "not-base64")
 }

@@ -2,6 +2,13 @@
 
 随手记录踩坑、数据和取舍。不替代需求与技术决策文档。
 
+## PAY-01 商户与密钥
+
+- `merchant` 表的排序规则是 `utf8mb4_0900_ai_ci`，不区分大小写和重音，`WHERE app_id = 'APP_M100001'` 也能查到 `app_m100001`。`X-App-Id` 不在签名串里，若 nonce 防重按请求带来的 app_id 记键，换个大小写同一个签名就能重放。查询后在应用里逐字节比较读回的 app_id、merchant_id，不一致按不存在返回 `20004`。去掉这次比较，集成测试 `TestPAY01UnknownAppID` 立刻失败。
+- Kitex 生成的结构体 `String()` 会把 `app_secret` 原样打出来。访问日志中间件不读请求和响应对象。
+- 只给 `MerchantCredential` 写 `String`、`LogValue` 不够：凭证放进切片交给 slog JSON handler 会走 `json.Marshal`，作为未导出字段被 `%+v` 打印时 fmt 调不了方法、改走反射，三条路径都实测带出了明文。改成专用类型 `Secret`，`Format`、`MarshalJSON`、`LogValue` 一律输出 `***`，明文放在指针后面：反射对非顶层指针只打印地址，不解引用。取明文只能显式调 `Reveal()`。
+- 配置缓存只存商户号、状态、默认通知地址，费率不进缓存。费率变更是按 `effective_from` 生效的，缓存住了会在生效时刻前后读到旧档，PAY-10 的核对口径就对不上。凭证也不缓存，轮换后下一次请求即生效。
+
 ## CH-01 模拟渠道受理与自动完成
 
 - DATETIME(3) 写入时四舍五入，不是截断。东八区 23:59:59.9996 写进库会变成次日 00:00:00.000，而应用按原值算出的 `bill_date` 还是当天，同一行的两列对不上。应用先截到毫秒再写，`finished_at` 和 `bill_date` 用同一个截断后的值。

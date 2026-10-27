@@ -33,9 +33,10 @@ func TestMain(m *testing.M) {
 }
 
 type payEnv struct {
-	ctx context.Context
-	db  *sqlx.DB
-	svc *Service
+	ctx    context.Context
+	db     *sqlx.DB
+	svc    *Service
+	schema *testkit.Schema
 }
 
 func openPay(t *testing.T) payEnv {
@@ -57,7 +58,7 @@ func openPay(t *testing.T) payEnv {
 			t.Errorf("close schema: %s", testkit.Redact(err))
 		}
 	})
-	return payEnv{ctx: ctx, db: schema.DB, svc: New(schema.DB)}
+	return payEnv{ctx: ctx, db: schema.DB, svc: New(schema.DB), schema: schema}
 }
 
 func insertMerchant(t *testing.T, env payEnv, id string, rate int, status string) {

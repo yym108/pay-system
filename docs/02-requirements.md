@@ -373,7 +373,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | CH-07 | 全局故障配置（压测延迟） | P0 | M6 | CH-06 | TODO |
 | CH-08 | 账单下载 | P0 | M6 | CH-01、CH-04 | TODO |
 | CH-09 | 账单注入 | P0 | M6 | CH-08 | TODO |
-| PAY-01 | 商户与密钥 | P0 | M3 | BASE-14、BASE-03 | TODO |
+| PAY-01 | 商户与密钥 | P0 | M3 | BASE-14、BASE-03 | DONE |
 | PAY-02 | 创建支付单 | P0 | M3 | PAY-01 | TODO |
 | PAY-03 | 发起支付 | P0 | M3 | PAY-02、CH-01 | TODO |
 | PAY-04 | 支付结果推进 | P0 | M3 | PAY-03、MQ-01 | TODO |
@@ -1377,10 +1377,20 @@ M3 完成 01、02、03、08，其余在 M4 完成（06、07 的账单部分在 C
 2. 商户 DISABLED 时仍返回记录，由网关返回 `20004`。
 3. payment 内部提供按 `merchant_id` 读取商户配置（费率、默认通知地址、状态）的方法，进程内缓存 `MERCHANT_CONFIG_CACHE_TTL`（默认 60 秒，设为 0 关闭，用于 OPT-04 对比）。
 
+说明（PAY-01 口径澄清）：
+
+- `app_id` 按字节精确匹配。`merchant` 表列的排序规则是 `utf8mb4_0900_ai_ci`，SQL 比较不区分大小写和重音，服务端读回 `app_id` 再逐字节比较。为空、不存在、只是大小写不同都返回 `20004`；为空时不查库。原因：`X-App-Id` 不在签名串里（接口 §3.1），放宽匹配会让同一请求换个大小写绕过按 `app_id` 记的 nonce。按 `merchant_id` 读配置同样精确匹配。
+- 解密用 `secretbox.NewFromBase64(SECRET_MASTER_KEY)` 建的 Box。`Open` 失败返回 `10003`，打一条 ERROR 日志，字段只有 `app_id`、`merchant_id`，不带密文、明文和 secretbox 错误。返回的是不带原因的 `10003`，handler 不再打第二条。
+- payment 端不缓存凭证，也不缓存“不存在”；网关侧凭证缓存属于 GW-08。明文密钥用专用类型 `biz.Secret` 包装，只有 `Reveal()` 取得到明文，只在 handler 组 Kitex 响应时调用。`fmt` 的所有格式动词、`json.Marshal`、slog（含 JSON handler）都输出 `***`，凭证嵌在切片、结构体或未导出字段里也一样（明文放在指针后面，fmt 走反射时只打印地址）。
+- 规则 3 的缓存只存静态配置：`merchant_id`、`status`、`notify_url`（默认通知地址）。键是 `merchant_id`，并发安全，时间取注入的 `clock.Clock`。条目在 `[装载时刻, 装载时刻 + TTL)` 内命中，装载时刻取读库前的时间；时钟回拨到装载时刻之前视为过期。TTL 为 0 时每次读库。不存在（`20004`）和读库失败不进缓存。
+- 费率不进缓存。生效费率与 PAY-10 同口径，读 `merchant_fee_rate` 中 `effective_from <= at` 的最近一档，不读 `merchant.fee_rate_bp`，每次读库。原因：费率按时刻生效，缓存当前档会让追加新档后最多一个 TTL 内算错手续费。`at` 为零值或 `merchant_id` 为空返回 `10001`；没有已生效的档时返回“未找到”而不是错误码，由 PAY-02 决定如何处理。
+- payment 的 Kitex 服务端按 ACC-11 的模式在 PAY-01 起：端口 8881（接口 §10.2），中间件同 account（TTHeader 的 `BizStatusError`、panic 恢复为 `10003`、访问日志、trace 与指标空实现），服务端处理超时 2 秒。只实现 `GetMerchantCredential`；其余方法在各自功能点实现前返回 `10003`，不进 biz，不是这些方法将来的语义。要调渠道的方法（Pay、ClosePayment、CreateRefund、CreateTransfer）的服务端超时由各自功能点按 §5.4.1 重新确定。中间件不读请求和响应，访问日志的 `merchant_id` 留空。
+- `cmd/payment` 启动顺序：打印脱敏配置 → `logx.SetDefault` → 校验主密钥 → 3 秒内连库（失败只输出固定文本，不带地址和口令）→ 启动 Kitex。健康检查、`/readyz` 和 SIGTERM 10 秒排空仍属 OPS-01。网关侧客户端与验签属于 GW-03。
+
 验收：
 
-- [ ] 种子商户可查到，密钥解密结果与 `.env` 演示值一致。
-- [ ] 不存在的 app_id 返回 `20004`。
+- [x] 种子商户可查到，密钥解密结果与 `.env` 演示值一致。
+- [x] 不存在的 app_id 返回 `20004`。
 
 #### PAY-02 创建支付单
 
@@ -2885,3 +2895,4 @@ ACC-10 在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（一
 | 2026-10-26 | v3.0 | CH-03 口径澄清：只关 `(PAY, req_no)`，同号 REFUND 不参与。PROCESSING 且不是 CLOSE_RACE 时 CAS 置 CLOSED，不写 `finished_at`、`bill_date`，不调钩子。CLOSE_RACE 时 CAS 置 SUCCESS，写 `finished_at` 与 `bill_date`（与自动完成相同），提交后调用一次完成钩子，返回 `ALREADY_PAID`。SUCCESS / CLOSED / FAILED 不改行。未知 `req_no` 插入 `amount = 0` 的 CLOSED 防悬挂行。1062 与结果不确定的写入再读后按当前状态回答。不新增错误码，不改表结构，不发 HTTP 回调 |
 | 2026-10-26 | v3.0 | CH-05 口径澄清：只对 SUCCESS / FAILED，且场景为 NORMAL、FAIL、ACCEPT_TIMEOUT、BILL_MISSING、BILL_AMOUNT_DIFF、CLOSE_RACE 或未登记值，发普通回调。FAIL 的 body `status` 为 FAILED，不是把 CH-06 做完。DROP_NOTIFY 不回调。DUP_NOTIFY 与 SLOW 的特殊发送仍是 CH-06，现在不发、不加计数，也不套普通重试。空 `notify_url`、`finished_at` 为零、非 SUCCESS / FAILED 不发。不取消已有自动完成定时器，不改查单和关单的返回。送达仅当 HTTP 200 且 body 字节恰好是 `SUCCESS`。连第一次最多 5 次，间隔按已发出次数为 5s、15s、30s、60s。计数在单独短事务里条件加一，HTTP 在事务外。单次超时 5 秒，不跟随重定向，响应体最多 1024 字节。`notify_id` 前缀 `CN`，不落库。同一 id 的发送链只在进程内标记；进程退出后未发出的重试丢失，`Recover` 不扫描已终态的行，查单仍是补偿。不改六个状态的资金含义，不新增错误码，不加迁移 |
 | 2026-10-27 | v3.0 | CH-06 文字澄清：总表依赖由 CH-01~05 改为 CH-01、CH-02、CH-03、CH-05，对齐已有的「M3 完成 01、02、03、08，其余在 M4」。CH-04 仍负责退款受理，不在本切片。§3 改为 DOING，不标 DONE。验收拆成已勾的 M3（FAIL、DROP_NOTIFY、DUP_NOTIFY、NEVER_FINISH）和未勾的 M4（SLOW、ACCEPT_TIMEOUT、BILL_MISSING、BILL_AMOUNT_DIFF、CLOSE_RACE）。DUP_NOTIFY 按 10 次发送：一个调度任务里并发 5 次，POST 都返回后按注入时钟再于 now+1s 至 now+5s 各发 1 次，不论平台响应；占名额用 `notify_sent_count < 10`。普通回调仍是 `notify_sent_count = ?` 且最多 5 次。SLOW 仍不发。本切片只断言 `bill_date`，不实现 CSV。CH-05 规则改为 DUP 由 CH-06 发送、SLOW 仍不发。不新增错误码，不加迁移 |
+| 2026-10-27 | v3.0 | PAY-01 口径澄清：`app_id` 与 `merchant_id` 按字节精确匹配（列排序规则不区分大小写，服务端读回比较），为空、不存在、大小写不同都为 `20004`。解密失败 `10003`，ERROR 日志只有 `app_id`、`merchant_id`。payment 不缓存凭证；明文密钥用 `biz.Secret` 包装，只有 `Reveal()` 取明文，fmt、json、slog 嵌套输出都为 `***`。规则 3 的缓存只存 `merchant_id`、`status`、`notify_url`，费率不缓存，另按 PAY-10 口径读 `merchant_fee_rate` 的生效档；没有生效档返回“未找到”，由 PAY-02 决定处理。TTL 区间 `[装载, 装载 + TTL)`，时钟回拨视为过期，TTL 为 0 每次读库，不存在与读库失败不缓存。payment Kitex 服务端在 PAY-01 起：端口 8881，中间件同 ACC-11，服务端超时 2 秒，只实现 `GetMerchantCredential`，其余方法返回 `10003`。OPS-01、GW-03、GW-08 不在本功能点。不新增错误码，不改 IDL，不改表，同步接口文档 2.1.6 |

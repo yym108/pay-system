@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 2.1.5 |
+| 文档版本 | 2.1.6 |
 | API 版本 | v1（路径前缀 `/v1`） |
 | 最后修改 | 2026-10-27 |
 | 状态 | 设计基线，实现须与本文一致 |
@@ -45,6 +45,7 @@
 | 2.0.7 | 2026-10-21 | 文字对齐：CheckBalance 是进程内方法，自己打开 REPEATABLE READ 一致性快照，不用 `dbx.WithTx`，RPC handler 仍是 ACC-11。业务错误列仍只有 `40001`。`passed = false` 不是错误码。商户模式忽略 `expect_quiescent`。最后一条分录是 `max(id)`。一次失败的完成调用把进程内计数加 1。不新增字段、不改错误码数字、不改 IDL。§1 各接口的“最后修改”不变 | AccountService.CheckBalance、`POST /admin/accounts/check` | ACC-10 |
 | 2.0.8 | 2026-10-22 | 文字对齐：AccountService 的 Kitex handler 由 ACC-11 提供，只做协议转换和错误码转换。业务错误走 TTHeader 的 `BizStatusError`；本服务没有携带对象的错误，响应不加 `biz_code`。`POST /admin/accounts/check` 仍是 GW-07，不在 account 进程上提供。不新增字段、不改错误码数字、不改 IDL。§1 各接口的“最后修改”不变 | §8.4、§10、§10.1 | ACC-11 |
 | 2.0.9 | 2026-10-23 | 文字澄清：渠道回调入口的网关渠道密钥为空属于平台内部错误，返回 500 / `FAIL` 让渠道重试，不按渠道签名错误返回 401。签名算法、请求头、§3.7 测试向量不变；不新增字段、不改错误码数字、不改 IDL | §7 | BASE-13、GW-06 |
+| 2.1.6 | 2026-10-27 | 文字澄清：PaymentService 在 :8881 由 PAY-01 起服务，服务端处理超时 2 秒；本版只实现 `GetMerchantCredential`，其余方法在各自功能点实现前返回 `10003`。`GetMerchantCredential` 只认与库中完全相同的 `app_id`（库列排序规则不区分大小写，服务端逐字节比较），为空、不存在或大小写不同都返回 `20004`；DISABLED 照常返回记录；密文解不开返回 `10003`。不新增字段、不改错误码数字、不改 IDL | §1、§10.2 | PAY-01 |
 | 2.1.5 | 2026-10-27 | 文字澄清：DUP_NOTIFY 发满 10 次，不因 HTTP 200 且 body 为 `SUCCESS` 停止，不走普通回调的 5 次与 5s/15s/30s/60s。普通回调不变。不新增平台错误码，不改签名算法。§3.7 的 V4 不变 | §9.7 | CH-06 |
 | 2.1.4 | 2026-10-26 | 渠道回调写明 body 字段顺序、紧凑 JSON、无 HTML 转义、`finished_at` 为东八区毫秒、`notify_id` 前缀 `CN`（不落库）。送达仅当 HTTP 200 且 body 字节恰好是 `SUCCESS`。不跟随重定向，响应体最多 1024 字节，单次超时 5 秒。连第一次最多 5 次，间隔 5s、15s、30s、60s。`notify_sent_count` 在发出 HTTP 前按当前计数条件加一。不新增平台错误码，不改签名算法。§3.7 的 V4 不变 | §9.7 | CH-05 |
 | 2.1.3 | 2026-10-26 | 文字澄清：关单只处理 `(PAY, req_no)`，同号 REFUND 不参与。200 的 body 只有 `result` 与 `status` 三个取值组合：`OK` / `CLOSED`、`OK` / `FAILED`、`ALREADY_PAID` / `SUCCESS`。普通关单不写 `finished_at`；只有 CLOSE_RACE 写 `finished_at` 与 `bill_date` 并在提交后调用完成钩子。未知 `req_no` 插入 `amount = 0` 的 CLOSED 防悬挂行。§1 该行与查单、受理合在一起，最后修改日期仍是 2026-10-26。不新增字段、不改枚举、不改签名、不加错误码 | §9.4 | CH-03 |
@@ -85,7 +86,7 @@
 | 模拟渠道 `pay` / `query` / `close` / `refund` / `bills` | §9.2–§9.6 | — | CH-01~04、CH-08 | 1.0.0 | 2026-10-26 |
 | 模拟渠道回调 | §9.7 | — | CH-05、CH-06 | 1.0.0 | 2026-10-27 |
 | 模拟渠道管理 `config` / `bill-inject` | §9.8 | — | CH-07、CH-09 | 1.0.0 | 2026-10-12 |
-| AccountService / PaymentService / ReconService | §10 | — | 见各方法 | 1.0.0 | 2026-10-12 |
+| AccountService / PaymentService / ReconService | §10 | — | 见各方法 | 1.0.0 | 2026-10-27 |
 | 事件 `payment.succeeded`、`refund.succeeded`、`refund.failed`、`transfer.succeeded`、`transfer.failed` | §11 | — | MQ-01、MQ-04、NTF-01 | 1.0.0 | 2026-10-12 |
 
 ## 2. 通用约定
@@ -923,6 +924,8 @@ account RPC 以商户号（或 owner）为入参，由 account 按商户号路�
 | `ReplayEvent` | `event_id`，或 `biz_no` + `event_type` | `event_id`、`rebuilt` | 10002、30003 | gateway（§8.3）、recon（REC-06 `REPLAY`） | MQ-05 |
 
 `GetMerchantCredential` 返回明文密钥，只允许网关调用；调用双方都不得记录响应内容。
+
+`GetMerchantCredential`（PAY-01）：`app_id` 按字节精确匹配，为空、不存在或只是大小写不同都返回 `20004`（`X-App-Id` 不在签名串里，放宽匹配会让同一请求换个大小写绕过按 `app_id` 记的 nonce）。DISABLED 商户照常返回，由网关返回 `20004`。密文解不开是平台内部故障，返回 `10003`。payment 不缓存凭证，网关侧缓存属于 GW-08。PaymentService 其余方法在各自功能点实现前一律返回 `10003`，不是这些方法将来的错误码语义。服务端处理超时 2 秒；要调渠道的方法由各自功能点按需求 §5.4.1 重新确定。
 
 `CreateTransfer` 的响应码规则同 §4.8：本次请求执行到 FAILED 且 `fail_code = INSUFFICIENT_BALANCE` → `biz_code = 40002` 并携带转账单；其他 FAILED、SUCCESS、处理中状态与幂等命中 → 成功返回。
 
