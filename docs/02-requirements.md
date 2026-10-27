@@ -504,7 +504,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 
 规则：
 
-1. 将 `docs/schema/schema_draft.sql` 按 schema 拆分为 `migrations/<schema>/000001_init.up.sql` 和 `.down.sql`，之后删除草稿，`docs/database.md` 的来源改为迁移文件。账户分片共用 `migrations/account/`，迁移容器对 `pay_account_0`、`pay_account_1` 各执行一次。
+1. 表结构以 `migrations/<schema>/` 下的迁移文件为准，每个 schema 从 `000001_init.up.sql` 和 `.down.sql` 开始；表结构文档是 `docs/database.md`，其来源是这些迁移文件（原设计草稿已在本功能点拆分后删除）。账户分片共用 `migrations/account/`，迁移容器对 `pay_account_0`、`pay_account_1` 各执行一次。
 2. 迁移只向前演进：已合入的迁移文件不修改，变更通过新文件完成。
 3. 数据库账号最小权限：
 
@@ -1123,7 +1123,7 @@ DSN 只按驱动的文本规则装配，不连接数据库：
 1. 签名是 `CheckBalance(ctx, merchantID, expectQuiescent)`。`merchantID` 为空是全量模式，不是错误。非空商户号必须能被 `shard.Of` 解析，否则 `10001`。这个校验在 nil service、nil ctx 和已取消的 ctx 之前；`10001` 不查询，`failures` 为空。商户模式忽略 `expectQuiescent`，不因此返回 `10001`。
 2. 参数合法后，nil service、nil ctx、nil pools 为 `10003`。已取消或已过期的 ctx 原样返回，不开事务。`ShardDB` 失败、任一分片失败或 SQL 错误都是整次 `10003`，`failures` 为空，不返回部分失败。`Error()` 不带 SQL、地址或密码。未知 `balance_direction` 是数据损坏，整次 `10003`，不记成一条 failure。金额求和用 `money.Add` / `money.Sub`，溢出是 `10003`，不回绕。
 3. `40001` 只表示点名的商户结算账户不存在：商户模式，`MERCHANT` / `MERCHANT_SETTLE` / `CNY` / `sub_no = 0`。非 CNY 行选不中算不存在。此时 `failures` 为空，计数不加。全量模式没有点名商户，不因某商户缺失返回 `40001`。空库全量通过。
-4. `passed = false` 且 `failures` 非空时 error 为 nil，不是 `40001`，也不是 `10003`。此时进程内无标签计数 `pay_ledger_check_failures_total` 加 1，一次调用只加一次，并打一条 ERROR 日志。成功、`40001`、`10003` 都不加计数、不打这条日志。`/metrics` 暴露仍是 OPS-01，本功能点不引入 Prometheus 客户端。
+4. `passed = false` 且 `failures` 非空时 error 为 nil，不是 `40001`，也不是 `10003`。此时进程内无标签计数 `pay_ledger_check_failures_total` 加 1，一次调用只加一次，并打一条 ERROR 日志。成功、`40001`、`10003` 都不加计数、不打这条日志。`/metrics` 暴露属于 OPS-03，本功能点不引入 Prometheus 客户端。
 5. 本方法不写 `ledger_*` 或 `account` 行，不调用外部系统。重复调用不记账、不冻结、不通知。不要在写事务里调用它，它自己也不包进别的业务事务。不用 `dbx.WithTx`（READ COMMITTED，且驱动的 `BeginTx(ReadOnly)` 没有 `WITH CONSISTENT SNAPSHOT`）。每个分片用一条固定连接，按顺序执行 `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`、`START TRANSACTION READ ONLY, WITH CONSISTENT SNAPSHOT`、只读查询、`ROLLBACK`（成功也回滚）。两个分片是两次独立快照，不是同一时刻。查询都带调用方 ctx。全量先分片 0 再分片 1。
 6. 返回全部失败，不在第一个停止。顺序：分片 0 然后分片 1；分片内账户按 `account.id` 升序；每个账户依次是 `BALANCE_SUM`、`LAST_BALANCE_AFTER`、`FROZEN_SUM`、`AVAILABLE_NON_NEGATIVE`；然后该分片的 `TXN_BALANCED`（凭证按 `ledger_txn.id` 升序）、`GLOBAL_BALANCED`、`TRANSIT_EXPECTED`。`TRANSIT_ZERO` 最后，且只在全量且 `expectQuiescent` 时做。商户模式只查该商户这一个结算账户的前四项。
 7. 公式（金额是 int64 分）：
@@ -1322,7 +1322,7 @@ M3 完成 01、02、03、08，其余在 M4 完成（06、07 的账单部分在 C
 
 #### CH-07 全局故障配置
 
-`P1 · M7 · 依赖：CH-06`
+`P0 · M6 · 依赖：CH-06`
 
 接口：`PUT /mockpay/admin/config`、`GET /mockpay/admin/config`（仅管理端口）
 
@@ -2352,7 +2352,7 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 | `pay_recon_diffs_total`、`pay_recon_pending_diffs` | counter、gauge | diff_type |
 | `pay_ratelimit_rejected_total`、`pay_nonce_unavailable_total` | counter | — |
 
-ACC-10 在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（一次失败的完成调用加 1）。`/metrics` 暴露仍是 OPS-01，本功能点不起 HTTP，也不引入 Prometheus 客户端。
+ACC-10 只在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（一次失败的完成调用加 1），不起 HTTP，也不引入 Prometheus 客户端。把这个计数通过 `/metrics` 暴露出去由本功能点负责。
 
 约束：标签中不得出现单号、商户号以外的高基数值（商户号也只用于限流类指标）；延迟直方图桶 5ms、10ms、25ms、50ms、100ms、250ms、500ms、1s、2.5s、5s。
 
@@ -2571,7 +2571,7 @@ ACC-10 在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（一
 
 #### QA-02 压测与报告
 
-`P0 · M7 · 依赖：全链路、OPS-03`
+`P0 · M6–M7 · 依赖：全链路、OPT-01、CH-07`
 
 规则：
 
@@ -2668,9 +2668,9 @@ ACC-10 在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（一
 | NFR-CON-02 | 回调丢失 → 订单修正 | ≤ 1 分钟（查单退避前 3 档） |
 | NFR-CON-03 | 订单成功 → 首次商户通知 | P99 ≤ 5 秒 |
 | NFR-CON-04 | 退款卡在 INIT → 被恢复任务接手 | ≤ 1 分钟 |
-| NFR-CON-07 | 转账卡在非终态（account 已恢复）→ 终态 | ≤ 30 秒 |
 | NFR-CON-05 | D 日对账结果产出 | D+1 日 10:30 前 |
 | NFR-CON-06 | Kafka 恢复 → outbox 积压清空 | ≤ 积压时长 + 1 分钟（积压 ≤ 10 万条时） |
+| NFR-CON-07 | 转账卡在非终态（account 已恢复）→ 终态 | ≤ 30 秒 |
 
 ### 5.3 性能（NFR-PERF）
 
@@ -2844,7 +2844,7 @@ ACC-10 在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（一
 | # | 事项 | 默认处理 | 最晚决定 |
 |---|---|---|---|
 | Q1 | GitHub module path | 已定：`github.com/yym108/pay-system`（2026-10-13） | 已关闭 |
-| Q2 | NFR-PERF 目标是否需要调整 | 首次基线压测后按数据调整 | M7 第一次压测后 |
+| Q2 | NFR-PERF 目标是否需要调整 | 首次基线压测后按数据调整 | M6 基线压测后 |
 | Q3 | 热点账户是否做缓冲入账（OPT-05） | 子账户拆分（OPT-03）后行锁仍是瓶颈且 P0、P1 已完成才做 | M8 |
 | Q4 | `STATUS_MISMATCH`（本地已终态）的处理 | 已随 REC-07 砍掉，保持 PENDING 进入报告 | 已关闭 |
 
@@ -2874,8 +2874,8 @@ ACC-10 在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（一
 | 2026-10-15 | v3.0 | ACC-13 口径澄清：`/readyz` 本功能点只提供处理函数，监听、Kafka、SIGTERM 仍属 OPS-01；`Of` 不读环境变量，分片数写死 2；`Sub` 的 N 由调用方传入。不改变资金规则、接口、表结构和错误码 |
 | 2026-10-15 | v3.0 | ACC-01 口径澄清：幂等命中 `uk_owner_account_type_sub` 时返回已有行，不把余额和冻结金额改回 0。PLATFORM 账户 `shard` 只能是 0 或 1；`CHANNEL_RECEIVABLE` 的 `owner_id` 非空且不超过 32 个字符；`FEE_INCOME` 与 `TRANSIT` 的 `owner_id` 必须是 `PLATFORM`。账户号与另一组 owner 冲突时返回已有的 `10003`，对外消息不带 SQL。不改变资金规则、接口、表结构和错误码语义 |
 | 2026-10-15 | v3.0 | ACC-02 口径澄清：平台渠道应收汇总的验收不调用记账。入账本身是 ACC-03，本测试用 SQL 写入余额，不改变资金规则 |
-| 2026-10-17 | v3.0 | PAY-10 口径：商户费率历史表只追加；新生效时间必须严格晚于该商户已有最大 `effective_from`；相同时间相同费率幂等成功，相同时间不同费率 `10006`；不改 `merchant.fee_rate_bp`；订单手续费核对只报告，不改订单和账；扫描开始后新提交的费率下一轮才看得见。流水核对仍是 ACC-10。PAY-02 第 3 条改为按下单时刻已生效费率（`effective_from <= created_at` 的最近一档）计算并固化到 `fee_amount`，PAY-02 仍是 TODO。不新增错误码，不在 `cmd/payment/main.go` 启动核对循环。种子冲突更新写成 `merchant_id = merchant_fee_rate.merchant_id`，避免 `INSERT … SELECT` 未限定列名在 MySQL 8.4 报 1052 |
 | 2026-10-15 | v3.0 | ACC-03 口径澄清：需求草稿里的 ROLLBACK 是调用方事务边界，Post 不执行 BEGIN、COMMIT、ROLLBACK，也不调用 `dbx.WithTx`。1062 不回滚调用方事务（MySQL 1062 不会中止 InnoDB 事务），用 `dbx.IsDuplicate` 判断后，在同一事务按 `(biz_type, biz_no)` SELECT 已有凭证，返回 `duplicated = true` 和已有 `txn_no`；即使这次的金额或分录和第一次不同，也返回第一次的结果，不插分录、不改余额；SELECT 不到则 `10003`。本连接查不到的 `account_id`（含只存在于另一分片的账户）返回 `40003`，不是 `40001`，因为本连接分不清“没有这个 id”和“在另一个库”；`GetAccount` 仍然用 `40001`。`biz_type = REVERSAL` 返回 `40003`，不写任何行：Post 没有 `reversal_of` 参数，表约束 `ck_ledger_txn_reversal` 要求 REVERSAL 必须有 `reversal_of`，冲正是 ACC-08，本功能点不加参数、不改表。不新增错误码，`40003` 对外英文仍是 `unbalanced entries`。验收 A2 的 1000 goroutine 不用 `dbx.WithTx`：`WithTx` 把单次事务限制在 3 秒，且包含等行锁的时间，1000 个等待者会被取消，成功和 `40002` 就数不成 500/500。该用例用 `BeginTxx(READ COMMITTED)`，父 ctx 至少 60 秒，Post 返回 nil 才 Commit，否则 Rollback。生产路径的单次记账仍由其他测试用 `dbx.WithTx` 覆盖。不改资金规则、接口、表结构和错误码 |
+| 2026-10-19 | v3.0 | PAY-10 口径：商户费率历史表只追加；新生效时间必须严格晚于该商户已有最大 `effective_from`；相同时间相同费率幂等成功，相同时间不同费率 `10006`；不改 `merchant.fee_rate_bp`；订单手续费核对只报告，不改订单和账；扫描开始后新提交的费率下一轮才看得见。流水核对仍是 ACC-10。PAY-02 第 3 条改为按下单时刻已生效费率（`effective_from <= created_at` 的最近一档）计算并固化到 `fee_amount`，PAY-02 仍是 TODO。不新增错误码，不在 `cmd/payment/main.go` 启动核对循环。种子冲突更新写成 `merchant_id = merchant_fee_rate.merchant_id`，避免 `INSERT … SELECT` 未限定列名在 MySQL 8.4 报 1052 |
 | 2026-10-19 | v3.0 | ACC-04 口径澄清：Freeze 是进程内方法。IDL 已有 Freeze，本功能点不实现 RPC、不改 IDL。`biz_type` 只允许 REFUND / TRANSFER；商户号分片不合法、`biz_no` 为空或超过 64 个码点、金额不是正的 int64 分，返回已有的 `10001`，不写行。冻结对象是 `shard.Of(merchant_id)` 上的 MERCHANT_SETTLE。`freeze_no` 在事务外 `NewNo(ctx, "FZ")`，`ErrClockRollback` 映射为已有的 `10004`。事务由 Freeze 自己 `dbx.WithTx` 提交，Post 仍不提交。UPDATE 同时 `version = version + 1`，与 Post 改余额对齐，不改变冻结金额，也不改 `balance`。影响 0 行时同一事务重读：非 ACTIVE 返回 `40005`（优先于余额不足），可用余额不够返回 `40002`，两者回滚且不留冻结单；重读后仍是 ACTIVE 且可用余额足够则返回 `10003`，不空转重试。1062 只用 `dbx.IsDuplicate`，不解析错误文本，同一事务按 `(biz_type, biz_no)` 读取：FROZEN / CONFIRMED 且金额和账户一致则返回已有结果且 `duplicated = true`，不增加冻结；RELEASED 一律 `40004`，不再比较金额；FROZEN / CONFIRMED 金额或账户不一致为 `10006`，旧行不变；读不到行是 `10003`。`duplicated` 只在进程内结果里，与 Post 一样，不改 RPC 字段。不新增错误码，不改资金规则、表结构和接口 |
 | 2026-10-20 | v3.0 | ACC-05 口径澄清：ReleaseFreeze 是进程内方法。IDL 已有 ReleaseFreeze，本功能点不实现 RPC、不改 IDL。校验与 Freeze 相同，不合法返回已有的 `10001`，不发号、不写行；上下文已取消时参数不合法仍先返回 `10001`。参数合法后 nil service、nil ctx、nil 发号器、ShardDB 失败为 `10003`；已取消或已过截止时间的上下文原样返回，不发号。`freeze_no` 在事务外 `NewNo(ctx, "FZ")`，只给墓碑；`ErrClockRollback` 映射为已有的 `10004`。事务由 ReleaseFreeze 自己 `dbx.WithTx` 提交。空回滚插入 RELEASED 墓碑，不改 `balance` 和 `frozen_amount`；账户不存在 `40001`；`allow_overdraft` 不是 0 则 `10001`，不插入。已 RELEASED 幂等成功且不再比较金额。已 CONFIRMED 一律 `40004`。FROZEN 必须金额和账户一致，否则 `10006`。解冻不要求账户 ACTIVE，不返回 `40005`，不改 `balance`；冻结单和账户的 `version` 各加 1。账户更新 0 行则 `10003` 并回滚，冻结单保持 FROZEN，不改写成 `40002`。`duplicated` 只在进程内。不新增错误码，不改资金总规则，不实现 ACC-06 |
 | 2026-10-20 | v3.0 | ACC-06 口径澄清：ConfirmFreeze 是进程内方法。IDL 已有 ConfirmFreeze，本功能点不实现 RPC、不改 IDL。请求没有金额，R 只用冻结单 `amount`。校验与 Release 一样先于 nil 判断，不合法返回已有的 `10001`。参数合法后 nil service、nil ctx、nil 发号器、nil pools、`subCount < 1`、ShardDB 失败为 `10003`；已取消或已过截止时间的上下文原样返回。本方法不调用 `NewNo`，`TX` 号仍由记账在锁账户之前生成，发号错误沿用记账映射。事务由 ConfirmFreeze 自己 `dbx.WithTx` 提交。先锁冻结单，再按账户 id 升序锁账户。不存在或 RELEASED 为 `40004`，不插入。CONFIRMED 且 `txn_no` 非空则幂等，不再比较 channel。FROZEN 但不是该商户结算账户为 `10006`，不返回 `40001`。本分片平台子账户不存在为 `40001`，不是 `40003`。商户腿用 `balance` 与 `frozen_amount` 同减的更新，不要求 ACTIVE，不返回 `40002`；平台非 ACTIVE 为 `40005`，回滚后冻结单保持 FROZEN。凭证已存在而冻结单仍是 FROZEN，或确认 CAS 影响 0 行，为 `10003` 并回滚，不当成幂等成功。REFUND 凭证借商户贷渠道应收；TRANSFER 冻结单仍是 TRANSFER，凭证是 TRANSFER_OUT，贷在途。`duplicated` 只在进程内。不新增错误码，不改 CHECK，不实现 ACC-07、ACC-14、ACC-11、ACC-10、MQ-04、OPT-03 |
@@ -2897,3 +2897,4 @@ ACC-10 在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（一
 | 2026-10-27 | v3.0 | CH-06 文字澄清：总表依赖由 CH-01~05 改为 CH-01、CH-02、CH-03、CH-05，对齐已有的「M3 完成 01、02、03、08，其余在 M4」。CH-04 仍负责退款受理，不在本切片。§3 改为 DOING，不标 DONE。验收拆成已勾的 M3（FAIL、DROP_NOTIFY、DUP_NOTIFY、NEVER_FINISH）和未勾的 M4（SLOW、ACCEPT_TIMEOUT、BILL_MISSING、BILL_AMOUNT_DIFF、CLOSE_RACE）。DUP_NOTIFY 按 10 次发送：一个调度任务里并发 5 次，POST 都返回后按注入时钟再于 now+1s 至 now+5s 各发 1 次，不论平台响应；占名额用 `notify_sent_count < 10`。普通回调仍是 `notify_sent_count = ?` 且最多 5 次。SLOW 仍不发。本切片只断言 `bill_date`，不实现 CSV。CH-05 规则改为 DUP 由 CH-06 发送、SLOW 仍不发。不新增错误码，不加迁移 |
 | 2026-10-27 | v3.0 | PAY-01 口径澄清：`app_id` 与 `merchant_id` 按字节精确匹配（列排序规则不区分大小写，服务端读回比较），为空、不存在、大小写不同都为 `20004`。解密失败 `10003`，ERROR 日志只有 `app_id`、`merchant_id`。payment 不缓存凭证；明文密钥用 `biz.Secret` 包装，只有 `Reveal()` 取明文，fmt、json、slog 嵌套输出都为 `***`。规则 3 的缓存只存 `merchant_id`、`status`、`notify_url`，费率不缓存，另按 PAY-10 口径读 `merchant_fee_rate` 的生效档；没有生效档返回“未找到”，由 PAY-02 决定处理。TTL 区间 `[装载, 装载 + TTL)`，时钟回拨视为过期，TTL 为 0 每次读库，不存在与读库失败不缓存。payment Kitex 服务端在 PAY-01 起：端口 8881，中间件同 ACC-11，服务端超时 2 秒，只实现 `GetMerchantCredential`，其余方法返回 `10003`。OPS-01、GW-03、GW-08 不在本功能点。不新增错误码，不改 IDL，不改表，同步接口文档 2.1.6 |
 | 2026-10-27 | v3.0 | PAY-01 文字更正（接口文档 2.1.7）：上一行与 PAY-01 说明里“列排序规则不区分大小写”有误。`merchant` 表列跟随库默认 `utf8mb4_bin`（区分大小写，但 PAD SPACE 忽略尾部空格）；集成测试临时库为 `utf8mb4_0900_ai_ci`（不区分大小写与重音）。两种规则下 SQL 都可能匹配到字节不同的值，所以读回后逐字节比较。行为、错误码、IDL、表结构都不变 |
+| 2026-10-27 | v3.0 | 文档审查文字修正，不改规则：CH-07 明细标头改为与 §3 一致的 `P0 · M6`；QA-02 明细标头的里程碑与依赖改为与 §3 一致的 `M6–M7`、`全链路、OPT-01、CH-07`；BASE-03 规则 1 不再引用已删除的设计草稿，改为指向 `migrations/` 与 `docs/database.md`；本表 PAY-10 一行的日期按其提交改为 2026-10-19 并按日期排序；§5.2 的 NFR-CON-07 移到 NFR-CON-06 之后；Q2 最晚决定改为 M6 基线压测后（基线压测在 M6）；`/metrics` 暴露统一归 OPS-03，ACC-10 规则 4 与 OPS-03 末段原写的“仍是 OPS-01”作废（上面 2026-10-21 ACC-10 一行同此） |

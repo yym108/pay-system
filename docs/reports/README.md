@@ -9,7 +9,7 @@
 | BASE-03 | 数据库迁移与种子数据 | 基础设施 | `28061d8` | 2026-10-14 | [BASE-03-migrate-seed.md](BASE-03-migrate-seed.md) |
 | BASE-04 | 金额工具 | 基础设施 | `5df4729` | 2026-10-14 | [BASE-04-money.md](BASE-04-money.md) |
 | BASE-05 | ID 生成 | 基础设施 | `795cc26` | 2026-10-14 | [BASE-05-idgen.md](BASE-05-idgen.md) |
-| BASE-06 | 错误码 | 基础设施 | `d81c442` | 2026-10-14 | [BASE-06-errno.md](BASE-06-errno.md) |
+| BASE-06 | 错误码 | 基础设施 | `d81c442` | 2026-10-15 | [BASE-06-errno.md](BASE-06-errno.md) |
 | BASE-07 | 时钟 | 基础设施 | `15e2022` | 2026-10-15 | [BASE-07-clock.md](BASE-07-clock.md) |
 | BASE-09 | 配置 | 基础设施 | `cb968f5` | 2026-10-15 | [BASE-09-config.md](BASE-09-config.md) |
 | BASE-10 | 日志与脱敏 | 基础设施 | `5d83baf` | 2026-10-15 | [BASE-10-logx.md](BASE-10-logx.md) |
@@ -21,7 +21,7 @@
 | ACC-02 | 账户查询 | 基础设施 | `b72e591` | 2026-10-15 | [ACC-02-get-account.md](ACC-02-get-account.md) |
 | ACC-03 | 通用记账 | 基础设施 | `31fff62` | 2026-10-15 | [ACC-03-ledger-post.md](ACC-03-ledger-post.md) |
 | PAY-10 | 商户费率变更与订单手续费核对 | 支付 | `9587a08` | 2026-10-19 | [PAY-10-fee-rate.md](PAY-10-fee-rate.md) |
-| ACC-04 | 冻结 | 基础设施 | `747a27a` | 2026-10-19 | [ACC-04-freeze.md](ACC-04-freeze.md) |
+| ACC-04 | 冻结 | 基础设施 | `747a27a` | 2026-10-20 | [ACC-04-freeze.md](ACC-04-freeze.md) |
 | ACC-05 | 解冻 | 基础设施 | `1db50ae` | 2026-10-20 | [ACC-05-release.md](ACC-05-release.md) |
 | ACC-06 | 确认扣款 | 基础设施 | `0608708` | 2026-10-20 | [ACC-06-confirm.md](ACC-06-confirm.md) |
 | ACC-07 | 同分片转账 | 基础设施 | `7138c9f` | 2026-10-21 | [ACC-07-transfer-local.md](ACC-07-transfer-local.md) |

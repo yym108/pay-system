@@ -1,6 +1,6 @@
 # 开发计划
 
-> 最后更新：2026-10-15
+> 最后更新：2026-10-27
 > 周期 8 周。功能点的规则与验收见 `docs/02-requirements.md`（下称“需求”），本文只安排顺序和跟踪进度。
 > 进度以需求 §3 功能点总表的“状态”列为准，本文的勾选只用于周内跟踪。
 > 2026-10-12：按需求 v3.0 重排，重心放在支付、退款、转账三条链路的一致性与性能对比；对账、通知、网关、运维按简化范围安排。
@@ -24,7 +24,7 @@
 ### 第 1 周（M1）：工程骨架、分片与记账核心
 
 - [x] BASE-01 工程骨架
-- [x] BASE-02 本地环境（基础设施与 kafka-init；应用与 migrate/seed 仍是 profile `apps` 占位）
+- [x] BASE-02 本地环境（基础设施与 kafka-init；应用容器仍是 profile `apps` 占位，等 OPS-01；migrate/seed 已由 BASE-03 换成实际命令，用 `make migrate`、`make seed` 单独执行，不随 `make up` 启动）
 - [x] BASE-03 迁移与种子（两个账户分片、平台子账户、3 个演示商户）
 - [x] BASE-04 金额
 - [x] BASE-05 ID
@@ -136,17 +136,8 @@
 | hertz-contrib OTel 中间件过旧 | 链路断开 | 自写 Hertz tracing 中间件 |
 | testcontainers 启动慢 | 测试反馈慢 | 本地复用 `TEST_MYSQL_DSN`，每个测试包独立 schema |
 
-## 4. 第一次开工会话清单
+## 4. 新会话接手清单
 
-1. 确认 `docs/01-tech-decisions.md` 中的决策和需求 §8.1 的待定事项，有异议先改文档再写代码。
-2. module path 已定为 `github.com/yym108/pay-system`，远程仓库 `git@github.com:yym108/pay-system.git`。
-3. 安装工具（版本固定）：
-
-   ```bash
-   go install github.com/cloudwego/kitex/tool/cmd/kitex@v0.16.3
-   go install github.com/cloudwego/thriftgo@v0.4.5
-   # golangci-lint v2.14.0：按官方文档安装预编译二进制
-   ```
-
-4. 按顺序完成 BASE-01、BASE-02、BASE-03，确认 `make up && make migrate` 在本机通过，两个账户分片都已建表。
-5. 从 BASE-04、BASE-05 开始，按“测试 → 实现”推进。
+1. 读仓库根目录的 `AGENTS.md`，了解角色分工、提交规则和资金硬规则。新机器上的工具版本见 `docs/01-tech-decisions.md` §2。
+2. 在需求 §3 功能点总表中按里程碑顺序找下一个功能点：状态为 `TODO` 或 `DOING`，且“依赖”列全部为 `DONE`（需求 §0.2 第 1 条）。
+3. 用 `/feature <功能点编号>` 启动，按 `.opencode/skills/pay-feature-dev/SKILL.md` 的流程推进。
