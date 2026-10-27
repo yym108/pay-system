@@ -93,7 +93,7 @@ func (st *merchantMem) query(query string, args []driver.NamedValue) (driver.Row
 		}
 		rows := &memRows{cols: []string{"app_id", "merchant_id", "status", "app_secret_cipher", "secret_version", "notify_url"}}
 		for _, row := range st.rows {
-			// 模拟 utf8mb4_0900_ai_ci：比较不区分大小写。
+			// 模拟集成测试临时库的 utf8mb4_0900_ai_ci：比较不区分大小写。
 			if strings.EqualFold(row.appID, key) {
 				version := driver.Value(row.version)
 				if st.badScan {

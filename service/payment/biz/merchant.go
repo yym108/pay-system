@@ -261,8 +261,9 @@ type merchantStore interface {
 	feeRateAt(ctx context.Context, merchantID string, at time.Time) (FeeRate, bool, error)
 }
 
-// 列的排序规则是 utf8mb4_0900_ai_ci，WHERE 不区分大小写和重音。
-// 读回 app_id、merchant_id 在 Go 里逐字节比较，只认完全相同的标识；仍走唯一索引。
+// 列跟随库默认 utf8mb4_bin：区分大小写，但 PAD SPACE 会忽略尾部空格；
+// 集成测试临时库是 utf8mb4_0900_ai_ci，不区分大小写和重音。两种规则下 WHERE 都可能命中字节不同的值，
+// 所以读回 app_id、merchant_id 在 Go 里逐字节比较，只认完全相同的标识；仍走唯一索引。
 //
 //nolint:gosec // G101 误报：这是查询语句，列名含 secret，不是硬编码凭证。
 const credentialByAppIDSQL = `

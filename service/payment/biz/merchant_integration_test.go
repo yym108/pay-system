@@ -137,7 +137,8 @@ func TestPAY01SeedMerchantCredential(t *testing.T) {
 func TestPAY01UnknownAppID(t *testing.T) {
 	s := openSeeded(t)
 	m := NewMerchants(s.db, s.box, &clock.Fake{}, time.Minute)
-	// 列是 utf8mb4_0900_ai_ci，大小写或重音不同时 SQL 也能命中；只认完全相同的 app_id。
+	// 测试临时库是 utf8mb4_0900_ai_ci，大小写或重音不同时 SQL 也能命中；compose 的 utf8mb4_bin 则会忽略尾部空格。
+	// 两种情况都只认完全相同的 app_id。
 	for _, appID := range []string{"app_m100099", "APP_M100001", "app_M100001", "äpp_m100001", ""} {
 		_, err := m.GetMerchantCredential(s.ctx, appID)
 		assertErrno(t, err, errno.ErrMerchantInvalid)
