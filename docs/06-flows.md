@@ -1,7 +1,7 @@
 # pay-system 流程图（状态机、泳道图、控制流图）
 
-> 版本：v2.17　最后修改：2026-10-27　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐。2026-10-21 按 ACC-14 口径改正 CF-33，CF-33 已对齐。2026-10-21 按 ACC-10 口径改正 CF-17，CF-17 已对齐。2026-10-23 按 BASE-13 规则 8 补 CF-01、CF-02、CF-21 的签名配置故障出口。2026-10-23 按 CH-01 口径改正 CF-22。2026-10-26 CF-23 注明防悬挂 CLOSED 记录 amount = 0。2026-10-26 渠道查单单独画 CF-38，CH-02 的控制流改指 CF-38；SL-02 仍留给以后的补偿。2026-10-26 按 CH-03 口径补全 CF-23 的验签、参数、CAS 与再读出口，六个业务结果不变。2026-10-26 按 CH-05 在 CF-24 图下注明「其他」和 DROP_NOTIFY 不回调已实现；SLOW 与 DUP_NOTIFY 的特殊发送仍未实现，这两种场景现在不发普通回调。图本身不改。2026-10-27 按 CH-06 将 CF-24 图下改为 DUP_NOTIFY 已按「并发 5 次，之后每秒 1 次再 5 次，不论响应」实现；SLOW 仍未实现，现在不发。图本身不改。2026-10-27 文档审查修正与需求不一致的文字：SL-01 延迟范围、CF-05 未知结果分支、SL-14 C13、CF-34 与 CF-35 的 10001 / 10006、§5 R15 与 R16 状态、SL-09 与 CF-26 的定时触发写法、对 03 的版本引用；不改规则。2026-10-27 文档审查第 2 阶段按用户确认的规则修图：outbox 投递改为领取写租约、事务外发送、按租约值 CAS 回写；手续费为 0 省略分录；merchant_notify 与 recon_diff 状态 CAS；批量记账非 ACTIVE 退化逐条，Post 返回 40005 进 DLQ；退款释放额度影响 0 行回滚并返回 10003；对账批次 INIT / DOWNLOADED 超时接管与 BILL_NOT_READY 当天最多重试 6 次；SLOW 只推迟首次回调；覆盖矩阵同步 BASE-15、GW-09、QA-05
-> 依据：`docs/02-requirements.md` v3.0、`docs/03-conventions.md` v2.17、`docs/01-tech-decisions.md` D17–D21；图与需求冲突处以需求文档为准
+> 版本：v2.18　最后修改：2026-10-27　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐。2026-10-21 按 ACC-14 口径改正 CF-33，CF-33 已对齐。2026-10-21 按 ACC-10 口径改正 CF-17，CF-17 已对齐。2026-10-23 按 BASE-13 规则 8 补 CF-01、CF-02、CF-21 的签名配置故障出口。2026-10-23 按 CH-01 口径改正 CF-22。2026-10-26 CF-23 注明防悬挂 CLOSED 记录 amount = 0。2026-10-26 渠道查单单独画 CF-38，CH-02 的控制流改指 CF-38；SL-02 仍留给以后的补偿。2026-10-26 按 CH-03 口径补全 CF-23 的验签、参数、CAS 与再读出口，六个业务结果不变。2026-10-26 按 CH-05 在 CF-24 图下注明「其他」和 DROP_NOTIFY 不回调已实现；SLOW 与 DUP_NOTIFY 的特殊发送仍未实现，这两种场景现在不发普通回调。图本身不改。2026-10-27 按 CH-06 将 CF-24 图下改为 DUP_NOTIFY 已按「并发 5 次，之后每秒 1 次再 5 次，不论响应」实现；SLOW 仍未实现，现在不发。图本身不改。2026-10-27 文档审查修正与需求不一致的文字：SL-01 延迟范围、CF-05 未知结果分支、SL-14 C13、CF-34 与 CF-35 的 10001 / 10006、§5 R15 与 R16 状态、SL-09 与 CF-26 的定时触发写法、对 03 的版本引用；不改规则。2026-10-27 文档审查第 2 阶段按用户确认的规则修图：outbox 投递改为领取写租约、事务外发送、按租约值 CAS 回写；手续费为 0 省略分录；merchant_notify 与 recon_diff 状态 CAS；批量记账非 ACTIVE 退化逐条，Post 返回 40005 进 DLQ；退款释放额度影响 0 行回滚并返回 10003；对账批次 INIT / DOWNLOADED 超时接管与 BILL_NOT_READY 当天最多重试 6 次；SLOW 只推迟首次回调；覆盖矩阵同步 BASE-15、GW-09、QA-05。2026-10-27 文档审查第 3 阶段按需求 7d08a2c 修对账与批量记账的图：对账批次拆为 CF-26、CF-39、CF-40，差错处理拆为 CF-29、CF-41；`retry_count` 持久化；重跑与接管只删 `handle_action` 为空的 PENDING 差错；差错按 `uk_batch_type_biz_no_diff_type` 同键跳过；跨批次重试窗口与严重不一致；报告加“等待人工处理”；批量记账 F = 0 省略手续费分录
+> 依据：`docs/02-requirements.md` v3.0、`docs/03-conventions.md` v2.18、`docs/01-tech-decisions.md` D17–D21；图与需求冲突处以需求文档为准
 > 用途：以图的形式确认全部功能性设计。图是需求的视图，规则冲突时以需求文档为准；需求变更后同步修改对应的图。
 
 ## 0. 阅读说明
@@ -39,7 +39,7 @@ flowchart LR
 
 ### 0.3 渲染
 
-GitHub、GitLab、IDEA/GoLand（Markdown 插件）、VS Code（Markdown Preview Mermaid Support）可直接渲染。截至 v2.12，图已用 `@mermaid-js/mermaid-cli` 12.0.0 渲染校验。v2.13 的 CF-23 未再渲染：当前环境没有 `mmdc`，也不新增 SVG。v2.14 只在 CF-24 图下加了文字，图本身没改，同样没有 `mmdc`，不新增 SVG。v2.16、v2.17 用 `npx -y @mermaid-js/mermaid-cli`（12.0.0）渲染全部 64 张图通过，不新增 SVG。
+GitHub、GitLab、IDEA/GoLand（Markdown 插件）、VS Code（Markdown Preview Mermaid Support）可直接渲染。截至 v2.12，图已用 `@mermaid-js/mermaid-cli` 12.0.0 渲染校验。v2.13 的 CF-23 未再渲染：当前环境没有 `mmdc`，也不新增 SVG。v2.14 只在 CF-24 图下加了文字，图本身没改，同样没有 `mmdc`，不新增 SVG。v2.16、v2.17 用 `npx -y @mermaid-js/mermaid-cli`（12.0.0）渲染全部 64 张图通过，v2.18 渲染全部 67 张图通过，都不新增 SVG。
 
 ## 1. 覆盖矩阵
 
@@ -89,13 +89,13 @@ GitHub、GitLab、IDEA/GoLand（Markdown 插件）、VS Code（Markdown Preview 
 | GW-09 退款与转账路由 | — | SL-05、SL-11、SL-12 | CF-01 |
 | GW-06 渠道回调入口 | — | SL-01 | CF-02 |
 | GW-07 管理接口（重放、核对、触发对账） | — | SL-10 | CF-03 |
-| REC-01 批次调度、REC-02 账单导入 | SM-07 | SL-09 | CF-26 |
-| REC-03 外部比对 | SM-08 | SL-09 | CF-27 |
+| REC-01 批次调度、REC-02 账单导入 | SM-07 | SL-09 | CF-26、CF-39、CF-40 |
+| REC-03 外部比对 | SM-08 | SL-09 | CF-27、CF-40 |
 | ~~REC-04 跨日处理~~（CUT） | — | — | — |
 | REC-05 内部对账（支付、退款、转账） | SM-08 | SL-09 | CF-28 |
-| REC-06 自动处理 | SM-08 | SL-09 | CF-29 |
+| REC-06 自动处理 | SM-08 | SL-09 | CF-29、CF-41 |
 | ~~REC-07 人工处理与挂账~~（CUT，CF-30 只保留编号） | — | — | — |
-| REC-08 报告 | — | SL-09、SL-10 | CF-26 |
+| REC-08 报告 | — | SL-09、SL-10 | CF-40 |
 | OPS-01 健康检查与优雅退出 | — | — | CF-31 |
 | BASE-15 故障注入点（`pkg/fault`） | — | 各泳道图中的“故障点 xxx” | 各控制流图中的故障点节点，§4.10 汇总 |
 | QA-01 故障演练（C1–C13） | — | SL-02、SL-14、SL-15 等标注了场景编号的图 | §4.10 演练列 |
@@ -222,26 +222,27 @@ stateDiagram-v2
 ```mermaid
 stateDiagram-v2
     [*] --> INIT: 按 (channel, bill_date) 创建（REC-01）
-    INIT --> INIT: BILL_NOT_READY，30 分钟后调度再次调用 RunBatch，按超时接管重试，当天最多 6 次
-    INIT --> DOWNLOADED: 下载、校验、导入账单（REC-02）
-    DOWNLOADED --> CHECKING: 开始比对
-    CHECKING --> DONE: 外部比对、内部对账、自动处理完成（REC-03、REC-05、REC-06）
-    INIT --> FAILED: 下载重试耗尽 / BILL_NOT_READY 当天重试 6 次后仍未就绪
+    INIT --> INIT: BILL_NOT_READY 且 retry_count 未达 6，CAS retry_count + 1 / updated_at 满 30 分钟被接管，从下载重新开始
+    INIT --> DOWNLOADED: 下载、校验，同一事务导入账单（REC-02）
+    DOWNLOADED --> CHECKING: 开始比对，写 started_at / updated_at 满 30 分钟被接管，接管 CAS 直接推进，不重新下载
+    CHECKING --> CHECKING: started_at 满 30 分钟被接管，先删 handle_action 为空的 PENDING 差错，再重新比对
+    CHECKING --> DONE: 外部比对、内部对账、自动处理完成，CAS 带本次运行的 started_at（REC-03、REC-05、REC-06）
+    INIT --> FAILED: 下载重试耗尽、校验失败 / retry_count 已达 6 仍 BILL_NOT_READY
     DOWNLOADED --> FAILED: 异常
-    CHECKING --> FAILED: 异常
-    DOWNLOADED --> DOWNLOADED: updated_at 超过 30 分钟，RunBatch 触发时被接管
-    CHECKING --> CHECKING: started_at 超过 30 分钟，RunBatch 触发时被接管
-    FAILED --> INIT: 重跑
-    DONE --> INIT: force 重跑
+    CHECKING --> FAILED: 异常，CAS 带本次运行的 started_at
+    FAILED --> INIT: 重跑，retry_count = 0
+    DONE --> INIT: force 重跑，retry_count = 0
     note right of FAILED
-        重跑时删除本批账单行和 PENDING 差错
-        保留 RESOLVED、IGNORED 差错（REC-01 第 3 条）
-        重跑从 INIT 开始
+        重跑删除本批账单行和 status = PENDING 且 handle_action 为空的差错
+        保留已自动处理的 PENDING 差错和 RESOLVED、IGNORED 差错（REC-01 第 3 条）
+        CAS 重置为 INIT，从下载开始
     end note
     note right of INIT
-        INIT、DOWNLOADED 按 updated_at，CHECKING 按 started_at
-        超过 30 分钟视为卡死，只在 RunBatch 触发时接管，不另设扫描
-        接管 CAS 带原状态与原时间戳，同一时刻只有一个接管者
+        超时指 now − 时间戳 ≥ 30 分钟：INIT、DOWNLOADED 按 updated_at，CHECKING 按 started_at
+        只在 RunBatch 被调用时判定，不另设后台扫描
+        接管 CAS 带原状态与原时间戳，并把该时间戳改为 now，同一时刻只有一个接管者
+        批次被接管后，旧运行的 DONE / FAILED CAS 影响 0 行，旧运行放弃
+        retry_count 持久化在表中，进程重启不丢；首次下载后最多重试 6 次
     end note
 ```
 
@@ -249,16 +250,19 @@ stateDiagram-v2
 
 ```mermaid
 stateDiagram-v2
-    [*] --> PENDING: 识别差错（REC-03、REC-05）
-    PENDING --> RESOLVED: 自动 REQUERY 推进成功 / REPLAY 后复核凭证存在（REC-06）
-    PENDING --> IGNORED: 查单确认渠道账单遗漏（REC-06）
-    PENDING --> [*]: 批次重跑时删除
+    [*] --> PENDING: 识别差错，按 uk_batch_type_biz_no_diff_type 插入，同键已存在则跳过（REC-03、REC-05）
+    PENDING --> PENDING: 自动处理失败或 REPLAY 待复核，写 handle_action、handler、handle_note / CHANNEL_MISSING 渠道不是 SUCCESS，写 channel_status，不再自动重试
+    PENDING --> RESOLVED: REQUERY 推进成功 / REPLAY 后复核凭证存在（REC-06）
+    PENDING --> IGNORED: CHANNEL_MISSING 查单确认渠道 SUCCESS（REC-06）
+    PENDING --> [*]: 批次重跑或 CHECKING 接管时删除，只删 handle_action 为空的
     RESOLVED --> [*]
     IGNORED --> [*]
     note right of PENDING
-        只由自动处理推进，没有人工处理入口（REC-07 CUT）
-        LOCAL_MISSING、AMOUNT_MISMATCH、STATUS_MISMATCH（本地终态）、
-        TRANSFER_MISMATCH 保持 PENDING，ERROR 日志并写入报告
+        每次写入都是 CAS，条件 WHERE id = ? AND status = PENDING
+        跨批次自动重试只处理 bill_date 在 今天−8 ~ 今天−2 的差错（今天为运行时的东八区日期）
+        窗口外仍 PENDING 的已处理差错、channel_status 非空的 CHANNEL_MISSING 列入报告的“等待人工处理”（REC-08）
+        LOCAL_MISSING、AMOUNT_MISMATCH、STATUS_MISMATCH（本地终态）、TRANSFER_MISMATCH 无自动处理，ERROR 日志并写入报告
+        没有人工处理入口（REC-07 CUT）
     end note
 ```
 
@@ -740,33 +744,36 @@ sequenceDiagram
     participant P as payment
 
     T->>RC: RunBatch(mockpay, D)，D 为账期 bill_date
-    Note over T: 定时任务在 D 的次日 RECON_RUN_AT（默认 10:00）发起（REC-01 规则 1）
-    Note over RC: 按 uk_channel_bill_date 创建或取得批次，CAS 抢占（CF-26）<br/>INIT、DOWNLOADED 的 updated_at 或 CHECKING 的 started_at 超过 30 分钟时接管
+    Note over T: 每日定时在 D 的次日 RECON_RUN_AT（默认 10:00）发起（REC-01 规则 1）<br/>同一次定时触发还对 bill_date 在 今天−8 ~ 今天−2 的 INIT / DOWNLOADED / CHECKING 已有批次逐个调用 RunBatch<br/>今天为运行时的东八区日期。不补建缺失账期，FAILED、DONE 不处理，CLI 与管理接口不做这一步
+    Note over RC: 按 uk_channel_bill_date 创建或取得批次（CF-26）<br/>满 30 分钟视为卡死，CAS 接管：INIT、DOWNLOADED 按 updated_at，CHECKING 按 started_at<br/>INIT 接管从下载开始，DOWNLOADED 接管直接 CAS 到 CHECKING<br/>CHECKING 接管与重跑只删 status = PENDING 且 handle_action 为空的差错，重跑另删账单行、retry_count = 0
     RC->>CH: GET /mockpay/v1/bills?date=D（超时 30s，失败重试 3 次）
     alt BILL_NOT_READY
         CH-->>RC: BILL_NOT_READY
-        Note over RC: 批次保持 INIT。30 分钟后调度再次调用 RunBatch，按 INIT 超时接管重新下载<br/>当天最多重试 6 次，仍未就绪 → FAILED，记录 error_msg
+        Note over RC: retry_count 未达 6：CAS retry_count + 1，updated_at = now，批次保持 INIT<br/>注入时钟的调度器 30 分钟后对该批次再调用 RunBatch，按 INIT 超时接管重新下载<br/>retry_count 已达 6：CAS → FAILED，error_msg = BILL_NOT_READY（CF-39）
     else 账单就绪
         CH-->>RC: CSV + X-Bill-Sha256 + X-Bill-Count
-        Note over RC: 校验哈希与行数，严格解析，每 1000 行批量插入<br/>批次 → DOWNLOADED → CHECKING
+        Note over RC: 校验哈希与行数，严格解析<br/>一个事务内每 1000 行批量插入并置 DOWNLOADED<br/>CAS → CHECKING，写 started_at = T0
         RC->>PD: 读 channel_txn（D 日 SUCCESS，及账单行按匹配键回查）
-        Note over RC: 外部比对（REC-03，CF-27）：LOCAL_MISSING、STATUS_MISMATCH、<br/>AMOUNT_MISMATCH、CHANNEL_MISSING，不做跨日处理
+        Note over RC: 外部比对（REC-03，CF-27）：LOCAL_MISSING、STATUS_MISMATCH、<br/>AMOUNT_MISMATCH、CHANNEL_MISSING，不做跨日处理<br/>差错按 uk_batch_type_biz_no_diff_type 插入，同键已存在则跳过
         RC->>PD: 读 D 日成功支付单、成功退款单、终态转账单
         RC->>AD: 按分片读 ledger_txn、account_freeze、transfer_branch
-        Note over RC: 内部对账（REC-05，CF-28）：LEDGER_MISSING、TRANSFER_MISMATCH<br/>内存比对，不跨 schema JOIN<br/>复核历史 REPLAY 的 LEDGER_MISSING 差错（不限账期）
+        Note over RC: 内部对账（REC-05，CF-28）：LEDGER_MISSING、TRANSFER_MISMATCH<br/>内存比对，不跨 schema JOIN，插入规则同外部比对
 
-        Note over RC: 自动处理（REC-06，CF-29）
+        Note over RC: 自动处理本次新插入的差错（REC-06，CF-29）
         RC->>P: SyncChannelTxn(biz_no)（STATUS_MISMATCH 本地 PROCESSING、CHANNEL_MISSING）
         P->>CH: POST /mockpay/v1/query
         CH-->>P: 渠道状态
         Note over P: 本地 PROCESSING 时按查单规则推进（CF-09）
         P-->>RC: local_status、channel_status、changed
+        Note over RC: 推进成功 → CAS RESOLVED，渠道确认 SUCCESS → CAS IGNORED<br/>CHANNEL_MISSING 渠道不是 SUCCESS → 严重不一致：写 channel_status，ERROR 日志<br/>pay_recon_channel_inconsistent_total + 1，不再自动重试<br/>调用出错或超时 → 写 handle_action、handle_note，保持 PENDING
         RC->>P: ReplayEvent(biz_no, event_type)（LEDGER_MISSING）
         Note over P: outbox 重新投递，account 补入账
         P-->>RC: event_id
-        Note over RC: handle_action = REPLAY，保持 PENDING 等待复核<br/>其余差错保持 PENDING，ERROR 日志并写入报告<br/>批次 → DONE，指标 pay_recon_diffs_total、pay_recon_pending_diffs
+        Note over RC: handle_action = REPLAY，保持 PENDING 等待复核<br/>其余差错保持 PENDING，ERROR 日志并写入报告<br/>RESOLVED、IGNORED 的 CAS 影响 0 行：重新读取按当前状态返回，读不到按“已不存在”返回
+        Note over RC: 跨批次（CF-41），只处理 bill_date 在 今天−8 ~ 今天−2 的差错，不限批次<br/>handle_action = REQUERY 的再调 SyncChannelTxn，排除 channel_status 非空的 CHANNEL_MISSING<br/>REPLAY 的 LEDGER_MISSING 复核，凭证仍缺失则再次 ReplayEvent
+        Note over RC: 写入本次重新计算的笔数、金额、匹配数，diff_count = 本批 recon_diff 实际行数<br/>CAS CHECKING → DONE，条件带 started_at = T0（CF-40）<br/>影响 0 行表示批次已被接管或重跑，旧运行放弃<br/>指标 pay_recon_diffs_total、pay_recon_pending_diffs
     end
-    RC-->>T: 批次统计与前 100 条差错（REC-08）
+    RC-->>T: 批次统计、前 100 条差错、“等待人工处理”的总数与前 100 条（REC-08）
 ```
 
 ### SL-10 运营操作
@@ -793,7 +800,8 @@ sequenceDiagram
         A-->>GW: passed、failures
     else 执行对账 POST /admin/recon/run
         GW->>RC: RunBatch(channel, bill_date, force)（SL-09）
-        RC-->>GW: 批次统计与前 100 条差错（REC-08）
+        Note over RC: 只处理指定账期，不顺带处理前 7 个账期（只有每日定时做）
+        RC-->>GW: 批次统计、前 100 条差错、“等待人工处理”的总数与前 100 条（REC-08）
     end
     GW-->>O: 统一响应（不签名）
     Note over GW,A: 管理接口只有以上三个（GW-07）<br/>开户 OpenAccount 只由 seed 调用（BASE-03），不对运营开放
@@ -1008,7 +1016,7 @@ sequenceDiagram
             C->>DB: ROLLBACK
             Note over C: 本组退化为逐条处理（MQ-04）
         else 插入成功
-            Note over C: 按账户聚合增量：同一商户、同一平台子账户 k 的多笔合并<br/>k = crc32(pay_no) % PLATFORM_SUB_ACCOUNTS
+            Note over C: 按账户聚合增量：同一商户、同一平台子账户 k 的多笔合并<br/>k = crc32(pay_no) % PLATFORM_SUB_ACCOUNTS<br/>F = 0 的事件省略手续费分录，不计入手续费收入子账户的增量，也不为它加锁（OPT-02 规则 7）
             C->>DB: 按 account_id 升序 SELECT FOR UPDATE
             alt 任一账户 status 不是 ACTIVE
                 C->>DB: ROLLBACK
@@ -1116,7 +1124,7 @@ flowchart TD
     WR -->|"否"| RT{"路由（只有三个接口）"}
     RT -->|"POST /admin/outbox/replay"| RP["PaymentService.ReplayEvent（CF-20）"]
     RT -->|"POST /admin/accounts/check"| CB["AccountService.CheckBalance（CF-17）"]
-    RT -->|"POST /admin/recon/run"| RR["ReconService.RunBatch（CF-26）<br/>响应中返回批次统计与前 100 条差错"]
+    RT -->|"POST /admin/recon/run"| RR["ReconService.RunBatch（CF-26）<br/>只处理指定账期，不顺带处理前 7 个账期<br/>响应返回批次统计、前 100 条差错<br/>“等待人工处理”的总数与前 100 条（CF-40）"]
     RP --> AU["写操作记审计日志：操作人、接口、参数摘要、结果"]
     CB --> AU
     RR --> AU
@@ -1950,7 +1958,7 @@ flowchart TD
     subgraph TX["分片 s 事务"]
         PQ["SELECT biz_no FROM ledger_txn WHERE biz_type = PAY AND biz_no IN (...)<br/>已入账的跳过"]
         PQ --> BI["批量 INSERT ledger_txn（剩余事件）"]
-        BI -->|"成功"| AG["按账户聚合增量：同一商户、同一平台子账户 k 的多笔合并<br/>k = crc32(biz_no) % PLATFORM_SUB_ACCOUNTS"]
+        BI -->|"成功"| AG["按账户聚合增量：同一商户、同一平台子账户 k 的多笔合并<br/>k = crc32(biz_no) % PLATFORM_SUB_ACCOUNTS<br/>F = 0 的事件省略手续费分录（凭证只有借渠道应收 A、贷商户 A）<br/>不计入手续费收入子账户的增量，也不为它加锁（OPT-02 规则 7）"]
         AG --> LK["按 account_id 升序 SELECT ... FOR UPDATE"]
         LK -->|"都存在"| AS{"所有账户 status = ACTIVE"}
         AS -->|"是"| UP["UPDATE account SET balance = balance + Σ, version + 1<br/>行锁已持有，状态不会再变"]
@@ -1973,7 +1981,7 @@ flowchart TD
     classDef fault fill:#fff4d6,stroke:#b8860b
 ```
 
-部分分组已提交时崩溃，重新消费时预查跳过已入账事件。入账事件不依赖顺序，`balance_after` 仍逐条正确，ACC-10 核对不需要特殊处理。
+每个事件的分录与 MQ-04 逐条模式相同（OPT-02 规则 7）。部分分组已提交时崩溃，重新消费时预查跳过已入账事件。入账事件不依赖顺序，`balance_after` 仍逐条正确，ACC-10 核对不需要特殊处理。
 
 ### 4.7 通知
 
@@ -2202,42 +2210,88 @@ flowchart TD
 
 #### CF-26 对账批次
 
-覆盖：REC-01、REC-02、REC-08。
+覆盖：REC-01。触发、按状态分派与超时接管；下载导入见 CF-39，比对与收尾见 CF-40。
 
 ```mermaid
 flowchart TD
-    S(["RunBatch(channel, bill_date, force)<br/>定时：每天 RECON_RUN_AT（默认 10:00），bill_date 取前一天<br/>或 CLI / 管理接口指定"]) --> GB["按 uk_channel_bill_date 创建或读取批次"]
+    DS(["每日定时 RECON_RUN_AT（默认 10:00）"]) --> D1["RunBatch(channel, 今天−1, false)"]
+    DS --> D7["按 uk_channel_bill_date 前缀范围查 bill_date 在 今天−8 ~ 今天−2<br/>状态 INIT / DOWNLOADED / CHECKING 的已有批次，逐个 RunBatch<br/>不补建缺失账期，FAILED、DONE 不处理"]
+    D1 --> S
+    D7 --> S
+    S(["RunBatch(channel, bill_date, force)<br/>其他调用方：CLI、管理接口、BILL_NOT_READY 的单批次延迟重试（CF-39）"]) --> GB["按 uk_channel_bill_date 创建或读取批次"]
     GB --> ST{"批次状态"}
+    ST -->|"新建"| DLN(["从下载开始（CF-39）"])
     ST -->|"DONE 且未 force"| RET(["返回已有结果"]):::ok
-    ST -->|"未超时的 INIT / DOWNLOADED / CHECKING"| CUR(["返回当前批次，不重复执行"]):::ok
-    ST -->|"新建"| DL
-    ST -->|"FAILED，或 DONE 且 force"| RR["删除本批 recon_channel_bill 和 PENDING 差错<br/>保留 RESOLVED、IGNORED 差错<br/>CAS 重置为 INIT"]
-    ST -->|"CHECKING 且 started_at 超过 30 分钟"| TK["视为卡死，CAS 接管<br/>条件带原状态与原 started_at"]
-    ST -->|"INIT 且 updated_at 超过 30 分钟"| TKI["视为卡死，CAS 接管<br/>条件带原状态与原 updated_at"]
-    ST -->|"DOWNLOADED 且 updated_at 超过 30 分钟"| TKD["视为卡死，CAS 接管<br/>条件带原状态与原 updated_at"]
-    TKI --> DL
-    TKD --> CK
-    RR --> DL["下载账单：超时 30s，失败重试 3 次，间隔 10s"]
-    DL -->|"BILL_NOT_READY"| NRC{"当天已重试 6 次"}
-    NRC -->|"否"| NR(["保持 INIT<br/>30 分钟后调度再次调用 RunBatch，按 INIT 超时接管重试"]):::ok
-    NRC -->|"是"| FD3["FAILED，记录 error_msg"]:::err
-    DL -->|"重试耗尽"| FD["FAILED，记录 error_msg"]:::err
-    DL -->|"成功"| VF{"X-Bill-Sha256、X-Bill-Count 一致<br/>严格解析：表头、整数金额、时间格式"}
-    VF -->|"否"| FD2["FAILED，错误信息带行号"]:::err
-    VF -->|"是"| IM["一个事务内每 1000 行批量插入 recon_channel_bill<br/>写 bill_file_hash，CAS → DOWNLOADED"]
-    IM --> CK["CAS → CHECKING，写 started_at"]
-    TK --> CK
-    CK --> EXT["外部比对（CF-27）"]
-    EXT --> INT["内部对账（CF-28）"]
-    INT --> AUTO["自动处理与复核（CF-29）"]
-    AUTO --> FIN["CAS → DONE"]
-    FIN --> RPT(["报告（REC-08）：账期、渠道、双方笔数与金额、匹配数、差错数<br/>按 recon_diff 实时聚合的各类差错数与自动处理数，前 100 条差错<br/>指标 pay_recon_diffs_total、pay_recon_pending_diffs"]):::ok
-    CK -.- EX2["任一步异常 → FAILED，记录 error_msg"]:::err
-    ST -.- NT["超时接管只在 RunBatch 被触发时判断，不另设扫描<br/>接管失败（CAS 影响 0 行）返回当前批次<br/>BILL_NOT_READY 的重试计数与待执行重试只在进程内保存<br/>进程重启后丢失，等下一次 CLI 或管理接口调用接管（REC-01 规则 6）"]
+    ST -->|"INIT / DOWNLOADED / CHECKING 未满 30 分钟"| CUR(["返回当前批次，不重复执行"]):::ok
+    ST -->|"FAILED，或 DONE 且 force"| RR["重跑：删除本批 recon_channel_bill<br/>删除 status = PENDING AND handle_action IS NULL 的差错<br/>保留已自动处理的 PENDING 差错与 RESOLVED、IGNORED 差错<br/>CAS 重置为 INIT，retry_count = 0"]
+    RR --> DLN
+    ST -->|"INIT，now − updated_at ≥ 30 分钟"| TKI["CAS 接管，条件带 INIT 与原 updated_at<br/>写 updated_at = now<br/>影响 0 行：已被其他调用接管，返回当前批次"]
+    ST -->|"DOWNLOADED，now − updated_at ≥ 30 分钟"| TKD["CAS DOWNLOADED→CHECKING<br/>条件带原 updated_at，写 started_at = now<br/>影响 0 行：已被其他调用接管，返回当前批次"]
+    ST -->|"CHECKING，now − started_at ≥ 30 分钟"| TKC["CAS 接管，条件带 CHECKING 与原 started_at<br/>写 started_at = now<br/>影响 0 行：已被其他调用接管，返回当前批次"]
+    TKI -->|"影响 1 行"| DLN
+    TKD -->|"影响 1 行"| CMP(["比对与收尾（CF-40）"])
+    TKC -->|"影响 1 行"| DEL["删除本批 status = PENDING AND handle_action IS NULL 的差错<br/>不删账单行"]
+    DEL --> CMP
+    ST -.- NT["超时只在 RunBatch 被调用时判定，不另设后台扫描<br/>改写 recon_batch 的每条 UPDATE 都显式写 updated_at = now（注入时钟，截到毫秒）"]
     classDef ok fill:#e3f6e8,stroke:#2e7d32
     classDef err fill:#fde4e4,stroke:#c62828
     classDef fault fill:#fff4d6,stroke:#b8860b
 ```
+
+今天指运行时注入时钟的东八区日期。前 7 个账期的处理只有每日定时触发做，CLI、管理接口和单批次延迟重试不做。保留的差错在重新比对时同键跳过（CF-27）。
+
+#### CF-39 账单下载、导入与未就绪重试
+
+覆盖：REC-01 第 6 条、REC-02。
+
+```mermaid
+flowchart TD
+    S(["从下载开始：新建、INIT 接管、重跑（CF-26）"]) --> DL["GET 账单：超时 30s，失败重试 3 次，间隔 10s"]
+    DL -->|"BILL_NOT_READY"| RC{"retry_count"}
+    RC -->|"未达 6"| INC["CAS retry_count = retry_count + 1，updated_at = now<br/>WHERE id = ? AND status = INIT AND retry_count = 读到的值<br/>批次保持 INIT"]
+    INC --> SCH(["注入时钟的调度器 30 分钟后对该批次再调用 RunBatch<br/>此时 updated_at 已满 30 分钟，按 INIT 接管（CF-26）"]):::ok
+    RC -->|"已达 6"| NRF["CAS → FAILED，error_msg = BILL_NOT_READY<br/>条件同上，之后可重跑"]:::err
+    DL -->|"重试耗尽"| FD["FAILED，记录 error_msg"]:::err
+    DL -->|"成功"| VF{"X-Bill-Sha256、X-Bill-Count 一致<br/>严格解析：表头、整数金额、时间格式"}
+    VF -->|"否"| FD2["FAILED，错误信息带行号"]:::err
+    VF -->|"是"| IM
+    subgraph TX["一个事务"]
+        IM["每 1000 行批量插入 recon_channel_bill<br/>写 bill_file_hash，CAS INIT→DOWNLOADED"]
+    end
+    IM --> CK(["CAS DOWNLOADED→CHECKING，写 started_at = now<br/>进入比对（CF-40）"])
+    SCH -.- NT["retry_count 与 updated_at 都在表里，进程重启不丢<br/>重启只丢调度器里待执行的那次调用：该批次由下一次每日定时（前 7 个账期）、<br/>CLI 或管理接口接管，从已有 retry_count 继续计数"]
+    classDef ok fill:#e3f6e8,stroke:#2e7d32
+    classDef err fill:#fde4e4,stroke:#c62828
+    classDef fault fill:#fff4d6,stroke:#b8860b
+```
+
+首次下载之后最多重试 6 次，账单请求共 7 次。只调度这一个批次，不扫描其他批次。
+
+#### CF-40 对账比对与收尾
+
+覆盖：REC-01 第 5 条、REC-03 第 4 条、REC-08。
+
+```mermaid
+flowchart TD
+    S(["批次为 CHECKING，本次运行写入的 started_at = T0<br/>来源：CF-39 正常推进、DOWNLOADED 接管、CHECKING 接管（CF-26）"]) --> EXT["外部比对（CF-27）"]
+    EXT --> INT["内部对账（CF-28）"]
+    INT --> AUTO["本次新插入差错的自动处理（CF-29）"]
+    AUTO --> XB["跨批次 REQUERY 重试与 LEDGER_MISSING 复核（CF-41）"]
+    XB --> FIN["CAS CHECKING→DONE，updated_at = now<br/>写入本次重新计算的双方笔数、金额、匹配数<br/>diff_count = 本批 recon_diff 实际行数（含保留的行）<br/>WHERE id = ? AND status = CHECKING AND started_at = T0"]
+    FIN -->|"影响 1 行"| RPT(["报告（REC-08）：账期、渠道、双方笔数与金额、匹配数、差错数<br/>按 recon_diff 实时聚合的各类差错数与自动处理数（handle_action 非空），前 100 条差错<br/>指标 pay_recon_diffs_total、gauge pay_recon_pending_diffs"]):::ok
+    RPT --> MAN(["等待人工处理（不限批次）：status = PENDING、handle_action 非空且 bill_date 早于 今天−8<br/>加上 channel_status 非空的 CHANNEL_MISSING<br/>输出总数和按 bill_date 升序的前 100 条"]):::ok
+    FIN -->|"影响 0 行"| GIVE(["批次已被接管或重跑，旧运行放弃<br/>不覆盖新运行的结果"]):::ok
+    EXT -.->|"异常"| ERR["CAS CHECKING→FAILED，记录 error_msg<br/>条件同样带 started_at = T0"]:::err
+    INT -.->|"异常"| ERR
+    AUTO -.->|"异常"| ERR
+    XB -.->|"异常"| ERR
+    ERR -->|"影响 0 行"| GIVE
+    classDef ok fill:#e3f6e8,stroke:#2e7d32
+    classDef err fill:#fde4e4,stroke:#c62828
+    classDef fault fill:#fff4d6,stroke:#b8860b
+```
+
+CLI 和 `POST /admin/recon/run` 的响应都输出这份报告，不按支付、退款分列。
 
 #### CF-27 外部比对
 
@@ -2255,17 +2309,18 @@ flowchart TD
     M -->|"SUCCESS，金额相同（不论归属哪天）"| MT["匹配"]:::ok
     L --> UN["L 中未被匹配的记录"]
     UN --> D4["CHANNEL_MISSING（短款）"]:::err
-    D1 --> W["更新账单行 match_status<br/>差错按 uk_batch_type_biz_no 插入<br/>批次写入双方笔数、金额、匹配数、差错数"]
+    D1 --> W["更新账单行 match_status<br/>差错按 uk_batch_type_biz_no_diff_type（batch_no, txn_type, biz_no, diff_type）插入<br/>INSERT … ON DUPLICATE KEY UPDATE id = id<br/>同键已存在（重跑或接管保留的行）则跳过，不改已有行的任何列<br/>影响 1 行才计入 pay_recon_diffs_total"]
     D2 --> W
     D3 --> W
     D4 --> W
     MT --> W
+    W --> CNT(["双方笔数、金额、匹配数与 diff_count 在收尾时写入批次（CF-40）"])
     classDef ok fill:#e3f6e8,stroke:#2e7d32
     classDef err fill:#fde4e4,stroke:#c62828
     classDef fault fill:#fff4d6,stroke:#b8860b
 ```
 
-不做跨日处理（REC-04 CUT）：模拟渠道账单的账期与本地 `channel_finished_at` 都取自渠道完成时间，两边不会归入不同账期。
+不做跨日处理（REC-04 CUT）：模拟渠道账单的账期与本地 `channel_finished_at` 都取自渠道完成时间，两边不会归入不同账期。唯一键带 `diff_type`，同一笔交易在同一批次可以同时有外部差错和内部差错（如 `AMOUNT_MISMATCH` 与 `LEDGER_MISSING`）。不用 `INSERT IGNORE`（会把 CHECK 约束失败等其他错误也降为警告），也不用 `REPLACE`。
 
 #### CF-28 内部对账
 
@@ -2292,6 +2347,8 @@ flowchart TD
     T1 -->|"否"| TMM["TRANSFER_MISMATCH，txn_type = TRANSFER<br/>local_amount / local_status 取转账单，渠道字段为空<br/>handle_note 记录各分片实际情况"]:::err
     T2 -->|"否"| TMM
     T3 -->|"否"| TMM
+    LM --> INS["插入规则同 CF-27：按 uk_batch_type_biz_no_diff_type<br/>同键已存在则跳过，不改已有行"]
+    TMM --> INS
     classDef ok fill:#e3f6e8,stroke:#2e7d32
     classDef err fill:#fde4e4,stroke:#c62828
     classDef fault fill:#fff4d6,stroke:#b8860b
@@ -2299,35 +2356,61 @@ flowchart TD
 
 转账不经过渠道，转账检查挂在该账期的 mockpay 批次中执行，差错归入该批次，批次重跑时一并重算。
 
-#### CF-29 差错自动处理与复核
+#### CF-29 差错自动处理
 
-覆盖：REC-06。
+覆盖：REC-06。本次运行新插入的差错；跨批次重试与复核见 CF-41。
 
 ```mermaid
 flowchart TD
-    S(["本批 PENDING 差错"]) --> DT{"diff_type"}
-    DT -->|"STATUS_MISMATCH，本地 PROCESSING"| SY1["SyncChannelTxn(biz_no)（CF-09），handle_action = REQUERY"]
-    SY1 -->|"推进成功"| RS["CAS PENDING→RESOLVED，handler = system<br/>WHERE id = ? AND status = PENDING"]:::ok
-    DT -->|"CHANNEL_MISSING"| SY2["SyncChannelTxn 查单，handle_action = REQUERY"]
-    SY2 -->|"渠道确认 SUCCESS"| IG["CAS PENDING→IGNORED，说明“渠道账单遗漏，查单确认成功”<br/>WHERE id = ? AND status = PENDING"]:::ok
-    DT -->|"LEDGER_MISSING"| RP["ReplayEvent(biz_no, event_type)（CF-20）<br/>handle_action = REPLAY，保持 PENDING 等待复核"]
+    S(["本次运行新插入的差错，不受窗口限制<br/>重跑或接管保留的已处理差错不在这里重复处理"]) --> DT{"diff_type"}
+    DT -->|"STATUS_MISMATCH，本地 PROCESSING"| SY1["SyncChannelTxn(biz_no)（CF-09）"]
+    DT -->|"CHANNEL_MISSING"| SY2["SyncChannelTxn 查单"]
+    DT -->|"LEDGER_MISSING"| RP["ReplayEvent(biz_no, event_type)（CF-20）"]
     DT -->|"LOCAL_MISSING、AMOUNT_MISMATCH、<br/>STATUS_MISMATCH（本地终态）、TRANSFER_MISMATCH"| KP["无自动处理，保持 PENDING<br/>ERROR 日志，写入对账报告"]:::err
-    SY1 -->|"失败"| FL["保持 PENDING，下次批次再试"]
-    SY2 -->|"失败或渠道不是 SUCCESS"| FL
+    SY1 -->|"推进成功"| RS["CAS PENDING→RESOLVED<br/>handle_action = REQUERY，handler = system"]:::ok
+    SY2 -->|"渠道确认 SUCCESS"| IG["CAS PENDING→IGNORED，handle_action = REQUERY，handler = system<br/>说明“渠道账单遗漏，查单确认成功”"]:::ok
+    SY2 -->|"查单成功返回，渠道不是 SUCCESS<br/>（FAILED、PROCESSING 或查无此单）"| SV["严重不一致：CAS 写 handle_action = REQUERY、handler = system<br/>channel_status = 返回的渠道状态，handle_note 记录渠道状态<br/>保持 PENDING，ERROR 日志（diff_no、biz_no、本地与渠道状态）<br/>pay_recon_channel_inconsistent_total{channel}+1，不再自动重试"]:::err
+    RP -->|"成功"| RPW["CAS 写 handle_action = REPLAY，handler = system<br/>保持 PENDING，等待复核（CF-41）"]
+    SY1 -->|"未推进（调用出错、超时）"| FL["CAS 写 handle_action（REQUERY / REPLAY）、handler = system<br/>handle_note 记录失败原因，不写 channel_status，保持 PENDING<br/>之后由跨批次重试或复核处理（CF-41）"]
+    SY2 -->|"调用出错或超时"| FL
     RP -->|"失败"| FL
-    RC(["每次批次运行（任意账期）"]) --> Q["查询全部 LEDGER_MISSING、PENDING、handle_action = REPLAY 的差错<br/>不限批次"]
-    Q --> V{"对应账户分片凭证存在且金额一致"}
-    V -->|"是"| RS2["CAS PENDING→RESOLVED，handler = system<br/>说明“重放后复核通过”"]:::ok
-    V -->|"否"| FL2["保持 PENDING"]
-    RS -->|"影响 0 行"| RR0["重新读取：已是 RESOLVED / IGNORED<br/>或已被批次重跑删除，结束"]
+    RS -->|"影响 0 行"| RR0{"重新读取"}
     IG -->|"影响 0 行"| RR0
-    RS2 -->|"影响 0 行"| RR0
+    RR0 -->|"读到"| CUR(["按当前状态返回，不报错<br/>不覆盖已有的 handle_action、handler、handle_note"]):::ok
+    RR0 -->|"读不到（已被删除）"| GONE(["按“已不存在”返回：不报错、不重试、不重新插入<br/>WARN 日志（diff_no、batch_no）"]):::ok
+    S -.- CN["写入都用 CAS：WHERE id = ? AND status = PENDING<br/>handle_action 在同一条语句里写，非空后重跑和接管都不删"]
     classDef ok fill:#e3f6e8,stroke:#2e7d32
     classDef err fill:#fde4e4,stroke:#c62828
     classDef fault fill:#fff4d6,stroke:#b8860b
 ```
 
-没有人工处理入口：真实系统需要人工处理与挂账，本项目不实现（REC-07 CUT）。
+置为 RESOLVED、IGNORED 的 CAS 影响 0 行，说明差错已被另一账期的批次或并发触发处理。读不到只出现在两种场景：旧运行在批次被接管或重跑后仍在处理一条尚未写入 `handle_action` 的差错；人工误删。没有人工处理入口：真实系统需要人工处理与挂账，本项目不实现（REC-07 CUT）。
+
+#### CF-41 跨批次重试与复核
+
+覆盖：REC-06。
+
+```mermaid
+flowchart TD
+    S(["每次批次运行（任意账期），收尾前执行（CF-40）"]) --> W["自动重试窗口：bill_date 在 今天−8 ~ 今天−2，不限批次<br/>今天为运行时注入时钟的东八区日期，与本批账期无关<br/>查询走 idx_status_bill_date"]
+    W --> Q1["status = PENDING AND handle_action = REQUERY<br/>排除 channel_status 非空的 CHANNEL_MISSING"]
+    W --> Q2["diff_type = LEDGER_MISSING AND status = PENDING<br/>AND handle_action = REPLAY"]
+    Q1 --> SY["再执行一次 SyncChannelTxn"]
+    SY -->|"推进成功 / 渠道确认 SUCCESS"| T1["CAS PENDING→RESOLVED / IGNORED（同 CF-29）"]:::ok
+    SY -->|"CHANNEL_MISSING 渠道不是 SUCCESS"| SV["严重不一致：写 channel_status，ERROR 日志<br/>pay_recon_channel_inconsistent_total+1，不再自动重试（同 CF-29）"]:::err
+    SY -->|"未推进（调用出错、超时）"| K1["保持 PENDING，下次运行在窗口内再试"]
+    Q2 --> V{"对应账户分片凭证存在且金额一致"}
+    V -->|"是"| T2["CAS PENDING→RESOLVED，handler = system<br/>说明“重放后复核通过”"]:::ok
+    V -->|"否"| RP["再执行一次 ReplayEvent（幂等，MQ-05 第 3 条）<br/>更新 handle_note，保持 PENDING"]
+    T1 -->|"影响 0 行"| RR0["重新读取，按当前状态或“已不存在”返回（同 CF-29）"]
+    T2 -->|"影响 0 行"| RR0
+    W -.- OUT["窗口外仍为 PENDING 的差错不再自动处理，等待人工<br/>列入报告的“等待人工处理”（CF-40）"]
+    classDef ok fill:#e3f6e8,stroke:#2e7d32
+    classDef err fill:#fde4e4,stroke:#c62828
+    classDef fault fill:#fff4d6,stroke:#b8860b
+```
+
+D−1 账期的差错由它自己的批次运行处理，次日起进入窗口。窗口就是每日定时顺带处理的前 7 个账期（CF-26）。
 
 #### CF-30 差错人工处理
 
@@ -2420,3 +2503,4 @@ R1–R14 来自 v1.x 绘图，已落入需求文档 v2.2；R15、R16 来自 v2.0
 | 2026-10-27 | v2.15 | CH-06：CF-24 图下改为 DUP_NOTIFY 已按「并发 5 次，之后每秒 1 次再 5 次，不论响应」实现；SLOW 仍未实现，现在不发。图的节点不改。覆盖矩阵仍指向 CF-24。当前环境没有 mmdc，未渲染 SVG，也不新增 SVG。不改资金流向 |
 | 2026-10-27 | v2.16 | 文档审查，只改与需求不一致的文字，不改规则与资金流向：SL-01 渠道完成延迟 200–2000ms 改为 200–1999ms（CH-01 规则 4）；CF-05 结果未知分支补“其他非 200（含 400、401）”（PAY-03 规则 6）；SL-14 C13 删去 LOCAL 不存在的 CONFIRMING、CANCELLING，改为 TCC 的 CONFIRMING、CANCELLING 与 LOCAL 的 TRYING 保持原状态；CF-34 的 `10001 / 10006` 由“需求未定义”改为 ERROR 日志后保持 TRYING（TRF-02 规则 4），CF-35 改为归入 TRY_TIMEOUT 并输出 ERROR 日志（TRF-03 规则 3）；§5 R15、R16 去掉“建议”字样，状态分别写 TRF-02 规则 4、TRF-03 规则 3 与 OPT-02 规则 5，§5 引言和 v2.0 记录注明 R15、R16 已确认；SL-09 的 `RunBatch(mockpay, D)` 注明 D 为账期、定时任务在次日 RECON_RUN_AT 发起，CF-26 起点同样改为 bill_date 取前一天（REC-01 规则 1）；文件头对 03 的引用 v2.0 改为 v2.14。用 mermaid-cli 12.0.0 渲染全部 64 张图通过，未保存 SVG |
 | 2026-10-27 | v2.17 | 文档审查第 2 阶段，按用户确认的规则修图（需求 v3.0 b12eddb 及其后补充）。A1 outbox：SM-05、SL-01、SL-07、CF-18、§4.10 改为“事务 1 领取并把 `next_retry_at` 设为租约到期 L = now + 30s 后提交 → 事务外批量发送（acks = all、幂等、5s）→ 故障点 `outbox.after_send` → 逐条按 `WHERE id = ? AND status = PENDING AND next_retry_at = L` CAS 回写，0 行丢弃”，删去“发送期间持有行锁”，补崩溃或回写报错后租约到期被重新领取。A4：SL-01、CF-19 注明 F = 0 时省略手续费分录；CF-21、SL-08 的 merchant_notify 回写改为 `WHERE id = ? AND status = PENDING` 的 CAS，0 行丢弃本次结果（NTF-02 规则 7）；CF-29 的 RESOLVED、IGNORED 改为 CAS 并补 0 行重读出口；CF-37、SL-15 补账户非 ACTIVE 时回滚、退化逐条、该事件 40005 进 DLQ；CF-19、SL-07 把 Post 返回 40005 列为不可重试，进 DLQ，可由 MQ-05 重放（MQ-04）；CF-11 两条释放 `refunded_amount` 都带 `refunded_amount ≥ R`，影响 0 行时整个事务回滚、返回 10003、ERROR 日志、`pay_refund_quota_inconsistent_total+1`（REF-03）；SM-07、SL-09、CF-26 补 INIT、DOWNLOADED 按 `updated_at` 超过 30 分钟在 RunBatch 触发时接管（不另设扫描），BILL_NOT_READY 30 分钟后由调度再次调用 RunBatch 重试、当天最多 6 次后 FAILED；CF-24、SL-02 的 SLOW 改为只推迟首次回调，失败后按 CH-05 重试（CH-06 规则 6）。编号：§1 覆盖矩阵 GW-02 改为支付与余额路由，新增 GW-09、BASE-15、QA-01 行，说明中加入 QA-05、QA-02 基线、OPT-01 新名；§0.2、§4.10 的故障点归属改为 BASE-15；SL-05、SL-11、SL-12、CF-01 覆盖加 GW-09。其他：CF-17 图下 `/metrics` 归 OPS-03；CF-35 图下分阶段耗时埋点由 OPT-01 加入（TRF-03 规则 7）；SL-15、CF-37 的“见 R16”改为 OPT-02 规则 5；文件头对 03 的引用改为 v2.17，删去“05、database 尚未同步 v3.0”。用 mermaid-cli 12.0.0 渲染全部 64 张图通过，未保存 SVG |
+| 2026-10-27 | v2.18 | 文档审查第 3 阶段，按需求 7d08a2c 的 REC-01/02/03/05/06/08 与 OPT-02 第 7 条修图。SM-07：超时统一为“满 30 分钟（now − 时间戳 ≥ 30 分钟）”；INIT 接管从下载开始；DOWNLOADED 接管 CAS 直接到 CHECKING，删去 DOWNLOADED 自环；CHECKING 接管先删 `handle_action` 为空的 PENDING 差错再比对；DONE / FAILED 的 CAS 带本次运行的 `started_at`，被接管后旧运行放弃；BILL_NOT_READY 时 CAS `retry_count + 1` 保持 INIT，已达 6 次置 FAILED；重跑 `retry_count = 0`。SM-08：插入同键跳过、失败也写 `handle_action`、严重不一致写 `channel_status`、只删 `handle_action` 为空的、窗口与“等待人工处理”。拆图：原 CF-26 拆为 CF-26（触发、状态分派、超时接管，含每日定时顺带处理 bill_date 在今天−8 ~ 今天−2 的 INIT / DOWNLOADED / CHECKING 批次）、新增 CF-39（下载、导入、BILL_NOT_READY 的持久化重试）、新增 CF-40（比对、收尾 CAS 带 `started_at = T0`、`diff_count` 按实际行数、REC-08 报告与“等待人工处理”）；原 CF-29 改为只管本次新插入差错的自动处理（失败写 `handle_action`、严重不一致、终态 CAS 0 行重新读取与“已不存在”），新增 CF-41（窗口内跨批次 REQUERY 重试、LEDGER_MISSING 复核与再次重放）。CF-27、CF-28：差错按 `uk_batch_type_biz_no_diff_type` 用 `INSERT … ON DUPLICATE KEY UPDATE id = id` 插入，同键跳过，影响 1 行才计入 `pay_recon_diffs_total`。SL-09、SL-10、CF-03 同步以上规则，SL-10、CF-03 注明管理接口不顺带处理前 7 个账期。删去 CF-26 中“重试计数只在进程内保存”的说法。CF-37、SL-15：F = 0 的事件省略手续费分录，不计入手续费收入子账户增量、不为它加锁（OPT-02 第 7 条）。覆盖矩阵：REC-01/02 → CF-26、CF-39、CF-40，REC-03 加 CF-40，REC-06 → CF-29、CF-41，REC-08 → CF-40。文件头对 03 的引用改为 v2.18。用 mermaid-cli 12.0.0 渲染全部 67 张图通过，未保存 SVG |
