@@ -394,7 +394,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | TRF-03 | 跨分片转账 TCC 协调 | P0 | M4 | TRF-01、ACC-04~06、ACC-14、ACC-11、MQ-01、BASE-15 | TODO |
 | TRF-04 | 转账恢复任务 | P0 | M4 | TRF-02、TRF-03、BASE-15 | TODO |
 | TRF-05 | 转账查询 | P0 | M4 | TRF-01 | TODO |
-| MQ-01 | outbox 写入 | P0 | M3 | BASE-08、BASE-05 | TODO |
+| MQ-01 | outbox 写入 | P0 | M3 | BASE-08、BASE-05 | DONE |
 | MQ-02 | outbox 投递器 | P0 | M5 | MQ-01、MQ-03、BASE-15 | TODO |
 | MQ-03 | Kafka 生产与消费框架 | P0 | M5 | BASE-02、OPS-01 | TODO |
 | MQ-04 | account 事件消费（逐条模式） | P0 | M5 | MQ-02、MQ-03、ACC-03、ACC-05、ACC-06、PAY-06、REF-03、BASE-15 | TODO |
@@ -1945,15 +1945,31 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 
 `P0 · M3 · 依赖：BASE-08、BASE-05 · 表：outbox`
 
+`pkg/outbox.Add` 在调用方已经打开的事务里插入一行 `outbox`。本功能点不投递、不发送 Kafka、不从 `Pay` 或 `ApplyPayResult` 调用。
+
 规则：
 
-1. `outbox.Add(tx *sqlx.Tx, evt)` 只接受事务参数，保证与业务数据同事务提交。
-2. 生成 `event_id`，按 `docs/05-api.md` §11.3 组装事件信封写入 `payload`；`msg_key` 为 `pay_no`（退款事件也用原 `pay_no`，便于同一订单的消息落在同一分区；转账事件用 `transfer_no`）；`biz_no` 为事件对应的业务单号（支付事件为 `pay_no`，退款事件为 `refund_no`，转账事件为 `transfer_no`），供 MQ-05 按业务单号重放；状态 PENDING，`next_retry_at = now`。
-3. 写入时把当前 trace context 存入信封 `trace_context`，供消费端关联链路（OPS-02）。
+1. 签名为 `Add(ctx context.Context, tx *sqlx.Tx, evt Event, ids *idgen.Generator, clk clock.Clock) error`。`tx == nil` 返回错误，不插行。函数自己不执行 `BEGIN`、`COMMIT` 或 `ROLLBACK`。调用方用 `dbx.WithTx` 包住业务写入和 `Add`，`Add` 在提交前执行。
+2. `event_id` 只用 `(*idgen.Generator).NewNo(ctx, "EV")`。前缀 `EV` 已在约定 §2.2 登记。时钟回拨返回 `idgen.ErrClockRollback`，不插行，不映射成新的错误码（调用方以后映射为已有的 `10004`）。`ids`、`clk` 或 `ctx` 为 nil 时返回错误，不插行。
+3. 只接受下面五种 `event_type`。缺字段、未知类型、金额不是正整数分、`fee_amount` 为负、转账 `status` 不是该事件要求的取值，都返回包内哨兵错误，不发号、不插行，不登记新的 errno。空字符串和零值时间算缺字段。`fee_amount` 可以为 0。1062 返回错误，不换一个 `event_id` 重试，也不当成成功。
+
+   | event_type | topic | msg_key | biz_no | data 字段 |
+   |---|---|---|---|---|
+   | `payment.succeeded` | `pay.payment.succeeded` | `pay_no` | `pay_no` | `pay_no`、`merchant_id`、`out_trade_no`、`channel`、`amount`、`fee_amount`、`paid_at` |
+   | `refund.succeeded` | `pay.refund.succeeded` | 原支付单 `pay_no` | `refund_no` | `refund_no`、`pay_no`、`merchant_id`、`out_refund_no`、`channel`、`amount`、`succeeded_at` |
+   | `refund.failed` | `pay.refund.failed` | 原支付单 `pay_no` | `refund_no` | `refund_no`、`pay_no`、`merchant_id`、`out_refund_no`、`amount`、`fail_code` |
+   | `transfer.succeeded` | `pay.transfer.succeeded` | `transfer_no` | `transfer_no` | `transfer_no`、`out_transfer_no`、`merchant_id`、`payee_merchant_id`、`amount`、`mode`、`status`（必须是 `SUCCESS`）、`finished_at` |
+   | `transfer.failed` | `pay.transfer.failed` | `transfer_no` | `transfer_no` | `transfer_no`、`out_transfer_no`、`merchant_id`、`payee_merchant_id`、`amount`、`mode`、`status`（必须是 `FAILED`）、`fail_code`、`finished_at` |
+
+   退款的 `msg_key` 是 `pay_no`，不是 `refund_no`。`biz_no` 才是 `refund_no`。
+4. 信封写入 `payload`（JSON）。`version` 为数字 1。`event_id`、`event_type` 与列一致。金额在 JSON 里是整数分，禁止浮点。`paid_at`、`succeeded_at`、`finished_at` 由调用方传入，先截到毫秒，再格式化为东八区固定偏移的 RFC3339（示例 `2026-10-12T10:00:01.300+08:00`），不改成 `Add` 自己的时钟。
+5. `occurred_at` 取这次 `Add` 的注入时钟，先截到毫秒，格式与上一款相同。`Add` 在提交前执行，不能改成提交后再读时钟。`next_retry_at`、`created_at`、`updated_at` 用同一次时钟。时区用 `time.FixedZone("Asia/Shanghai", 8*60*60)`，不调用 `time.LoadLocation`，也不调用 `time.Now`。INSERT 用参数化 SQL，显式写 `created_at`、`updated_at`。
+6. `trace_context` 从 `ctx` 取 OpenTelemetry span。trace id 和 span id 都有效时，写成 W3C `traceparent`：`00-<32位trace hex>-<16位span hex>-<2位flags hex>`。没有有效 span 时，`trace_context` 是空对象 `{}`。不新增别的上下文字段。
+7. 状态列 `PENDING`，`retry_count` 为 0，`last_error` 为 NULL，`sent_at` 为 NULL。日志不打印整份 payload；payload 里没有密钥，日志里也不要出现密钥。
 
 验收：
 
-- [ ] 业务事务回滚时 outbox 无记录；提交时恰好 1 条。
+- [x] 业务事务回滚时 outbox 无记录；提交时恰好 1 条。
 
 #### MQ-02 outbox 投递器
 
@@ -3121,3 +3137,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-10-27 | v3.0 | BASE-15：实现了 `pkg/fault`；重复名称视为初始化错误；标记写失败不发信号；空配置不碰标记目录。不改 9 个名称，不改资金，不新增错误码 |
 | 2026-10-28 | v3.0 | PAY-02 文字澄清：未传 `notify_url` 存空串，通知时才取商户默认地址；显式地址即使等于商户默认地址也原样入库。商户不存在或非 `ACTIVE` 为已有的 `20004`，不插入。没有生效费率档为已有的 `10003`，不把手续费当成 0，不读 `merchant.fee_rate_bp`，不缓存费率。时钟回拨映射为已有的 `10004`。1062 后按商户订单号读不到行返回 `10003`。不新增错误码，不改表，不改 IDL |
 | 2026-10-28 | v3.0 | PAY-03：`Pay` 服务端处理超时 5 秒，其他方法仍 2 秒。渠道同步拒绝的 `source` 名为 `SYNC`。PAY-04 之前，生产用的 `ApplyPayResult` 不改订单并返回已有的 `10003`。不新增错误码，不新增环境变量，不改表 |
+| 2026-10-28 | v3.0 | MQ-01 文字澄清：`occurred_at` 取 `Add` 时的注入时钟（提交前读取，不能改成提交后再读），无有效 span 时 `trace_context` 为 `{}`，不新增错误码。五种事件的 topic、msg_key、biz_no 与 data 字段写入规则。不改资金规则 |

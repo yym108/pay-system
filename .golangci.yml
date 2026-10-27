@@ -129,10 +129,10 @@ linters:
           msg: 金额链路禁止使用浮点类型
         - pattern: float64
           msg: 金额链路禁止使用浮点类型
-      # time.Now 只在业务 biz/job 包禁止，clock 等基础设施可实现真实时钟。
+      # time.Now 在 biz、job、pkg/outbox 禁止。clock 等基础设施可实现真实时钟。
   exclusions:
     rules:
-      - path-except: '(^|/)service/[^/]+/biz(/|/.*\.go$)|(^|/)job(/|/.*\.go$)'
+      - path-except: '(^|/)service/[^/]+/biz(/|/.*\.go$)|(^|/)job(/|/.*\.go$)|(^|/)pkg/outbox(/|/.*\.go$)'
         text: 'use of `time\.Now` forbidden'
         linters:
           - forbidigo

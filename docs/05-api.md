@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 3.1.3 |
+| 文档版本 | 3.1.4 |
 | API 版本 | v1（路径前缀 `/v1`） |
 | 最后修改 | 2026-10-28 |
 | 状态 | 设计基线，实现须与本文一致 |
@@ -60,6 +60,7 @@
 | 3.1.1 | 2026-10-27 | 文字对齐需求 REC-01 第 2 条、REC-08（用户决定）：§8.2 批次规则写明 `force` 只对 DONE 生效：FAILED 带不带 `force` 都重跑，DONE 且 `force = true` 重跑；INIT、DOWNLOADED、CHECKING 未满 30 分钟时带 `force = true` 也返回当前批次；满 30 分钟按接管处理，带不带 `force` 都不重跑。请求字段 `force` 的说明同步。`manual_diffs` 排序写明 `bill_date` 升序、同一 `bill_date` 内 `id` 升序。不新增字段，不改错误码 | §8.2 | REC-01、REC-08 |
 | 3.1.2 | 2026-10-28 | 文字澄清：创建支付单未传 `notify_url` 时存空串，通知时取商户默认地址。`CreatePayment` 已实现；`20004`、`10003`、`10004` 沿用已有码，不进业务错误列。其余未实现方法仍返回 `10003`。不新增字段，不改错误码数字，不改 IDL | §4.1、§10.2 | PAY-02 |
 | 3.1.3 | 2026-10-28 | 落地 3.0.0 已预告的返回类型：`Pay`、`ClosePayment` 改为返回 `PayResponse`、`ClosePaymentResponse`（`biz_code` 与必填的 `payment_order`）。`Pay` 已实现；`ClosePayment` 仍返回 `10003`，不进 biz。`Pay` 服务端处理超时 5 秒，其他方法仍 2 秒。不改商户 HTTP 字段，不新增错误码 | §1、§10.2 | PAY-03 |
+| 3.1.4 | 2026-10-28 | MQ-01 已按 §11.3 写入。不改字段，不新增错误码 | §11 | MQ-01 |
 
 ## 1. 接口总览
 
@@ -95,7 +96,7 @@
 | 模拟渠道回调 | §9.7 | — | CH-05、CH-06 | 1.0.0 | 2026-10-27 |
 | 模拟渠道管理 `config` / `bill-inject` | §9.8 | — | CH-07、CH-09 | 1.0.0 | 2026-10-12 |
 | AccountService / PaymentService / ReconService | §10 | — | 见各方法 | 1.0.0 | 2026-10-27 |
-| 事件 `payment.succeeded`、`refund.succeeded`、`refund.failed`、`transfer.succeeded`、`transfer.failed` | §11 | — | MQ-01、MQ-04、NTF-01 | 1.0.0 | 2026-10-27 |
+| 事件 `payment.succeeded`、`refund.succeeded`、`refund.failed`、`transfer.succeeded`、`transfer.failed` | §11 | — | MQ-01、MQ-04、NTF-01 | 1.0.0 | 2026-10-28 |
 
 ## 2. 通用约定
 
