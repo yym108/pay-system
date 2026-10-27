@@ -643,7 +643,7 @@
 ### 4.11 `outbox` — 本地消息表
 
 - **Purpose:** 与业务状态同事务写入的待投递事件（`docs/02-requirements.md` MQ-01、MQ-02）。事件类型：`payment.succeeded`、`refund.succeeded`、`refund.failed`、`transfer.succeeded`、`transfer.failed`。
-- **Lifecycle:** PENDING → SENT / DEAD；重放时回到 PENDING。
+- **Lifecycle:** PENDING → SENT / DEAD；重放时回到 PENDING。被投递器领取期间仍是 PENDING，用 `next_retry_at` 上的租约区分，不新增状态。
 - **Sensitivity:** payload 只含单号与金额，无个人信息。
 - **Authoritative source:** `migrations/payment/000001_init.up.sql`。
 - **Write owners/read consumers:** payment 业务事务与投递器。
@@ -662,7 +662,7 @@
 | `payload` | JSON | 否 | — | — | 完整事件信封 | 内部 |
 | `status` | VARCHAR(16) | 否 | `'PENDING'` | `idx_status_next_retry_at` 1 | | 内部 |
 | `retry_count` | INT | 否 | 0 | — | 第 20 次失败后置 DEAD | 内部 |
-| `next_retry_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | `idx_status_next_retry_at` 2 | 下次投递时间 | 内部 |
+| `next_retry_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | `idx_status_next_retry_at` 2 | 下次投递时间，兼作投递租约（MQ-02）。投递器领取 PENDING 且 `next_retry_at <= now` 的行时，在同一短事务里把它改为租约到期时刻 now + 30s（截到毫秒，与列精度一致）后提交；事务外发送完，按 `WHERE id = ? AND status = 'PENDING' AND next_retry_at = <租约值>` CAS 回写：成功置 SENT 并写 `sent_at`，失败写退避后的下次时间（retry_count 达到 20 置 DEAD）。影响 0 行表示租约已过期并被别的实例重新领取，本次不再回写。重放（MQ-05）把 SENT / DEAD 改回 PENDING 时同时设为 now | 内部 |
 | `last_error` | VARCHAR(512) | 是 | NULL | — | 截断的错误信息 | 内部 |
 | `sent_at` | DATETIME(3) | 是 | NULL | — | | 内部 |
 | `created_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | — | | 审计 |
@@ -674,7 +674,7 @@
 | --- | --- | --- | --- | --- |
 | `PRIMARY` | PK | `id` | | migrations/payment/000001_init.up.sql |
 | `uk_event_id` | UNIQUE | `event_id` | | migrations/payment/000001_init.up.sql |
-| `idx_status_next_retry_at` | INDEX | `status, next_retry_at` | 投递扫描；已验证 `FOR UPDATE SKIP LOCKED` 查询走此索引（覆盖索引） | migrations/payment/000001_init.up.sql |
+| `idx_status_next_retry_at` | INDEX | `status, next_retry_at` | 投递领取扫描；已验证 `FOR UPDATE SKIP LOCKED` 查询走此索引（覆盖索引）。领取事务只锁行、写租约，不在持锁期间发送 | migrations/payment/000001_init.up.sql |
 | `idx_biz_no_event_type` | INDEX | `biz_no, event_type` | MQ-05 按业务单号重放 | migrations/payment/000001_init.up.sql |
 | `ck_outbox_status` | CHECK | 枚举 | | migrations/payment/000001_init.up.sql |
 
@@ -962,6 +962,7 @@
 | 2026-10-26 | 无（仅文档） | `mock_txn.notify_sent_count`（写路径说明） | CH-05：发出回调前按 `notify_sent_count` 条件加一，不改 `status`。无迁移 | 未执行迁移 |
 | 2026-10-27 | 无（仅文档） | `mock_txn.notify_sent_count`（写路径说明） | CH-06：DUP_NOTIFY 用 `notify_sent_count < 10` 加一，与普通回调的期望值相等条件并存。无迁移 | 未执行迁移 |
 | 2026-10-27 | 无（仅文档） | `recon_channel_bill`（审计约定）、`transfer_branch.version`、`mock_txn`（防悬挂行说明）、分片表总述、`recon_diff`（兼容说明） | 文档审查后的文字修正：`recon_channel_bill` 移出只追加表，写明只更新 `match_status`、故意不带 `updated_at`；补 `transfer_branch.version` 插入为 0、回写 `txn_no` 或 CAS 改状态时加 1；防悬挂行的 `scenario`、`notify_url` 改为代码显式写入与列默认相同的值；删除 `pay_account_1` 由 `CREATE TABLE ... LIKE` 复制的设计稿说法，改为两个分片执行同一迁移；`recon_diff` 改为“通过新迁移修改”；指需求文档的章节号补“需求”；补齐 15 处 Authoritative source 的右反引号。无 DDL，不改迁移 | 未执行迁移（无 SQL 变更） |
+| 2026-10-27 | 无（仅文档） | `outbox.next_retry_at`、`idx_status_next_retry_at`（说明） | 用户确认（A1）：投递器改为领取（`FOR UPDATE SKIP LOCKED`，把 `next_retry_at` 设为租约到期 now + 30s）→ 提交 → 事务外发送 → 按 `id`、`status = 'PENDING'`、`next_retry_at = <租约值>` CAS 回写。`next_retry_at` 兼作投递租约，重放回 PENDING 时设为 now。不改表结构、不改索引、不新增状态 | 未执行迁移（无 SQL 变更） |
 
 ## 6. Open Questions
 

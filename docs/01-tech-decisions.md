@@ -127,7 +127,7 @@ BASE-01（2026-10-13）：根据本机实际安装版本，将本表 Go 本机�
   - 一致性方案是本地消息表（outbox），对 MQ 只要求 at-least-once。RocketMQ 的事务消息是 outbox 的替代方案，选 Kafka 反而能在面试中说明“为什么不用事务消息”。
   - Kafka 单容器即可运行；RocketMQ 5 需要 NameServer + Broker + Proxy 三个进程，Go v5 客户端还要经过 gRPC Proxy，本地环境更重。
   - franz-go 持续活跃（2026-09 仍在发版），支持幂等生产者、手动提交 offset、按分区并发消费；segmentio/kafka-go 更新较慢，API 对手动提交支持较弱。
-- 代价：Kafka 没有原生延迟消息和消息级重试。重试和延迟由 outbox 的 `next_retry_at` 与通知表的 `next_attempt_at` 在数据库侧实现。
+- 代价：Kafka 没有原生延迟消息和消息级重试。重试和延迟由 outbox 的 `next_retry_at` 与通知表的 `next_attempt_at` 在数据库侧实现；outbox 的 `next_retry_at` 同时兼作投递租约（见 D4 补充，2026-10-27）。
 - 回滚条件：第 1 周 franz-go 与 Kafka 4.3.1 联调失败且一天内无法解决，改用 segmentio/kafka-go v0.4.51。
 
 ### D4 sqlx + 手写 SQL
@@ -141,6 +141,7 @@ BASE-01（2026-10-13）：根据本机实际安装版本，将本表 Go 本机�
   - 隔离级别统一 READ COMMITTED（DSN 设置 `transaction_isolation='READ-COMMITTED'`）。正确性依赖条件更新和唯一索引，不依赖 RR 的间隙锁；RC 可以减少间隙锁导致的死锁。这是一个面试讲解点。
 - 补充（2026-10-14，BASE-06）：`errno.ErrDuplicate` 与 MySQL 1062 映射仍留给 BASE-08，本功能点不实现。`pkg/errno` 只定义约定 §5.2 的业务码（跳过保留的 `30002`），并直接依赖 kitex v0.16.3 的 `BizStatusError` 做双向转换。
 - 补充（2026-10-15，BASE-08）：不实现 `errno.ErrDuplicate`，只提供 `IsDuplicate`。`github.com/jmoiron/sqlx v1.4.0` 已作为直接依赖写入 `go.mod`，版本与 §2.1 锁定表相同，不升级。`github.com/go-sql-driver/mysql` 仍是 v1.10.1。
+- 补充（2026-10-27，用户确认，MQ-02）：outbox 投递不在持有行锁的事务里发 Kafka。流程是领取 → 提交 → 事务外发送 → CAS 回写：短事务用 `FOR UPDATE SKIP LOCKED` 选出到期的 PENDING 行，把 `next_retry_at` 改为租约到期时刻 now + 30s 后立即提交；在事务外批量发送；再按 `WHERE id = ? AND status = 'PENDING' AND next_retry_at = <租约值>` 回写 SENT 或退避时间。影响 0 行说明租约过期后已被别的实例领取，本次放弃回写。原因：原方案在发送期间持锁最长约 5 秒，违反“事务内禁止调用 MQ”，也会占住连接。`next_retry_at` 兼作租约，不改表结构，不新增状态。代价是租约过期或回写前崩溃会重复发送，由消费端幂等吸收（与原方案“确认后、COMMIT 前崩溃”的重复同性质）。重放把 SENT / DEAD 改回 PENDING 时同时设 `next_retry_at = now`，不碰 PENDING 行，不与租约冲突。
 
 ### D5 自研雪花 ID
 
@@ -220,6 +221,7 @@ BASE-01（2026-10-13）：根据本机实际安装版本，将本表 Go 本机�
 |---|---|---|
 | 单元测试 | 标准库 `testing` | `make test`，不依赖 Docker |
 | 集成测试 | testcontainers-go 启动 MySQL 8.4.11；`TEST_MYSQL_DSN` 复用已有实例。Kafka 助手使用已锁定的 `apache/kafka:4.3.1`，不随每个 MySQL 测试启动 | `make test-integration`，文件带 `//go:build integration` |
+| 覆盖率 | 标准库 `go tool cover`，统计包含集成测试 | `make cover`（`go test -race -tags integration -coverprofile=coverage.out ./...`），需要 Docker 或 `TEST_MYSQL_DSN` |
 | 端到端 | docker-compose + `paycli` + Go 测试 | `make e2e`（目前是占位目标，只打印提示后 `exit 1`，由 QA-04 实现） |
 | 故障演练 | shell + docker 命令 + 校验 SQL | `make chaos`（目前是占位目标，由 QA-01 实现） |
 | 压测 | k6（`k6/crypto` 计算 HMAC） | `make load`（目前是占位目标，由 QA-02 实现） |

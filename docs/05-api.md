@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 2.1.8 |
+| 文档版本 | 3.0.0 |
 | API 版本 | v1（路径前缀 `/v1`） |
 | 最后修改 | 2026-10-27 |
 | 状态 | 设计基线，实现须与本文一致 |
@@ -54,6 +54,7 @@
 | 2.1.6 | 2026-10-27 | 文字澄清：PaymentService 在 :8881 由 PAY-01 起服务，服务端处理超时 2 秒；本版只实现 `GetMerchantCredential`，其余方法在各自功能点实现前返回 `10003`。`GetMerchantCredential` 只认与库中完全相同的 `app_id`（库列排序规则不区分大小写，服务端逐字节比较），为空、不存在或大小写不同都返回 `20004`；DISABLED 照常返回记录；密文解不开返回 `10003`。不新增字段、不改错误码数字、不改 IDL | §1、§10.2 | PAY-01 |
 | 2.1.7 | 2026-10-27 | 文字更正：2.1.6 写的“库列排序规则不区分大小写”有误。`merchant` 表列跟随库默认 `utf8mb4_bin`（区分大小写，但 PAD SPACE 忽略尾部空格）；集成测试临时库为 `utf8mb4_0900_ai_ci`（不区分大小写与重音）。两种规则下 SQL 都可能匹配到字节不同的值，所以服务端读回后逐字节比较；首尾空格不同同样返回 `20004`。不改契约：不新增字段、不改错误码数字、不改 IDL | §10.2 | PAY-01 |
 | 2.1.8 | 2026-10-27 | 文档审查后的文字修正，不改契约：§0.2 变更记录统一为版本升序。§3.7 注明 V3 只验证签名算法，body 不含 `request_id`。§8.5 写明 `error_msg`、`handler`、`handle_note` 的库列 NULL 映射为空串、字段仍输出。§9.4 防悬挂行的 `scenario`、`notify_url` 改为显式写入与列默认相同的值。§10.1 总述把 `Reverse` 列入传分片号的例外，事务只在一个分片上开启限定为写操作，并写明 `CheckBalance` 全量、`GetAccount` 查 PLATFORM 只读两个分片；TransferInTry / Confirm / Cancel 业务错误补 `10001`；Try / Cancel 的 `txn_no` 注明是进程内返回值，RPC 响应只有 `status`；ConfirmFreeze 的 32 码点注明来自 `account.owner_id` 列宽，平台渠道编码最多 16 位；补 `Reverse` 在 ACC-08 完成前一律返回 `10003`、不写行。§10.2 CreateRefund、CreateTransfer 的响应改为 IDL 中的 `CreateRefundResponse`、`CreateTransferResponse`；GetMerchantCredential 请求为 nil 返回 `10001`。不新增字段、不改错误码数字、不改 IDL | §0.2、§3.7、§8.5、§9.4、§10.1、§10.2 | ACC-02、ACC-06、ACC-08、ACC-10、ACC-14、CH-03、PAY-01、REC-01、REF-01、TRF-01 |
+| 3.0.0 | 2026-10-27 | 用户确认（A2、A7、A1）。内部 RPC 不兼容变更：`PaymentService.Pay` 的返回类型由 `PaymentOrder` 改为 `PayResponse{biz_code, payment_order}`，`ClosePayment` 改为 `ClosePaymentResponse{biz_code, payment_order}`，使 `Pay` 的 `30006`、`ClosePayment` 的 `30003` 能连同订单返回；§10 与约定 §5.3 第 5 条的携带对象例外补上这两处。PAY-03 落地，返回类型变更在无调用方时进行：两个方法目前一律返回 `10003`，没有调用方，IDL 在 PAY-03 实现时修改并 `make gen`。商户 API 不变，路径仍为 `/v1`，HTTP 响应与 §4.2、§4.3 的 `data` 规则不变。行为变更：`CheckBalance` 服务端处理上限改为商户模式 2 秒、全量模式 120 秒（原为统一 2 秒），代码随 ACC-11 修改。文字：§11.5 写明投递器领取租约、事务外发送、按租约 CAS 回写带来的重复投递；§8.4 的 `/metrics` 归属改为 OPS-03。不新增错误码 | §1、§4.2、§4.3、§8.4、§10、§10.1、§10.2、§11.5 | PAY-03、PAY-06、ACC-10、ACC-11、MQ-02、OPS-03 |
 
 ## 1. 接口总览
 
@@ -72,8 +73,8 @@
 | 接口 | 章节 | RPC | 功能点 | 引入版本 | 最后修改 |
 |---|---|---|---|---|---|
 | `POST /v1/payments` 创建支付单 | §4.1 | `PaymentService.CreatePayment` | PAY-02 | 1.0.0 | 2026-10-12 |
-| `POST /v1/payments/{pay_no}/pay` 发起支付 | §4.2 | `PaymentService.Pay` | PAY-03 | 1.0.0 | 2026-10-12 |
-| `POST /v1/payments/{pay_no}/close` 关闭支付单 | §4.3 | `PaymentService.ClosePayment` | PAY-06 | 1.0.0 | 2026-10-12 |
+| `POST /v1/payments/{pay_no}/pay` 发起支付 | §4.2 | `PaymentService.Pay` | PAY-03 | 1.0.0 | 2026-10-27 |
+| `POST /v1/payments/{pay_no}/close` 关闭支付单 | §4.3 | `PaymentService.ClosePayment` | PAY-06 | 1.0.0 | 2026-10-27 |
 | `GET /v1/payments/{pay_no}`、`GET /v1/payments?out_trade_no=` 查询支付单 | §4.4 | `PaymentService.QueryPayment` | PAY-08 | 1.0.0 | 2026-10-12 |
 | `POST /v1/refunds` 创建退款 | §4.5 | `PaymentService.CreateRefund` | REF-01、REF-02 | 1.0.0 | 2026-10-12 |
 | `GET /v1/refunds/{refund_no}`、`GET /v1/refunds?out_refund_no=` 查询退款 | §4.6 | `PaymentService.QueryRefund` | REF-05 | 1.0.0 | 2026-10-12 |
@@ -84,12 +85,12 @@
 | `POST /callback/mockpay` 渠道回调入口 | §7 | `PaymentService.HandleChannelNotify` | GW-06 | 1.0.0 | 2026-10-23 |
 | `POST /admin/recon/run` 执行对账 | §8.2 | `ReconService.RunBatch` | REC-01、REC-08 | 1.0.0 | 2026-10-27 |
 | `POST /admin/outbox/replay` 事件重放 | §8.3 | `PaymentService.ReplayEvent` | MQ-05 | 1.0.0 | 2026-10-12 |
-| `POST /admin/accounts/check` 余额核对 | §8.4 | `AccountService.CheckBalance` | ACC-10 | 1.0.0 | 2026-10-12 |
+| `POST /admin/accounts/check` 余额核对 | §8.4 | `AccountService.CheckBalance` | ACC-10 | 1.0.0 | 2026-10-27 |
 | 模拟渠道 `pay` / `query` / `close` / `refund` / `bills` | §9.2–§9.6 | — | CH-01~04、CH-08 | 1.0.0 | 2026-10-27 |
 | 模拟渠道回调 | §9.7 | — | CH-05、CH-06 | 1.0.0 | 2026-10-27 |
 | 模拟渠道管理 `config` / `bill-inject` | §9.8 | — | CH-07、CH-09 | 1.0.0 | 2026-10-12 |
 | AccountService / PaymentService / ReconService | §10 | — | 见各方法 | 1.0.0 | 2026-10-27 |
-| 事件 `payment.succeeded`、`refund.succeeded`、`refund.failed`、`transfer.succeeded`、`transfer.failed` | §11 | — | MQ-01、MQ-04、NTF-01 | 1.0.0 | 2026-10-12 |
+| 事件 `payment.succeeded`、`refund.succeeded`、`refund.failed`、`transfer.succeeded`、`transfer.failed` | §11 | — | MQ-01、MQ-04、NTF-01 | 1.0.0 | 2026-10-27 |
 
 ## 2. 通用约定
 
@@ -290,6 +291,8 @@ signature = base64(HMAC-SHA256(channel_key, canonical))
 
 响应 `data`：`PaymentOrder`。正常为 `PAYING`，最终结果通过商户通知或查询获得。渠道结果未知（超时）时同样返回 `PAYING`。
 
+对应 RPC `PaymentService.Pay` 返回 `PayResponse{biz_code, payment_order}`：`30006` 放在 `biz_code` 并携带已置为 FAILED 的订单，其他业务错误走 `BizStatusError`（§10.2）。
+
 业务错误：
 
 | 码 | 情况 | data |
@@ -307,6 +310,8 @@ signature = base64(HMAC-SHA256(channel_key, canonical))
 请求：无 body。
 
 响应 `data`：`PaymentOrder`，`status = CLOSED`。
+
+对应 RPC `PaymentService.ClosePayment` 返回 `ClosePaymentResponse{biz_code, payment_order}`：`30003` 放在 `biz_code` 并携带当前订单，`30001`、`10004` 走 `BizStatusError`（§10.2）。
 
 业务错误：
 
@@ -646,7 +651,7 @@ ACC-10 交付进程内 `biz.CheckBalance`。RPC handler 由 ACC-11 转发到该�
 | `TRANSIT_EXPECTED` | 全量 | 本分片 `TRANSIT` 子账户余额合计 = 本分片 CONFIRMED 的 `TRANSFER` 冻结金额 − 本分片 CONFIRMED 的收款方分支金额（不变量 11） |
 | `TRANSIT_ZERO` | 全量 + `expect_quiescent` | 两个分片 `TRANSIT` 余额合计 = 0 |
 
-每个分片用一条固定连接，按顺序执行 `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`、`START TRANSACTION READ ONLY, WITH CONSISTENT SNAPSHOT`、只读查询、`ROLLBACK`。两个分片是两次独立快照。商户模式只做该结算账户的前四项。`passed = false` 且 `failures` 非空时 error 为 nil，不是错误码；同一次完成调用把进程内无标签计数 `pay_ledger_check_failures_total` 加 1。`/metrics` 暴露仍是 OPS-01。
+每个分片用一条固定连接，按顺序执行 `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`、`START TRANSACTION READ ONLY, WITH CONSISTENT SNAPSHOT`、只读查询、`ROLLBACK`。两个分片是两次独立快照。商户模式只做该结算账户的前四项。服务端处理上限：商户模式（单账户）2 秒，全量模式 120 秒；网关调用等待上限同为 120 秒（需求 §5.4.1）。`passed = false` 且 `failures` 非空时 error 为 nil，不是错误码；同一次完成调用把进程内无标签计数 `pay_ledger_check_failures_total` 加 1。`/metrics` 暴露属于 OPS-03。
 
 响应 `data`：
 
@@ -869,7 +874,7 @@ DUP_NOTIFY（CH-06）不走上一段的 5 次和 5s、15s、30s、60s。交易�
 
 ## 10. 内部 RPC
 
-Kitex + Thrift，IDL 位于 `idl/`，以生成后的 IDL 为准；本节列出方法契约。业务错误使用 `BizStatusError`，经 TTHeader 传递，错误码见 `docs/03-conventions.md` §5。服务端和调用方都要启用 TTHeader meta handler，否则业务错误到不了调用方。例外是需要携带对象的错误（`CreateRefund`、`CreateTransfer` 的 `40002`，`30006`），按正常响应返回对象并在响应的 `biz_code` 字段中给出错误码（约定 §5.3 第 5 条）。AccountService 没有这类错误。超时与重试见需求 §5.4.1。HTTP 接口与 RPC 的对应见 §1。
+Kitex + Thrift，IDL 位于 `idl/`，以生成后的 IDL 为准；本节列出方法契约。业务错误使用 `BizStatusError`，经 TTHeader 传递，错误码见 `docs/03-conventions.md` §5。服务端和调用方都要启用 TTHeader meta handler，否则业务错误到不了调用方。例外是需要携带对象的错误（`CreateRefund` 的 `40002`、`30006`，`CreateTransfer` 的 `40002`，`Pay` 的 `30006`，`ClosePayment` 的 `30003`），按正常响应返回对象并在响应的 `biz_code` 字段中给出错误码（约定 §5.3 第 5 条）。AccountService 没有这类错误。超时与重试见需求 §5.4.1。HTTP 接口与 RPC 的对应见 §1。
 
 ### 10.1 AccountService（:8882）
 
@@ -899,7 +904,7 @@ account RPC 以商户号（或 owner）为入参，由 account 按商户号路�
 - `TransferInTry`：进程内方法，自己用 `dbx.WithTx` 提交收款商户所在分片的事务，RPC handler 仍是 ACC-11。参数校验在 nil service / nil ctx 之前，不合法为 `10001`，不写行，即使 service 为 nil 或 ctx 已取消。`transfer_no` 为 1–32 个码点，不强制 `TF` 前缀；金额必须是正的 int64 分；收款商户必须能被 `shard.Of` 解析。参数合法后 nil service、nil ctx、nil pools 为 `10003`；已取消或已过截止时间的 ctx 原样返回，不启事务；ShardDB 失败为 `10003`。不选平台子账户，`subCount < 1` 或发号器为空不是参数错误。先普通 SELECT 收款商户 `MERCHANT_SETTLE` / `CNY` / `sub_no = 0`，不加行锁、不读余额。不存在（含非 CNY 选不中）为 `40001`；存在但不是 `ACTIVE` 为 `40005`。都不写行。账户通过后事务里 INSERT `role = PAYEE`、`status = TRIED`、请求金额、`payer_merchant_id` 与 `fail_code` 与 `txn_no` 均为 SQL NULL、`version` 0。不动余额，不调用 Post。1062 先回滚，再在事务外读已有 PAYEE 行：CANCELLED 返回 `40004`，不比较金额和收款商户；TRIED 或 CONFIRMED 且金额或收款商户不一致为 `10006`，不写；一致则返回库里的 status，不记账，CONFIRMED 也不返回 `txn_no`。读不到行或未知 status 为 `10003`，不循环。同一 `transfer_no` 的 LOCAL 行不冲突，不读不改。进程内 `biz.TransferInTry` 的返回值带 `txn_no`：成功时为空；返回错误时 `status` 和 `txn_no` 都是空字符串。RPC 响应只有 `status`。不新增字段。
 - `TransferInConfirm`：进程内方法，自己用 `dbx.WithTx` 提交同一分片事务，RPC handler 仍是 ACC-11。没有金额。校验同样先于 nil 判断，不合法为 `10001`。参数合法后 nil service、nil ctx、nil pools、发号器为空或 `subCount < 1` 为 `10003`；已取消或已过截止时间的 ctx 原样返回，不调用发号器。子账户号在开事务前用 `shard.Sub(transfer_no, subCount)`，失败为 `10003`，不写。事务内先 `SELECT ... FOR UPDATE` 锁 PAYEE 行，再由公开 Post 按账户 id 升序锁账户。没有行或 CANCELLED 为 `40004`，不插入，不记账。CONFIRMED 且 `txn_no` 非空则返回该 `txn_no`，不再比较收款商户，不再记账。CONFIRMED 但 `txn_no` 为空，或未知 status，为 `10003`，不写。TRIED 但收款商户不一致为 `10006`，不记账。TRIED 且收款商户一致时，金额只用行上的 `amount`。本分片 `TRANSIT`（`PLATFORM` / `PLATFORM` / `CNY` / `sub_no = shard.Sub`）不存在，或商户结算账户此时不存在，为 `40001`，不调用 Post，回滚后分支仍是 TRIED。两个账户 id 相同或任一为 0 是 `10003`。然后 `Post(ctx, tx, TRANSFER_IN, transfer_no, memo 空串)`：借在途、贷收款商户，`FrozenAccountID` 保持 0。在途允许透支，正常行不会因为在途不足返回 `40002`；若在途被改成不许透支且不够扣，`40002` 原样返回，回滚，保持 TRIED，不写墓碑。Post 返回 `40005` 原样返回，回滚，保持 TRIED。本方法不增加 `pay_transfer_inconsistent_total`。Post 的 error 为 nil 时，无论 `Duplicated` 是 true 还是 false，都回写 `PostResult.TxnNo` 并提交 CONFIRMED。`Duplicated` true 表示凭证已在、这次没改余额。这和 ACC-06 不同。回写 WHERE 为 `role = PAYEE AND status = TRIED AND txn_no IS NULL` 且 amount、payee 等于刚读到的值，`version` 加 1。影响 0 行或凭证号为空是 `10003` 并回滚。持有 FOR UPDATE 时 0 行不是并发幂等。`10003` / `10004` 不进上表业务错误列。成功时 `txn_no` 非空。返回错误时 `status` 和 `txn_no` 都是空字符串。不新增字段。
 - `TransferInCancel`：进程内方法，自己用 `dbx.WithTx` 提交同一分片事务，RPC handler 仍是 ACC-11。校验与 Try 相同，不合法为 `10001`，即使 service 为 nil 或 ctx 已取消。参数合法后的 nil 依赖、取消的 ctx、ShardDB 失败与 Try 相同。不查账户，不选平台子账户，所以没有 `40001` / `40005`。事务内先 `SELECT ... FOR UPDATE`。没有行：INSERT CANCELLED，金额和收款商户用请求值，payer、fail_code、txn_no 均为 SQL NULL，`version` 0。不改余额。1062 先回滚，再按已有行处理。已 CANCELLED 幂等成功，不再比较金额和收款商户。已 CONFIRMED 为 `40004`，不再比较金额。TRIED 且金额或收款商户不一致为 `10006`，不改行。TRIED 且一致则 CAS 为 CANCELLED，`version` 加 1。余额不变，不调用 Post。持有 FOR UPDATE 时 CAS 影响 0 行是 `10003` 并回滚。未知 status 为 `10003`。1062 之后读到匹配的 TRIED，再开一个事务锁住后 CAS；第二次仍是 1062 则为 `10003`，不空转。进程内 `biz.TransferInCancel` 的返回值带 `txn_no`：成功时为空；返回错误时 `status` 和 `txn_no` 都是空字符串。RPC 响应只有 `status`。不新增字段。
-- `CheckBalance`：进程内方法，RPC handler 仍是 ACC-11。核对项与 `failures` 字段规则见 §8.4。`merchant_id` 为空是全量，不是 `10001`。非空商户号不能被 `shard.Of` 解析时 `10001`，先于 nil service、nil ctx 和已取消的 ctx，不查询。参数合法后 nil service、nil ctx、nil pools、ShardDB 失败、SQL 错误、未知余额方向或金额溢出为 `10003`，`failures` 为空；已取消或已过期的 ctx 原样返回，不开事务。`40001` 只表示点名的商户结算账户不存在。商户模式忽略 `expect_quiescent`，只核对该结算账户的前四项。最后一条分录是 `max(ledger_entry.id)` 的 `balance_after`，不是 `created_at`。`passed = false` 时 error 为 nil，不是错误码；同一次完成调用把进程内无标签计数 `pay_ledger_check_failures_total` 加 1，并打一条 ERROR 日志。成功、`40001`、`10003` 不加计数。不写行，不调用外部系统。不新增字段。
+- `CheckBalance`：进程内方法，RPC handler 仍是 ACC-11。核对项与 `failures` 字段规则见 §8.4。`merchant_id` 为空是全量，不是 `10001`。非空商户号不能被 `shard.Of` 解析时 `10001`，先于 nil service、nil ctx 和已取消的 ctx，不查询。参数合法后 nil service、nil ctx、nil pools、ShardDB 失败、SQL 错误、未知余额方向或金额溢出为 `10003`，`failures` 为空；已取消或已过期的 ctx 原样返回，不开事务。`40001` 只表示点名的商户结算账户不存在。商户模式忽略 `expect_quiescent`，只核对该结算账户的前四项。最后一条分录是 `max(ledger_entry.id)` 的 `balance_after`，不是 `created_at`。`passed = false` 时 error 为 nil，不是错误码；同一次完成调用把进程内无标签计数 `pay_ledger_check_failures_total` 加 1，并打一条 ERROR 日志。成功、`40001`、`10003` 不加计数。不写行，不调用外部系统。不新增字段。服务端处理上限：商户模式（单账户）2 秒，全量模式 120 秒，其他 AccountService 方法仍为 2 秒（ACC-11 第 3 条）。ACC-11 的 handler 目前对所有方法统一用 2 秒，全量 120 秒要随 ACC-11 的修改落地。
 - `Reverse`：ACC-08 完成前 RPC handler 一律返回 `10003`，不调用 biz，不写行。这不是该方法将来的错误码语义，上表业务错误列是 ACC-08 要实现的契约。
 - 平台子账户由 account 按 `crc32(biz_no) % PLATFORM_SUB_ACCOUNTS` 选择，调用方不感知。
 
@@ -914,8 +919,8 @@ account RPC 以商户号（或 owner）为入参，由 account 按商户号路�
 | 方法 | 请求 | 响应 | 业务错误 | 调用方 | 功能点 |
 |---|---|---|---|---|---|
 | `CreatePayment` | `merchant_id` + §4.1 字段 | `PaymentOrder` | 10001、10006 | gateway | PAY-02 |
-| `Pay` | `merchant_id`、`pay_no`、`channel` | `PaymentOrder` | 30001、30003、30004、30006、30007 | gateway | PAY-03 |
-| `ClosePayment` | `merchant_id`、`pay_no` | `PaymentOrder` | 30001、30003、10004 | gateway | PAY-06 |
+| `Pay` | `merchant_id`、`pay_no`、`channel` | `PayResponse{biz_code, payment_order}`（`payment_order` 为 `PaymentOrder`） | 30001、30003、30004、30006、30007（`30006` 放在 `biz_code`，携带 `payment_order`） | gateway | PAY-03 |
+| `ClosePayment` | `merchant_id`、`pay_no` | `ClosePaymentResponse{biz_code, payment_order}`（`payment_order` 为 `PaymentOrder`） | 30001、30003、10004（`30003` 放在 `biz_code`，携带 `payment_order`） | gateway | PAY-06 |
 | `QueryPayment` | `merchant_id`、`pay_no` 或 `out_trade_no` | `PaymentOrder` | 30001 | gateway | PAY-08 |
 | `CreateRefund` | `merchant_id` + §4.5 字段 | `CreateRefundResponse{biz_code, refund_order}`（`refund_order` 为 `RefundOrder`） | 30001、30003、30005、30006、10006、40002（`40002`、`30006` 放在 `biz_code`，携带 `refund_order`） | gateway | REF-01、REF-02 |
 | `QueryRefund` | `merchant_id`、`refund_no` 或 `out_refund_no` | `RefundOrder` | 30001 | gateway | REF-05 |
@@ -929,6 +934,8 @@ account RPC 以商户号（或 owner）为入参，由 account 按商户号路�
 `GetMerchantCredential` 返回明文密钥，只允许网关调用；调用双方都不得记录响应内容。
 
 `GetMerchantCredential`（PAY-01）：请求为 nil 返回 `10001`。`app_id` 按字节精确匹配，为空、不存在或只是大小写、首尾空格不同都返回 `20004`（`X-App-Id` 不在签名串里，放宽匹配会让同一请求换个写法绕过按 `app_id` 记的 nonce）。`merchant` 表列跟随库默认 `utf8mb4_bin`，区分大小写，但 PAD SPACE 会忽略尾部空格；集成测试临时库为 `utf8mb4_0900_ai_ci`，不区分大小写与重音。两种规则下 SQL 都可能匹配到字节不同的值，所以服务端读回 `app_id` 再逐字节比较。DISABLED 商户照常返回，由网关返回 `20004`。密文解不开是平台内部故障，返回 `10003`。payment 不缓存凭证，网关侧缓存属于 GW-08。PaymentService 其余方法在各自功能点实现前一律返回 `10003`，不是这些方法将来的错误码语义。服务端处理超时 2 秒；要调渠道的方法由各自功能点按需求 §5.4.1 重新确定。
+
+`Pay`、`ClosePayment` 的返回类型：当前 IDL 两者直接返回 `PaymentOrder`，无法同时带回 `biz_code` 与订单。PAY-03 实现时在 `idl/payment.thrift` 新增 `PayResponse`、`ClosePaymentResponse`（字段与 `CreateRefundResponse` 同样排列：`1: base.BizCode biz_code`、`2` 为订单），并把两个方法的返回类型改为这两个包装。这是返回类型变更，只在两方法都还没有调用方、handler 一律返回 `10003` 时进行；之后按“只增不删”。成功时 `biz_code = 0`。
 
 `CreateTransfer` 的响应码规则同 §4.8：本次请求执行到 FAILED 且 `fail_code = INSUFFICIENT_BALANCE` → `biz_code = 40002` 并携带转账单；其他 FAILED、SUCCESS、处理中状态与幂等命中 → 成功返回。
 
@@ -1001,5 +1008,6 @@ account 不消费转账事件：转账的两个分支由 payment 同步驱动（
 ### 11.5 投递语义
 
 - 至少一次投递，可能重复、可能跨 topic 乱序；业务正确性不依赖顺序。
+- 投递器先在短事务里领取事件并写入租约（`next_retry_at` = 领取时刻 + 30 秒），提交后在事务外发送，再按租约值 CAS 回写结果（MQ-02）。发送成功后、回写前崩溃，或发送超过租约被另一实例重新领取，都会重复投递，由消费端幂等吸收。
 - 消费端以业务键幂等：`ledger_txn.uk_biz`、`account_freeze.uk_biz`（均为分片内唯一）、`merchant_notify.uk_event_id`。
 - 事件结构只增字段；消费端忽略未知字段；不兼容变更时提升 `version` 并让消费端同时支持新旧版本。

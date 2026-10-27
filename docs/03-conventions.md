@@ -1,6 +1,6 @@
 # pay-system 全局约定与编号规范
 
-> 版本：v2.15　最后修改：2026-10-27
+> 版本：v2.16　最后修改：2026-10-27
 > 适用：全部代码、文档、配置。需求见 `docs/02-requirements.md`，接口见 `docs/05-api.md`，表结构见 `docs/database.md`。
 
 本文集中登记会被多个功能点共用的约定：编号体系、业务单号、金额、时间、错误码、幂等与事务规则、命名规范、配置项。新增或修改这些内容时，先改本文并在 §9 记录，再改代码。
@@ -187,7 +187,7 @@ docker-compose 给将来会跑业务进程的 6 个占位服务写死互不相�
 | 20005 | `ADMIN_UNAUTHORIZED` | 401 | `admin unauthorized` | 否 | 管理 Token 无效 |
 | 30001 | `ORDER_NOT_FOUND` | 404 | `order not found` | 否 | 支付单、退款单或转账单不存在，含访问其他商户的单据（收款方查询转账单同样返回此码） |
 | 30002 | — | — | — | — | 保留不用（v1 需求中曾表示幂等冲突，已由 10006 替代）。`pkg/errno` 不定义可用错误 |
-| 30003 | `ORDER_STATUS_CONFLICT` | 409 | `order status conflict` | 否 | 当前状态不允许该操作 |
+| 30003 | `ORDER_STATUS_CONFLICT` | 409 | `order status conflict` | 否 | 当前状态不允许该操作；关闭支付单返回此码时 `data` 携带当前支付单 |
 | 30004 | `ORDER_EXPIRED` | 409 | `order expired` | 否 | 订单已过期或剩余时间不足 30 秒 |
 | 30005 | `REFUND_EXCEEDED` | 409 | `refund exceeded` | 否 | 累计退款金额超过订单金额 |
 | 30006 | `CHANNEL_REJECTED` | 200 | `channel rejected` | 否 | 渠道明确拒绝，支付单或退款单已置为 FAILED；`data` 携带该单据 |
@@ -209,7 +209,7 @@ docker-compose 给将来会跑业务进程的 6 个占位服务写死互不相�
 2. Kitex 通过 `BizStatusError` 传递业务码；网关按本表映射 HTTP 状态码。
 3. 未识别的错误一律转为 `10003`，对外消息固定为 `internal error`，原始错误只进日志，不进入对外 `msg`。
 4. 鉴权失败不说明具体原因（例如不区分“密钥错误”和“body 被篡改”）。
-5. 错误响应的 `data` 默认为空；本表“说明”中注明携带对象的，`data` 为该对象。Kitex 的 `BizStatusError` 不能同时返回响应体，因此携带对象的错误（如退款、转账的 `40002`，`30006`）在 RPC 层按正常响应返回：响应结构体带 `biz_code` 字段（`idl/base.thrift`）和该对象，网关看到非 0 的 `biz_code` 时按本表映射 HTTP 状态码并把对象放入 `data`。其他错误一律用 `BizStatusError`。
+5. 错误响应的 `data` 默认为空；本表“说明”中注明携带对象的，`data` 为该对象。Kitex 的 `BizStatusError` 不能同时返回响应体，因此携带对象的错误在 RPC 层按正常响应返回，只有这几处：创建退款的 `40002`、`30006`，创建转账的 `40002`，发起支付的 `30006`，关闭支付单的 `30003`（对应 `CreateRefundResponse`、`CreateTransferResponse`、`PayResponse`、`ClosePaymentResponse`，后两个在 PAY-03 加入 IDL，见接口 §10.2）。响应结构体带 `biz_code` 字段（`idl/base.thrift`）和该对象，网关看到非 0 的 `biz_code` 时按本表映射 HTTP 状态码并把对象放入 `data`。其他错误一律用 `BizStatusError`。
 6. 新增错误码：先登记到本表（码段内递增，不复用），再在 `pkg/errno` 实现，并同步 `docs/05-api.md` 中受影响的接口。
 7. `pkg/idgen` 在时钟回拨超过 5ms 时返回 `ErrClockRollback`，不携带数字码，也不包装 Kitex 错误。业务调用方将该错误映射为已有的 `10004`，不新增错误码。
 8. `nil` 表示成功，对应码 `0`、对外 msg `ok`、HTTP 200，不转为 `10003`。`pkg/errno` 把 nil 映射成非 nil 的成功值只供填写响应；调用方不要把它当作失败返回。
@@ -246,13 +246,13 @@ docker-compose 给将来会跑业务进程的 6 个占位服务写死互不相�
 
 1. 状态字段只能通过 CAS 更新修改：`UPDATE ... SET status = ?, version = version + 1 WHERE <主键> AND status = ?`。
 2. 影响行数为 0 时重新读取：已是目标状态 → 幂等成功；其他状态 → 返回该模块的状态冲突码（订单 `30003`，冻结与转账分支 `40004`）。协调者（转账单）CAS 失败时不报错，按数据库中的当前状态继续推进（TRF-03 第 3 条）。
-3. 终态不可变，运营操作也不例外。例外只有需求 §2.7 列出的两种非资金记录：`outbox` 的 SENT、DEAD 只能由事件重放（MQ-05）CAS 回 PENDING；`recon_batch` 的 FAILED、DONE 可由重跑（REC-01，DONE 需 `force`）从 INIT 重新开始。`merchant_notify` 没有重放流转，SUCCESS、DEAD 仍不可变。
+3. 终态不可变，运营操作也不例外。例外只有需求 §2.7 列出的两种非资金记录：`outbox` 的 SENT、DEAD 只能由事件重放（MQ-05）CAS 回 PENDING，同时把 `next_retry_at` 设为 now、`retry_count` 清零，让投递器立即重新领取（`WHERE status IN ('SENT', 'DEAD')` 不碰 PENDING 行，所以不会与投递租约冲突，见 §6.3 第 2 条）；`recon_batch` 的 FAILED、DONE 可由重跑（REC-01，DONE 需 `force`）从 INIT 重新开始。`merchant_notify` 没有重放流转，SUCCESS、DEAD 仍不可变。
 4. 状态值为大写英文，与数据库 CHECK 约束、IDL 字符串、JSON 取值完全一致。
 
 ### 6.3 事务
 
 1. 隔离级别 READ COMMITTED；正确性依赖条件更新和唯一索引，不依赖间隙锁。余额核对使用一致性快照（ACC-10）。
-2. 事务内禁止调用 RPC、HTTP、MQ。事务总时长默认 3 秒：`dbx.WithTx` 用父 ctx 派生超时，先到期的那个生效；超时后取消并回滚，不留下已提交的数据。
+2. 事务内禁止调用 RPC、HTTP、MQ。例如 outbox 投递（MQ-02）：先在短事务里 `FOR UPDATE SKIP LOCKED` 领取事件，把 `next_retry_at` 设为租约到期时刻（now + 30s）并提交；提交后在事务外发送 Kafka；再按 `WHERE id = ? AND status = 'PENDING' AND next_retry_at = <租约值>` CAS 回写结果，影响 0 行说明租约已被别的实例接手，不再回写。不要在持有行锁的事务里等待 Kafka 确认。事务总时长默认 3 秒：`dbx.WithTx` 用父 ctx 派生超时，先到期的那个生效；超时后取消并回滚，不留下已提交的数据。
 3. 同一事务锁多行时按主键升序。
 4. 死锁（1213）和锁等待超时（1205）由 `dbx.WithTx` 整体重试。含第一次在内最多执行 4 次；三次重试前分别等待 10ms、20ms、40ms。这里的 3 是重试次数，不是含首次的总次数。
 5. 需要“业务写入 + 发事件”时，事件通过 `outbox.Add(tx, ...)` 在同一事务写入。
@@ -267,6 +267,7 @@ docker-compose 给将来会跑业务进程的 6 个占位服务写死互不相�
 - 文件名小写下划线：`payment_order.go`、`payment_order_test.go`。
 - 集成测试文件加 `//go:build integration`；端到端测试位于 `test/e2e/`，加 `//go:build e2e`。
 - `make lint` 执行 `golangci-lint run --build-tags integration ./...`：未打标签的文件和集成测试文件一起检查。新增其他构建标签（如 `e2e`）时，同步加进 `--build-tags`。
+- `make test` 执行 `go test -race ./...`，不依赖 Docker。`make cover` 执行 `go test -race -tags integration -coverprofile=coverage.out ./...`：覆盖率统计包含集成测试，需要 Docker（testcontainers）或 `TEST_MYSQL_DSN` 指向的已有 MySQL。
 - 测试函数注明覆盖的功能点与验收条目：`// ACC-03 验收 3：1000 goroutine 并发扣款`。
 
 ### 7.2 数据库
@@ -347,7 +348,8 @@ Hertz `hlog` 和 Kitex `klog` 经适配器写入同一个 slog handler。`SetDef
 ### 7.6 Git
 
 - 分支：`feat/<功能点>-<简述>`、`fix/<功能点>-<简述>`、`docs/<简述>`，如 `feat/ACC-03-ledger-post`。
-- 提交信息：`[<功能点>] <祈使句摘要>`，多个功能点用逗号分隔，如 `[ACC-04,ACC-05] add freeze and release`。不属于任何功能点的改动用 `[docs]`（只改文档）或 `[chore]`（工程配置），如 `[docs] add design baseline`。
+- 提交信息：`[<功能点>] <祈使句摘要>`，如 `[ACC-03] add ledger post`。一次提交只含一个功能点。不属于任何功能点的改动用 `[docs]`（只改文档）或 `[chore]`（工程配置），如 `[docs] add design baseline`。
+- 合并：功能点报告提交后，由 lead 用 `git merge --ff-only` 把分支合回 `main`。推送仍需用户明确要求。
 
 ## 8. 配置项
 
@@ -428,3 +430,4 @@ BASE-09 只拼 DSN 文本，不连接数据库，也不调用驱动的 `ParseDSN
 | v2.13 | 2026-10-23 | BASE-14：§8 写明 `SECRET_MASTER_KEY` 是标准 base64（带填充），与 BASE-09 `pkg/config` 已有的校验一致，`pkg/secretbox` 按同一规则解码。不新增变量，不改默认值，不新增错误码 |
 | v2.14 | 2026-10-26 | CH-05：§2.2 登记前缀 `CN`（渠道回调发送号，不落库，只出现在回调 body 的 `notify_id`）。总长仍是前缀 + 19 位。不新增错误码 |
 | v2.15 | 2026-10-27 | 文档审查后的文字修正，不改规则：§5.1 `30xxx` 码段补“转账单”（`30001` 已含转账单）；§5.2 `10002` 的例子改为事件重放时 `event_id` 不存在（对账批次、差错查询接口已在接口 2.0.0 删除）；§6.2 第 3 条写明需求 §2.7 中 `outbox` 重放、`recon_batch` 重跑两处例外，`merchant_notify` 不在例外内。§2.2 已与 `pkg/idgen` 的登记集合一致（含 `TF`、`CN`），未改 |
+| v2.16 | 2026-10-27 | 用户确认（A2、A1、A8、B）：§5.2 `30003` 注明关闭支付单时携带支付单；§5.3 第 5 条列全携带对象的错误，补发起支付 `30006`、关闭支付单 `30003`（`PayResponse`、`ClosePaymentResponse`，PAY-03 加入 IDL）。§6.2 第 3 条写明 outbox 重放同时把 `next_retry_at` 设为 now；§6.3 第 2 条加 outbox 投递示例：领取并写租约、提交、事务外发送、按租约值 CAS 回写。§7.1 写明 `make test` 不依赖 Docker，`make cover` 带 `-tags integration`、覆盖率包含集成测试、需要 Docker。§7.6 改为一次提交只含一个功能点，删除多功能点逗号写法与 `[ACC-04,ACC-05]` 例子，补功能点报告提交后由 lead `git merge --ff-only` 合回 `main`，推送仍需用户要求。不新增错误码 |
