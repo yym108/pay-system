@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 2.1.7 |
+| 文档版本 | 2.1.8 |
 | API 版本 | v1（路径前缀 `/v1`） |
 | 最后修改 | 2026-10-27 |
 | 状态 | 设计基线，实现须与本文一致 |
@@ -45,14 +45,15 @@
 | 2.0.7 | 2026-10-21 | 文字对齐：CheckBalance 是进程内方法，自己打开 REPEATABLE READ 一致性快照，不用 `dbx.WithTx`，RPC handler 仍是 ACC-11。业务错误列仍只有 `40001`。`passed = false` 不是错误码。商户模式忽略 `expect_quiescent`。最后一条分录是 `max(id)`。一次失败的完成调用把进程内计数加 1。不新增字段、不改错误码数字、不改 IDL。§1 各接口的“最后修改”不变 | AccountService.CheckBalance、`POST /admin/accounts/check` | ACC-10 |
 | 2.0.8 | 2026-10-22 | 文字对齐：AccountService 的 Kitex handler 由 ACC-11 提供，只做协议转换和错误码转换。业务错误走 TTHeader 的 `BizStatusError`；本服务没有携带对象的错误，响应不加 `biz_code`。`POST /admin/accounts/check` 仍是 GW-07，不在 account 进程上提供。不新增字段、不改错误码数字、不改 IDL。§1 各接口的“最后修改”不变 | §8.4、§10、§10.1 | ACC-11 |
 | 2.0.9 | 2026-10-23 | 文字澄清：渠道回调入口的网关渠道密钥为空属于平台内部错误，返回 500 / `FAIL` 让渠道重试，不按渠道签名错误返回 401。签名算法、请求头、§3.7 测试向量不变；不新增字段、不改错误码数字、不改 IDL | §7 | BASE-13、GW-06 |
-| 2.1.7 | 2026-10-27 | 文字更正：2.1.6 写的“库列排序规则不区分大小写”有误。`merchant` 表列跟随库默认 `utf8mb4_bin`（区分大小写，但 PAD SPACE 忽略尾部空格）；集成测试临时库为 `utf8mb4_0900_ai_ci`（不区分大小写与重音）。两种规则下 SQL 都可能匹配到字节不同的值，所以服务端读回后逐字节比较；首尾空格不同同样返回 `20004`。不改契约：不新增字段、不改错误码数字、不改 IDL | §10.2 | PAY-01 |
-| 2.1.6 | 2026-10-27 | 文字澄清：PaymentService 在 :8881 由 PAY-01 起服务，服务端处理超时 2 秒；本版只实现 `GetMerchantCredential`，其余方法在各自功能点实现前返回 `10003`。`GetMerchantCredential` 只认与库中完全相同的 `app_id`（库列排序规则不区分大小写，服务端逐字节比较），为空、不存在或大小写不同都返回 `20004`；DISABLED 照常返回记录；密文解不开返回 `10003`。不新增字段、不改错误码数字、不改 IDL | §1、§10.2 | PAY-01 |
-| 2.1.5 | 2026-10-27 | 文字澄清：DUP_NOTIFY 发满 10 次，不因 HTTP 200 且 body 为 `SUCCESS` 停止，不走普通回调的 5 次与 5s/15s/30s/60s。普通回调不变。不新增平台错误码，不改签名算法。§3.7 的 V4 不变 | §9.7 | CH-06 |
-| 2.1.4 | 2026-10-26 | 渠道回调写明 body 字段顺序、紧凑 JSON、无 HTML 转义、`finished_at` 为东八区毫秒、`notify_id` 前缀 `CN`（不落库）。送达仅当 HTTP 200 且 body 字节恰好是 `SUCCESS`。不跟随重定向，响应体最多 1024 字节，单次超时 5 秒。连第一次最多 5 次，间隔 5s、15s、30s、60s。`notify_sent_count` 在发出 HTTP 前按当前计数条件加一。不新增平台错误码，不改签名算法。§3.7 的 V4 不变 | §9.7 | CH-05 |
-| 2.1.3 | 2026-10-26 | 文字澄清：关单只处理 `(PAY, req_no)`，同号 REFUND 不参与。200 的 body 只有 `result` 与 `status` 三个取值组合：`OK` / `CLOSED`、`OK` / `FAILED`、`ALREADY_PAID` / `SUCCESS`。普通关单不写 `finished_at`；只有 CLOSE_RACE 写 `finished_at` 与 `bill_date` 并在提交后调用完成钩子。未知 `req_no` 插入 `amount = 0` 的 CLOSED 防悬挂行。§1 该行与查单、受理合在一起，最后修改日期仍是 2026-10-26。不新增字段、不改枚举、不改签名、不加错误码 | §9.4 | CH-03 |
-| 2.1.2 | 2026-10-26 | 文字澄清：查单只读当前行，不按场景藏状态或推迟返回。无行时 `result` 为 `NOT_FOUND`，不带 status、amount、channel_txn_no、finished_at，也不插入行。找到时返回 status、amount（含 0）、channel_txn_no；finished_at 仅当列非 NULL，格式为 RFC 3339 毫秒、东八区 `+08:00`，PROCESSING 省略。不新增字段、不改枚举、不改签名、不加错误码 | §9.3 | CH-02 |
-| 2.1.1 | 2026-10-26 | 文字澄清：对未知 `req_no` 关单时插入的防悬挂 CLOSED 记录 `amount` 固定为 0，查单原样返回 0。不新增字段、不改状态与结果枚举、不改签名 | §9.4 | CH-03、CH-02 |
 | 2.1.0 | 2026-10-23 | 模拟渠道新增 HTTP 400：签名正确但参数非法（body 不是单个 JSON 对象、字段类型不符、必填项为空或超长、`amount < 1`、`notify_url` 不是 http / https 绝对地址、body 不是合法 UTF-8、顶层重复键、已知字段名大小写不对、`req_no` / `notify_url` 含 U+FFFD）时返回 400，body 为空、不签名、不受理。支付受理补充：已有行时 CLOSED 优先返回 `ORDER_CLOSED`（不论金额），其次比较金额；`REJECTED` 不带 `channel_txn_no`，`status` 为已有行当前状态；时间窗 ±300 秒含边界，按整秒比较；渠道写库结果不确定但行已提交时仍返回 `OK`。平台侧把渠道的其他非 200（含 400、401）视为结果未知（PAY-03）。不改签名算法与已有字段 | §9.1、§9.2 | CH-01、PAY-03 |
+| 2.1.1 | 2026-10-26 | 文字澄清：对未知 `req_no` 关单时插入的防悬挂 CLOSED 记录 `amount` 固定为 0，查单原样返回 0。不新增字段、不改状态与结果枚举、不改签名 | §9.4 | CH-03、CH-02 |
+| 2.1.2 | 2026-10-26 | 文字澄清：查单只读当前行，不按场景藏状态或推迟返回。无行时 `result` 为 `NOT_FOUND`，不带 status、amount、channel_txn_no、finished_at，也不插入行。找到时返回 status、amount（含 0）、channel_txn_no；finished_at 仅当列非 NULL，格式为 RFC 3339 毫秒、东八区 `+08:00`，PROCESSING 省略。不新增字段、不改枚举、不改签名、不加错误码 | §9.3 | CH-02 |
+| 2.1.3 | 2026-10-26 | 文字澄清：关单只处理 `(PAY, req_no)`，同号 REFUND 不参与。200 的 body 只有 `result` 与 `status` 三个取值组合：`OK` / `CLOSED`、`OK` / `FAILED`、`ALREADY_PAID` / `SUCCESS`。普通关单不写 `finished_at`；只有 CLOSE_RACE 写 `finished_at` 与 `bill_date` 并在提交后调用完成钩子。未知 `req_no` 插入 `amount = 0` 的 CLOSED 防悬挂行。§1 该行与查单、受理合在一起，最后修改日期仍是 2026-10-26。不新增字段、不改枚举、不改签名、不加错误码 | §9.4 | CH-03 |
+| 2.1.4 | 2026-10-26 | 渠道回调写明 body 字段顺序、紧凑 JSON、无 HTML 转义、`finished_at` 为东八区毫秒、`notify_id` 前缀 `CN`（不落库）。送达仅当 HTTP 200 且 body 字节恰好是 `SUCCESS`。不跟随重定向，响应体最多 1024 字节，单次超时 5 秒。连第一次最多 5 次，间隔 5s、15s、30s、60s。`notify_sent_count` 在发出 HTTP 前按当前计数条件加一。不新增平台错误码，不改签名算法。§3.7 的 V4 不变 | §9.7 | CH-05 |
+| 2.1.5 | 2026-10-27 | 文字澄清：DUP_NOTIFY 发满 10 次，不因 HTTP 200 且 body 为 `SUCCESS` 停止，不走普通回调的 5 次与 5s/15s/30s/60s。普通回调不变。不新增平台错误码，不改签名算法。§3.7 的 V4 不变 | §9.7 | CH-06 |
+| 2.1.6 | 2026-10-27 | 文字澄清：PaymentService 在 :8881 由 PAY-01 起服务，服务端处理超时 2 秒；本版只实现 `GetMerchantCredential`，其余方法在各自功能点实现前返回 `10003`。`GetMerchantCredential` 只认与库中完全相同的 `app_id`（库列排序规则不区分大小写，服务端逐字节比较），为空、不存在或大小写不同都返回 `20004`；DISABLED 照常返回记录；密文解不开返回 `10003`。不新增字段、不改错误码数字、不改 IDL | §1、§10.2 | PAY-01 |
+| 2.1.7 | 2026-10-27 | 文字更正：2.1.6 写的“库列排序规则不区分大小写”有误。`merchant` 表列跟随库默认 `utf8mb4_bin`（区分大小写，但 PAD SPACE 忽略尾部空格）；集成测试临时库为 `utf8mb4_0900_ai_ci`（不区分大小写与重音）。两种规则下 SQL 都可能匹配到字节不同的值，所以服务端读回后逐字节比较；首尾空格不同同样返回 `20004`。不改契约：不新增字段、不改错误码数字、不改 IDL | §10.2 | PAY-01 |
+| 2.1.8 | 2026-10-27 | 文档审查后的文字修正，不改契约：§0.2 变更记录统一为版本升序。§3.7 注明 V3 只验证签名算法，body 不含 `request_id`。§8.5 写明 `error_msg`、`handler`、`handle_note` 的库列 NULL 映射为空串、字段仍输出。§9.4 防悬挂行的 `scenario`、`notify_url` 改为显式写入与列默认相同的值。§10.1 总述把 `Reverse` 列入传分片号的例外，事务只在一个分片上开启限定为写操作，并写明 `CheckBalance` 全量、`GetAccount` 查 PLATFORM 只读两个分片；TransferInTry / Confirm / Cancel 业务错误补 `10001`；Try / Cancel 的 `txn_no` 注明是进程内返回值，RPC 响应只有 `status`；ConfirmFreeze 的 32 码点注明来自 `account.owner_id` 列宽，平台渠道编码最多 16 位；补 `Reverse` 在 ACC-08 完成前一律返回 `10003`、不写行。§10.2 CreateRefund、CreateTransfer 的响应改为 IDL 中的 `CreateRefundResponse`、`CreateTransferResponse`；GetMerchantCredential 请求为 nil 返回 `10001`。不新增字段、不改错误码数字、不改 IDL | §0.2、§3.7、§8.5、§9.4、§10.1、§10.2 | ACC-02、ACC-06、ACC-08、ACC-10、ACC-14、CH-03、PAY-01、REC-01、REF-01、TRF-01 |
 
 ## 1. 接口总览
 
@@ -81,10 +82,10 @@
 | `GET /v1/transfers/{transfer_no}`、`GET /v1/transfers?out_transfer_no=` 查询转账 | §4.9 | `PaymentService.QueryTransfer` | TRF-05 | 2.0.0 | 2026-10-12 |
 | 商户异步通知 | §6 | — | NTF-01、NTF-02 | 1.0.0 | 2026-10-12 |
 | `POST /callback/mockpay` 渠道回调入口 | §7 | `PaymentService.HandleChannelNotify` | GW-06 | 1.0.0 | 2026-10-23 |
-| `POST /admin/recon/run` 执行对账 | §8.2 | `ReconService.RunBatch` | REC-01、REC-08 | 1.0.0 | 2026-10-12 |
+| `POST /admin/recon/run` 执行对账 | §8.2 | `ReconService.RunBatch` | REC-01、REC-08 | 1.0.0 | 2026-10-27 |
 | `POST /admin/outbox/replay` 事件重放 | §8.3 | `PaymentService.ReplayEvent` | MQ-05 | 1.0.0 | 2026-10-12 |
 | `POST /admin/accounts/check` 余额核对 | §8.4 | `AccountService.CheckBalance` | ACC-10 | 1.0.0 | 2026-10-12 |
-| 模拟渠道 `pay` / `query` / `close` / `refund` / `bills` | §9.2–§9.6 | — | CH-01~04、CH-08 | 1.0.0 | 2026-10-26 |
+| 模拟渠道 `pay` / `query` / `close` / `refund` / `bills` | §9.2–§9.6 | — | CH-01~04、CH-08 | 1.0.0 | 2026-10-27 |
 | 模拟渠道回调 | §9.7 | — | CH-05、CH-06 | 1.0.0 | 2026-10-27 |
 | 模拟渠道管理 `config` / `bill-inject` | §9.8 | — | CH-07、CH-09 | 1.0.0 | 2026-10-12 |
 | AccountService / PaymentService / ReconService | §10 | — | 见各方法 | 1.0.0 | 2026-10-27 |
@@ -229,7 +230,7 @@ signature = base64(HMAC-SHA256(channel_key, canonical))
 | V3 | 平台响应 | `1791500001\nZyXwVu9876543210\n8196328a69b72a8da9bd189c88ce3409371ce889ce2b414719d4095d5708571c` | `TuLVqqAxs3SyvTtDXp1cpv+Rpv2D5URAFywIHBNjAh4=` |
 
 - V1 body：`{"out_trade_no":"T20261009001","amount":10000,"subject":"demo"}`
-- V3 body：`{"code":0,"msg":"ok","data":{"pay_no":"PA0000000000000000001"}}`
+- V3 body：`{"code":0,"msg":"ok","data":{"pay_no":"PA0000000000000000001"}}`。V3 只用于验证响应签名算法，body 不含 `request_id`，不是完整的响应示例；完整响应结构见 §2.3。
 
 渠道密钥 `demo_channel_key_mockpay_0123456`：
 
@@ -661,7 +662,7 @@ ACC-10 交付进程内 `biz.CheckBalance`。RPC handler 由 ACC-11 转发到该�
 
 ### 8.5 管理对象
 
-`ReconBatch`：`batch_no`、`channel`、`bill_date`、`status`（INIT / DOWNLOADED / CHECKING / DONE / FAILED）、`channel_count`、`channel_amount`、`local_count`、`local_amount`、`matched_count`、`diff_count`、`error_msg`、`started_at`、`finished_at`。
+`ReconBatch`：`batch_no`、`channel`、`bill_date`、`status`（INIT / DOWNLOADED / CHECKING / DONE / FAILED）、`channel_count`、`channel_amount`、`local_count`、`local_amount`、`matched_count`、`diff_count`、`error_msg`、`started_at`、`finished_at`。`error_msg` 在 IDL 中是必填 string，库列可空：NULL 映射为空串，字段仍输出。
 
 `ReconDiff`：
 
@@ -673,8 +674,8 @@ ACC-10 交付进程内 `biz.CheckBalance`。RPC handler 由 ACC-11 转发到该�
 | `channel_txn_no`、`local_amount`、`channel_amount`、`local_status`、`channel_status` | 双方数据，无对应方时省略 |
 | `status` | `PENDING` / `RESOLVED` / `IGNORED`，只由自动处理推进（REC-06） |
 | `handle_action` | `REQUERY`（同步渠道状态）/ `REPLAY`（重放事件，保持 PENDING，下次批次复核凭证后置为 RESOLVED）；未处理时省略 |
-| `handler` | 自动处理为 `system` |
-| `handle_note` | 处理说明；`LEDGER_MISSING` 金额不等、`TRANSFER_MISMATCH` 时记录各方实际情况 |
+| `handler` | 自动处理为 `system`；未处理时库列为 NULL，映射为空串，字段仍输出（IDL 中为必填 string） |
+| `handle_note` | 处理说明；`LEDGER_MISSING` 金额不等、`TRANSFER_MISMATCH` 时记录各方实际情况；库列为 NULL 时映射为空串，字段仍输出（IDL 中为必填 string） |
 | `resolved_at`、`created_at` | 时间 |
 
 `LOCAL_MISSING`、`AMOUNT_MISMATCH`、`STATUS_MISMATCH`（本地已终态）、`TRANSFER_MISMATCH` 不自动处理，保持 PENDING，出现在执行对账的响应与 ERROR 日志中。
@@ -776,7 +777,7 @@ HTTP 与受理、查单相同：验签失败 401；渠道密钥为空 500（ERRO
 | FAILED | `OK` / `FAILED` | 不改行 |
 | 不存在 | `OK` / `CLOSED` | 插入防悬挂行，见下 |
 
-防悬挂行：`txn_type = PAY`，`amount = 0`，`status = CLOSED`，`channel_txn_no` 为 `MC` 前缀，`created_at` 用渠道时钟（不用列默认值），`scenario` 用列默认 `NORMAL`，`notify_url` 用列默认空串。不写 `finished_at`、`bill_date`。不调度，不调用钩子。之后同一 `req_no` 的受理返回 `ORDER_CLOSED`（不论金额）。查单对这种记录返回 `amount = 0`，并省略空的 `finished_at`。
+防悬挂行：`txn_type = PAY`，`amount = 0`，`status = CLOSED`，`channel_txn_no` 为 `MC` 前缀，`created_at` 用渠道时钟（不用列默认值），`scenario` 显式写入 `NORMAL`、`notify_url` 显式写入空串（与列默认值相同，但 INSERT 带上这两列，不依赖列默认值）。不写 `finished_at`、`bill_date`。不调度，不调用钩子。之后同一 `req_no` 的受理返回 `ORDER_CLOSED`（不论金额）。查单对这种记录返回 `amount = 0`，并省略空的 `finished_at`。
 
 PROCESSING 的更新只用 CAS：`WHERE id = ? AND status = 'PROCESSING'`。影响 0 行就按 id 再读，按新状态回答；这次没有“写入结果不确定”时不调用钩子。没有行时先插入；唯一键 1062 再读，按读到的当前状态走上表。INSERT 报其他错误时，不随请求取消，1 秒后再读：`channel_txn_no` 与本次相同就按墓碑已写入返回 `OK / CLOSED`；读不到、读失败或是别的行则 500。写入报错且结果不确定时，记下这次想写的状态和 `finished_at`，再读一致才视为生效（CLOSE_RACE 且与这次的 SUCCESS、`finished_at` 一致才调一次钩子）；不一致按读到的状态回答，不覆盖、不调钩子；读回失败 500，不猜测。
 
@@ -872,7 +873,7 @@ Kitex + Thrift，IDL 位于 `idl/`，以生成后的 IDL 为准；本节列出�
 
 ### 10.1 AccountService（:8882）
 
-account RPC 以商户号（或 owner）为入参，由 account 按商户号路由到所属分片（ACC-13），调用方不传账户号和分片号（`OpenAccount` 除外）；每次调用只在一个分片上开启事务。商户号格式非法一律返回 `10001`，下表不再重复。记账 `Post` 是 account 进程内方法（ACC-03，供 ConfirmFreeze、TransferLocal、TransferInConfirm 与事件消费使用），不提供 RPC。ACC-04 交付的冻结同样是进程内方法 `biz.Freeze`，RPC handler 仍是 ACC-11；下表保留 `Freeze` 的契约。ACC-05 交付的解冻同样是进程内方法 `biz.ReleaseFreeze`，RPC handler 仍是 ACC-11；下表保留 `ReleaseFreeze` 的契约。ACC-06 交付的确认同样是进程内方法 `biz.ConfirmFreeze`，RPC handler 仍是 ACC-11；下表保留 `ConfirmFreeze` 的契约。ACC-07 交付的同分片转账已经是进程内方法 `biz.TransferLocal`，RPC handler 仍是 ACC-11；下表保留 `TransferLocal` 的契约。ACC-14 交付的收款方分支已经是进程内方法 `biz.TransferInTry`、`biz.TransferInConfirm`、`biz.TransferInCancel`，各自用 `dbx.WithTx` 提交收款商户所在分片的事务，RPC handler 仍是 ACC-11；下表保留这三行的契约。ACC-10 交付的余额核对是进程内方法 `biz.CheckBalance`，自己打开 REPEATABLE READ 一致性快照，不用 `dbx.WithTx`，不写行，RPC handler 仍是 ACC-11；下表保留 `CheckBalance` 的契约。
+account RPC 以商户号（或 owner）为入参，由 account 按商户号路由到所属分片（ACC-13），调用方不传账户号和分片号（`OpenAccount`、`Reverse` 除外）。写操作每次调用只在一个分片上开启事务。只读方法可能读两个分片：`CheckBalance` 全量模式在两个分片上各开一次只读一致性快照（两次独立快照，见 §8.4）；`GetAccount` 查 PLATFORM 分别查询两个分片后相加，不开事务。两者都不写行。商户号格式非法一律返回 `10001`，下表不再重复。记账 `Post` 是 account 进程内方法（ACC-03，供 ConfirmFreeze、TransferLocal、TransferInConfirm 与事件消费使用），不提供 RPC。ACC-04 交付的冻结同样是进程内方法 `biz.Freeze`，RPC handler 仍是 ACC-11；下表保留 `Freeze` 的契约。ACC-05 交付的解冻同样是进程内方法 `biz.ReleaseFreeze`，RPC handler 仍是 ACC-11；下表保留 `ReleaseFreeze` 的契约。ACC-06 交付的确认同样是进程内方法 `biz.ConfirmFreeze`，RPC handler 仍是 ACC-11；下表保留 `ConfirmFreeze` 的契约。ACC-07 交付的同分片转账已经是进程内方法 `biz.TransferLocal`，RPC handler 仍是 ACC-11；下表保留 `TransferLocal` 的契约。ACC-14 交付的收款方分支已经是进程内方法 `biz.TransferInTry`、`biz.TransferInConfirm`、`biz.TransferInCancel`，各自用 `dbx.WithTx` 提交收款商户所在分片的事务，RPC handler 仍是 ACC-11；下表保留这三行的契约。ACC-10 交付的余额核对是进程内方法 `biz.CheckBalance`，自己打开 REPEATABLE READ 一致性快照，不用 `dbx.WithTx`，不写行，RPC handler 仍是 ACC-11；下表保留 `CheckBalance` 的契约。
 
 | 方法 | 请求 | 响应 | 幂等键 | 业务错误 | 调用方 | 功能点 |
 |---|---|---|---|---|---|---|
@@ -882,9 +883,9 @@ account RPC 以商户号（或 owner）为入参，由 account 按商户号路�
 | `ReleaseFreeze` | `biz_type`、`biz_no`、`merchant_id`、`amount` | `freeze_no`、`status` | `(biz_type, biz_no)` | 10001、10006、40001、40004 | payment（TRF-03 Cancel） | ACC-05 |
 | `ConfirmFreeze` | `biz_type`、`biz_no`、`merchant_id`、`channel` | `freeze_no`、`txn_no` | `(biz_type, biz_no)` | 10001、10006、40001、40004、40005 | payment（TRF-03 Confirm） | ACC-06 |
 | `TransferLocal` | `transfer_no`、`payer_merchant_id`、`payee_merchant_id`、`amount` | `status`（`SUCCESS` / `FAILED`）、`txn_no`（SUCCESS）、`fail_code`（FAILED） | `(transfer_no, LOCAL)`，分片内唯一 | 10001、10006、40001、40005 | payment（TRF-02） | ACC-07 |
-| `TransferInTry` | `transfer_no`、`payee_merchant_id`、`amount` | `status`（`TRIED`，或已有 `CONFIRMED` 且不返回 `txn_no`） | `(transfer_no, PAYEE)`，分片内唯一 | 10006、40001、40004、40005 | payment（TRF-03 Try） | ACC-14 |
-| `TransferInConfirm` | `transfer_no`、`payee_merchant_id` | `status`（`CONFIRMED`）、`txn_no` | `(transfer_no, PAYEE)` | 10006、40001、40004、40005 | payment（TRF-03 Confirm） | ACC-14 |
-| `TransferInCancel` | `transfer_no`、`payee_merchant_id`、`amount` | `status`（`CANCELLED`） | `(transfer_no, PAYEE)` | 10006、40004 | payment（TRF-03 Cancel） | ACC-14 |
+| `TransferInTry` | `transfer_no`、`payee_merchant_id`、`amount` | `status`（`TRIED`，或已有 `CONFIRMED` 且不返回 `txn_no`） | `(transfer_no, PAYEE)`，分片内唯一 | 10001、10006、40001、40004、40005 | payment（TRF-03 Try） | ACC-14 |
+| `TransferInConfirm` | `transfer_no`、`payee_merchant_id` | `status`（`CONFIRMED`）、`txn_no` | `(transfer_no, PAYEE)` | 10001、10006、40001、40004、40005 | payment（TRF-03 Confirm） | ACC-14 |
+| `TransferInCancel` | `transfer_no`、`payee_merchant_id`、`amount` | `status`（`CANCELLED`） | `(transfer_no, PAYEE)` | 10001、10006、40004 | payment（TRF-03 Cancel） | ACC-14 |
 | `CheckBalance` | `merchant_id`（为空时全量）、`expect_quiescent` | `passed`、`failures[{shard, account_no, check, expected, actual}]` | — | 40001 | gateway（管理接口）、测试、`verify.sh` | ACC-10 |
 | `Reverse` | `shard`、`txn_no`、`reason` | `reversal_txn_no`、`duplicated` | 原 `txn_no` | 10001、40001、40002 | 内部方法（P1），业务流程不调用 | ACC-08 |
 
@@ -893,12 +894,13 @@ account RPC 以商户号（或 owner）为入参，由 account 按商户号路�
 - `GetAccount`：MERCHANT 读取商户所属分片的账户；PLATFORM 读取两个分片全部子账户并求和，`account_no` 为空，`sub_count` 为参与汇总的行数，不在交易链路中调用。
 - `Freeze`：只冻结商户结算账户（透支账户 → `10001`）。已存在的冻结单为 FROZEN 或 CONFIRMED，且金额和账户都一致 → 返回已有 `freeze_no`、`status`；RELEASED → `40004`（防悬挂），不再比较金额；FROZEN 或 CONFIRMED 的金额或账户不一致 → `10006`。余额不足 `40002`，不留下冻结单。响应仍是 `freeze_no`、`status`。
 - `ReleaseFreeze`：进程内方法，自己用 `dbx.WithTx` 提交本分片事务，RPC handler 仍是 ACC-11。校验与 Freeze 相同，不合法为 `10001`，不写行。FROZEN 且金额、账户都一致 → RELEASED，`frozen_amount` 减少，`balance` 不变，冻结单和账户的 `version` 各加 1；不要求账户 `ACTIVE`，不返回 `40005`。金额或账户不一致 → `10006`，旧行不变。已 RELEASED 幂等成功，不再比较金额。已 CONFIRMED 一律 `40004`，不再比较金额。冻结单不存在时写入 RELEASED 墓碑并返回成功（空回滚），不改账户；账户不存在 → `40001`。账户更新影响 0 行 → `10003` 并回滚，冻结单保持 FROZEN。退款解冻由 account 消费 `refund.failed` 在进程内执行（MQ-04），不经过 RPC。响应仍是 `freeze_no`、`status`。
-- `ConfirmFreeze`：进程内方法，自己用 `dbx.WithTx` 提交本分片事务，RPC handler 仍是 ACC-11。请求没有金额，R 只用冻结单 `amount`。`REFUND` 的 `channel` 非空且不超过 32 个码点，贷本分片该渠道 `CHANNEL_RECEIVABLE` 子账户，凭证 `REFUND` / `refund_no`，渠道应收减少 R。`TRANSFER` 的 `channel` 必须是空串，贷本分片 `TRANSIT` 子账户，凭证 `TRANSFER_OUT` / `transfer_no`，在途增加 R；冻结单自己的 `biz_type` 仍是 `TRANSFER`。商户腿把 `balance` 与 `frozen_amount` 同减 R，不要求账户 `ACTIVE`，不返回 `40002`。平台贷方不是 `ACTIVE` → `40005`，回滚后冻结单保持 FROZEN。FROZEN 但账户不是该商户结算账户 → `10006`。本分片平台子账户不存在 → `40001`。第一次成功 `duplicated = false`，返回已有 `freeze_no` 和这次的 `txn_no`。已 CONFIRMED 返回已有 `txn_no`，不再比较 `channel`，不再记账。RELEASED 或不存在 → `40004`，不插入。`duplicated` 不进 RPC，响应仍是 `freeze_no`、`txn_no`。退款确认由 account 消费 `refund.succeeded` 在进程内执行（MQ-04），不经过 RPC。
+- `ConfirmFreeze`：进程内方法，自己用 `dbx.WithTx` 提交本分片事务，RPC handler 仍是 ACC-11。请求没有金额，R 只用冻结单 `amount`。`REFUND` 的 `channel` 非空且不超过 32 个码点（32 是 `account.owner_id` 的列宽；平台侧渠道编码最多 16 位，payment、recon 的 `channel` 列为 VARCHAR(16)），贷本分片该渠道 `CHANNEL_RECEIVABLE` 子账户，凭证 `REFUND` / `refund_no`，渠道应收减少 R。`TRANSFER` 的 `channel` 必须是空串，贷本分片 `TRANSIT` 子账户，凭证 `TRANSFER_OUT` / `transfer_no`，在途增加 R；冻结单自己的 `biz_type` 仍是 `TRANSFER`。商户腿把 `balance` 与 `frozen_amount` 同减 R，不要求账户 `ACTIVE`，不返回 `40002`。平台贷方不是 `ACTIVE` → `40005`，回滚后冻结单保持 FROZEN。FROZEN 但账户不是该商户结算账户 → `10006`。本分片平台子账户不存在 → `40001`。第一次成功 `duplicated = false`，返回已有 `freeze_no` 和这次的 `txn_no`。已 CONFIRMED 返回已有 `txn_no`，不再比较 `channel`，不再记账。RELEASED 或不存在 → `40004`，不插入。`duplicated` 不进 RPC，响应仍是 `freeze_no`、`txn_no`。退款确认由 account 消费 `refund.succeeded` 在进程内执行（MQ-04），不经过 RPC。
 - `TransferLocal`：进程内方法，自己用 `dbx.WithTx` 提交本分片事务，RPC handler 仍是 ACC-11。参数校验在 nil service / nil ctx 之前，不合法为 `10001`，不写行。`transfer_no` 为 1–32 个码点，不强制 `TF` 前缀；金额必须是正的 int64 分；双方都能被 `shard.Of` 解析、同一分片、且不是同一商户。事务前普通 SELECT 双方 `MERCHANT_SETTLE` / `CNY` / `sub_no = 0`，不加行锁、不比较余额；任一不存在为 `40001`（优先于非 ACTIVE），两个都在但任一不是 `ACTIVE` 为 `40005`。事务 1 插入 `LOCAL` / `SUCCESS`（`txn_no` 空、`version` 0）后调用公开 `Post(TRANSFER, transfer_no, memo 空串)`，借付款商户、贷收款商户，可用余额条件是 `balance - frozen_amount`。`Post` 的 `error` 为 nil 时，无论 `Duplicated` 是 true 还是 false，都回写已有 `txn_no` 并提交 SUCCESS；`Duplicated` true 表示凭证已在、这次没有改余额。回写影响 0 行是 `10003`，回滚，不能留下没有 `txn_no` 的 SUCCESS。只有 `Post` 返回 `40002` 才在事务 1 回滚后开事务 2，插入 `FAILED` 墓碑，`fail_code` 为 `INSUFFICIENT_BALANCE`，成功时 error 为 nil、`txn_no` 为空，不把 `40002` 返回给调用方。`Post` 的其他错误只回滚事务 1，不写墓碑，把该错误返回给调用方。1062 先回滚，再在事务外读已有 `LOCAL` 分支：金额或双方不一致为 `10006`；SUCCESS 且 `txn_no` 非空返回该 `txn_no`，不再记账；SUCCESS 但 `txn_no` 为空是 `10003`；FAILED 返回库里的 `fail_code`，不再看当前余额。读不到行、未知 status、FAILED 却没有 `fail_code` 是 `10003`。不新增字段，响应仍是 `status`、`txn_no`、`fail_code`。
-- `TransferInTry`：进程内方法，自己用 `dbx.WithTx` 提交收款商户所在分片的事务，RPC handler 仍是 ACC-11。参数校验在 nil service / nil ctx 之前，不合法为 `10001`，不写行，即使 service 为 nil 或 ctx 已取消。`transfer_no` 为 1–32 个码点，不强制 `TF` 前缀；金额必须是正的 int64 分；收款商户必须能被 `shard.Of` 解析。参数合法后 nil service、nil ctx、nil pools 为 `10003`；已取消或已过截止时间的 ctx 原样返回，不启事务；ShardDB 失败为 `10003`。不选平台子账户，`subCount < 1` 或发号器为空不是参数错误。先普通 SELECT 收款商户 `MERCHANT_SETTLE` / `CNY` / `sub_no = 0`，不加行锁、不读余额。不存在（含非 CNY 选不中）为 `40001`；存在但不是 `ACTIVE` 为 `40005`。都不写行。账户通过后事务里 INSERT `role = PAYEE`、`status = TRIED`、请求金额、`payer_merchant_id` 与 `fail_code` 与 `txn_no` 均为 SQL NULL、`version` 0。不动余额，不调用 Post。1062 先回滚，再在事务外读已有 PAYEE 行：CANCELLED 返回 `40004`，不比较金额和收款商户；TRIED 或 CONFIRMED 且金额或收款商户不一致为 `10006`，不写；一致则返回库里的 status，不记账，CONFIRMED 也不返回 `txn_no`。读不到行或未知 status 为 `10003`，不循环。同一 `transfer_no` 的 LOCAL 行不冲突，不读不改。成功时 `txn_no` 为空。返回错误时 `status` 和 `txn_no` 都是空字符串。不新增字段。
+- `TransferInTry`：进程内方法，自己用 `dbx.WithTx` 提交收款商户所在分片的事务，RPC handler 仍是 ACC-11。参数校验在 nil service / nil ctx 之前，不合法为 `10001`，不写行，即使 service 为 nil 或 ctx 已取消。`transfer_no` 为 1–32 个码点，不强制 `TF` 前缀；金额必须是正的 int64 分；收款商户必须能被 `shard.Of` 解析。参数合法后 nil service、nil ctx、nil pools 为 `10003`；已取消或已过截止时间的 ctx 原样返回，不启事务；ShardDB 失败为 `10003`。不选平台子账户，`subCount < 1` 或发号器为空不是参数错误。先普通 SELECT 收款商户 `MERCHANT_SETTLE` / `CNY` / `sub_no = 0`，不加行锁、不读余额。不存在（含非 CNY 选不中）为 `40001`；存在但不是 `ACTIVE` 为 `40005`。都不写行。账户通过后事务里 INSERT `role = PAYEE`、`status = TRIED`、请求金额、`payer_merchant_id` 与 `fail_code` 与 `txn_no` 均为 SQL NULL、`version` 0。不动余额，不调用 Post。1062 先回滚，再在事务外读已有 PAYEE 行：CANCELLED 返回 `40004`，不比较金额和收款商户；TRIED 或 CONFIRMED 且金额或收款商户不一致为 `10006`，不写；一致则返回库里的 status，不记账，CONFIRMED 也不返回 `txn_no`。读不到行或未知 status 为 `10003`，不循环。同一 `transfer_no` 的 LOCAL 行不冲突，不读不改。进程内 `biz.TransferInTry` 的返回值带 `txn_no`：成功时为空；返回错误时 `status` 和 `txn_no` 都是空字符串。RPC 响应只有 `status`。不新增字段。
 - `TransferInConfirm`：进程内方法，自己用 `dbx.WithTx` 提交同一分片事务，RPC handler 仍是 ACC-11。没有金额。校验同样先于 nil 判断，不合法为 `10001`。参数合法后 nil service、nil ctx、nil pools、发号器为空或 `subCount < 1` 为 `10003`；已取消或已过截止时间的 ctx 原样返回，不调用发号器。子账户号在开事务前用 `shard.Sub(transfer_no, subCount)`，失败为 `10003`，不写。事务内先 `SELECT ... FOR UPDATE` 锁 PAYEE 行，再由公开 Post 按账户 id 升序锁账户。没有行或 CANCELLED 为 `40004`，不插入，不记账。CONFIRMED 且 `txn_no` 非空则返回该 `txn_no`，不再比较收款商户，不再记账。CONFIRMED 但 `txn_no` 为空，或未知 status，为 `10003`，不写。TRIED 但收款商户不一致为 `10006`，不记账。TRIED 且收款商户一致时，金额只用行上的 `amount`。本分片 `TRANSIT`（`PLATFORM` / `PLATFORM` / `CNY` / `sub_no = shard.Sub`）不存在，或商户结算账户此时不存在，为 `40001`，不调用 Post，回滚后分支仍是 TRIED。两个账户 id 相同或任一为 0 是 `10003`。然后 `Post(ctx, tx, TRANSFER_IN, transfer_no, memo 空串)`：借在途、贷收款商户，`FrozenAccountID` 保持 0。在途允许透支，正常行不会因为在途不足返回 `40002`；若在途被改成不许透支且不够扣，`40002` 原样返回，回滚，保持 TRIED，不写墓碑。Post 返回 `40005` 原样返回，回滚，保持 TRIED。本方法不增加 `pay_transfer_inconsistent_total`。Post 的 error 为 nil 时，无论 `Duplicated` 是 true 还是 false，都回写 `PostResult.TxnNo` 并提交 CONFIRMED。`Duplicated` true 表示凭证已在、这次没改余额。这和 ACC-06 不同。回写 WHERE 为 `role = PAYEE AND status = TRIED AND txn_no IS NULL` 且 amount、payee 等于刚读到的值，`version` 加 1。影响 0 行或凭证号为空是 `10003` 并回滚。持有 FOR UPDATE 时 0 行不是并发幂等。`10003` / `10004` 不进上表业务错误列。成功时 `txn_no` 非空。返回错误时 `status` 和 `txn_no` 都是空字符串。不新增字段。
-- `TransferInCancel`：进程内方法，自己用 `dbx.WithTx` 提交同一分片事务，RPC handler 仍是 ACC-11。校验与 Try 相同，不合法为 `10001`，即使 service 为 nil 或 ctx 已取消。参数合法后的 nil 依赖、取消的 ctx、ShardDB 失败与 Try 相同。不查账户，不选平台子账户，所以没有 `40001` / `40005`。事务内先 `SELECT ... FOR UPDATE`。没有行：INSERT CANCELLED，金额和收款商户用请求值，payer、fail_code、txn_no 均为 SQL NULL，`version` 0。不改余额。1062 先回滚，再按已有行处理。已 CANCELLED 幂等成功，不再比较金额和收款商户。已 CONFIRMED 为 `40004`，不再比较金额。TRIED 且金额或收款商户不一致为 `10006`，不改行。TRIED 且一致则 CAS 为 CANCELLED，`version` 加 1。余额不变，不调用 Post。持有 FOR UPDATE 时 CAS 影响 0 行是 `10003` 并回滚。未知 status 为 `10003`。1062 之后读到匹配的 TRIED，再开一个事务锁住后 CAS；第二次仍是 1062 则为 `10003`，不空转。成功时 `txn_no` 为空。返回错误时 `status` 和 `txn_no` 都是空字符串。不新增字段。
+- `TransferInCancel`：进程内方法，自己用 `dbx.WithTx` 提交同一分片事务，RPC handler 仍是 ACC-11。校验与 Try 相同，不合法为 `10001`，即使 service 为 nil 或 ctx 已取消。参数合法后的 nil 依赖、取消的 ctx、ShardDB 失败与 Try 相同。不查账户，不选平台子账户，所以没有 `40001` / `40005`。事务内先 `SELECT ... FOR UPDATE`。没有行：INSERT CANCELLED，金额和收款商户用请求值，payer、fail_code、txn_no 均为 SQL NULL，`version` 0。不改余额。1062 先回滚，再按已有行处理。已 CANCELLED 幂等成功，不再比较金额和收款商户。已 CONFIRMED 为 `40004`，不再比较金额。TRIED 且金额或收款商户不一致为 `10006`，不改行。TRIED 且一致则 CAS 为 CANCELLED，`version` 加 1。余额不变，不调用 Post。持有 FOR UPDATE 时 CAS 影响 0 行是 `10003` 并回滚。未知 status 为 `10003`。1062 之后读到匹配的 TRIED，再开一个事务锁住后 CAS；第二次仍是 1062 则为 `10003`，不空转。进程内 `biz.TransferInCancel` 的返回值带 `txn_no`：成功时为空；返回错误时 `status` 和 `txn_no` 都是空字符串。RPC 响应只有 `status`。不新增字段。
 - `CheckBalance`：进程内方法，RPC handler 仍是 ACC-11。核对项与 `failures` 字段规则见 §8.4。`merchant_id` 为空是全量，不是 `10001`。非空商户号不能被 `shard.Of` 解析时 `10001`，先于 nil service、nil ctx 和已取消的 ctx，不查询。参数合法后 nil service、nil ctx、nil pools、ShardDB 失败、SQL 错误、未知余额方向或金额溢出为 `10003`，`failures` 为空；已取消或已过期的 ctx 原样返回，不开事务。`40001` 只表示点名的商户结算账户不存在。商户模式忽略 `expect_quiescent`，只核对该结算账户的前四项。最后一条分录是 `max(ledger_entry.id)` 的 `balance_after`，不是 `created_at`。`passed = false` 时 error 为 nil，不是错误码；同一次完成调用把进程内无标签计数 `pay_ledger_check_failures_total` 加 1，并打一条 ERROR 日志。成功、`40001`、`10003` 不加计数。不写行，不调用外部系统。不新增字段。
+- `Reverse`：ACC-08 完成前 RPC handler 一律返回 `10003`，不调用 biz，不写行。这不是该方法将来的错误码语义，上表业务错误列是 ACC-08 要实现的契约。
 - 平台子账户由 account 按 `crc32(biz_no) % PLATFORM_SUB_ACCOUNTS` 选择，调用方不感知。
 
 超时重试（ACC-11 第 4 条）：payment 使用 `pkg/accountclient`。连接 100ms，调用 500ms。只对以下幂等方法在超时时重试 1 次：`Freeze`、`ReleaseFreeze`、`ConfirmFreeze`、`TransferLocal`、`TransferInTry`、`TransferInConfirm`、`TransferInCancel`、`GetAccount`。`OpenAccount`、`CheckBalance`、`Reverse` 不自动重试。业务错误不重试。gateway 不使用这个客户端。
@@ -915,18 +917,18 @@ account RPC 以商户号（或 owner）为入参，由 account 按商户号路�
 | `Pay` | `merchant_id`、`pay_no`、`channel` | `PaymentOrder` | 30001、30003、30004、30006、30007 | gateway | PAY-03 |
 | `ClosePayment` | `merchant_id`、`pay_no` | `PaymentOrder` | 30001、30003、10004 | gateway | PAY-06 |
 | `QueryPayment` | `merchant_id`、`pay_no` 或 `out_trade_no` | `PaymentOrder` | 30001 | gateway | PAY-08 |
-| `CreateRefund` | `merchant_id` + §4.5 字段 | `RefundOrder` | 30001、30003、30005、30006、10006、40002 | gateway | REF-01、REF-02 |
+| `CreateRefund` | `merchant_id` + §4.5 字段 | `CreateRefundResponse{biz_code, refund_order}`（`refund_order` 为 `RefundOrder`） | 30001、30003、30005、30006、10006、40002（`40002`、`30006` 放在 `biz_code`，携带 `refund_order`） | gateway | REF-01、REF-02 |
 | `QueryRefund` | `merchant_id`、`refund_no` 或 `out_refund_no` | `RefundOrder` | 30001 | gateway | REF-05 |
-| `CreateTransfer` | `merchant_id` + §4.8 字段 | `Transfer` | 10001、10006、30008、40002（携带 `Transfer`） | gateway | TRF-01~03 |
+| `CreateTransfer` | `merchant_id` + §4.8 字段 | `CreateTransferResponse{biz_code, transfer}`（`transfer` 为 `Transfer`） | 10001、10006、30008、40002（`40002` 放在 `biz_code`，携带 `transfer`） | gateway | TRF-01~03 |
 | `QueryTransfer` | `merchant_id`、`transfer_no` 或 `out_transfer_no` | `Transfer` | 30001 | gateway | TRF-05 |
 | `HandleChannelNotify` | `channel` + §9.7 字段 | `result`：`APPLIED` / `DUPLICATE` / `CONFLICT` | 30001、50002 | gateway | GW-06、PAY-04、REF-03 |
-| `GetMerchantCredential` | `app_id` | `merchant_id`、`status`、`app_secret`、`secret_version`、`default_notify_url` | 20004 | gateway | PAY-01 |
+| `GetMerchantCredential` | `app_id` | `merchant_id`、`status`、`app_secret`、`secret_version`、`default_notify_url` | 10001（请求为 nil）、20004 | gateway | PAY-01 |
 | `SyncChannelTxn` | `biz_no` | `local_status`（同步后的本地渠道交易状态）、`channel_status`（`NOT_FOUND` 表示渠道无记录）、`changed` | 30001 | recon（REC-06 `REQUERY`） | PAY-09 |
 | `ReplayEvent` | `event_id`，或 `biz_no` + `event_type` | `event_id`、`rebuilt` | 10002、30003 | gateway（§8.3）、recon（REC-06 `REPLAY`） | MQ-05 |
 
 `GetMerchantCredential` 返回明文密钥，只允许网关调用；调用双方都不得记录响应内容。
 
-`GetMerchantCredential`（PAY-01）：`app_id` 按字节精确匹配，为空、不存在或只是大小写、首尾空格不同都返回 `20004`（`X-App-Id` 不在签名串里，放宽匹配会让同一请求换个写法绕过按 `app_id` 记的 nonce）。`merchant` 表列跟随库默认 `utf8mb4_bin`，区分大小写，但 PAD SPACE 会忽略尾部空格；集成测试临时库为 `utf8mb4_0900_ai_ci`，不区分大小写与重音。两种规则下 SQL 都可能匹配到字节不同的值，所以服务端读回 `app_id` 再逐字节比较。DISABLED 商户照常返回，由网关返回 `20004`。密文解不开是平台内部故障，返回 `10003`。payment 不缓存凭证，网关侧缓存属于 GW-08。PaymentService 其余方法在各自功能点实现前一律返回 `10003`，不是这些方法将来的错误码语义。服务端处理超时 2 秒；要调渠道的方法由各自功能点按需求 §5.4.1 重新确定。
+`GetMerchantCredential`（PAY-01）：请求为 nil 返回 `10001`。`app_id` 按字节精确匹配，为空、不存在或只是大小写、首尾空格不同都返回 `20004`（`X-App-Id` 不在签名串里，放宽匹配会让同一请求换个写法绕过按 `app_id` 记的 nonce）。`merchant` 表列跟随库默认 `utf8mb4_bin`，区分大小写，但 PAD SPACE 会忽略尾部空格；集成测试临时库为 `utf8mb4_0900_ai_ci`，不区分大小写与重音。两种规则下 SQL 都可能匹配到字节不同的值，所以服务端读回 `app_id` 再逐字节比较。DISABLED 商户照常返回，由网关返回 `20004`。密文解不开是平台内部故障，返回 `10003`。payment 不缓存凭证，网关侧缓存属于 GW-08。PaymentService 其余方法在各自功能点实现前一律返回 `10003`，不是这些方法将来的错误码语义。服务端处理超时 2 秒；要调渠道的方法由各自功能点按需求 §5.4.1 重新确定。
 
 `CreateTransfer` 的响应码规则同 §4.8：本次请求执行到 FAILED 且 `fail_code = INSUFFICIENT_BALANCE` → `biz_code = 40002` 并携带转账单；其他 FAILED、SUCCESS、处理中状态与幂等命中 → 成功返回。
 

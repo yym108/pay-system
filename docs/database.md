@@ -1,6 +1,6 @@
 # Database Schema
 
-> **Last updated:** 2026-10-26
+> **Last updated:** 2026-10-27
 > **Database engine/version:** MySQL 8.4.11（InnoDB，utf8mb4 / utf8mb4_bin）
 > **Schema sources:** `migrations/account/000001_init.up.sql`（`pay_account_0` 与 `pay_account_1` 各执行一次）、`migrations/payment/000001_init.up.sql`、`migrations/payment/000002_merchant_fee_rate.up.sql`、`migrations/recon/000001_init.up.sql`、`migrations/channel_mock/000001_init.up.sql`。设计稿 `docs/schema/schema_draft.sql` 已在 BASE-03 删除。golang-migrate 还会在每个 schema 创建工具表 `schema_migrations`（`version`、`dirty`），不在业务清单里。
 > **Owner:** pay-system 项目作者
@@ -14,7 +14,7 @@
 | Shard tables | `account`、`ledger_txn`、`ledger_entry`、`account_freeze`、`transfer_branch` 在两个分片中结构完全相同，本文只写一次。下文 `pay_account_{s}.<表>` 表示分片 `s`（0 或 1）中的该表；关系两端都写 `{s}` 表示同一分片内。分片号 `s = 商户号数字部分 % 2`（ACC-13）。所有唯一键只在分片内成立，跨分片的关系都是逻辑关系 |
 | Naming | 表名、列名小写下划线；唯一索引 `uk_`，普通索引 `idx_`，检查约束 `ck_`；业务单号列以 `_no` 结尾；分片 schema 为 `pay_<服务>_<分片号>`（`docs/03-conventions.md` §7.2） |
 | Primary key convention | 每表 `id BIGINT UNSIGNED AUTO_INCREMENT`，只作物理主键、不对外暴露；分片表的 `id` 只在分片内唯一。业务单号（2 位前缀 + 19 位雪花数字，见 `docs/01-tech-decisions.md` D5）全局唯一，走唯一索引 |
-| Audit convention | `created_at`、`updated_at` 为 `DATETIME(3)`，由数据库默认值维护；只追加表（`ledger_txn`、`ledger_entry`、`recon_channel_bill`、`merchant_fee_rate`）没有 `updated_at`；可变的核心表带 `version` 用于排查并发更新 |
+| Audit convention | `created_at`、`updated_at` 为 `DATETIME(3)`，由数据库默认值维护；只追加表（`ledger_txn`、`ledger_entry`、`merchant_fee_rate`）没有 `updated_at`。`recon_channel_bill` 不是只追加表：导入后只更新 `match_status`（重跑时按批次删除重导，见 §4.14），故意不带 `updated_at`；可变的核心表带 `version` 用于排查并发更新 |
 | Deletion convention | 一律不物理删除业务数据，不使用软删除标记；状态终结通过状态字段表达。例外：`outbox` 中 SENT 记录保留 7 天后清理（P1）；对账重跑时清理该批次的 `recon_channel_bill` 与 PENDING 差错 |
 | Time convention | 数据库与连接时区均为 `+08:00`；毫秒精度；账期按东八区自然日 |
 | Money convention | 金额统一 `BIGINT`，单位分，币种仅 `CNY`（CHECK 约束） |
@@ -89,7 +89,7 @@
 
 ## 4. Table Details
 
-分片表（4.1–4.5）在 `pay_account_0`、`pay_account_1` 中结构相同。设计稿中 `pay_account_1` 由 `CREATE TABLE ... LIKE` 复制，MySQL 会把复制出的 CHECK 约束重命名为 `<表名>_chk_<n>`，约束内容不变；下表列出的 `ck_` 名称以 `pay_account_0` 和迁移文件为准（迁移对每个分片各执行一次，名称一致）。
+分片表（4.1–4.5）在 `pay_account_0`、`pay_account_1` 中结构相同：两个分片执行同一个迁移 `migrations/account/000001_init.up.sql`，表、索引和 `ck_` 约束名都一致。下表列出的约束名以迁移文件为准。
 
 ### 4.1 `account` — 账户
 
@@ -108,7 +108,7 @@
 | `account_no` | VARCHAR(32) | 否 | — | `uk_account_no` | 对外账户号，`AC` 前缀，全局唯一（雪花 ID） | 内部 |
 | `owner_type` | VARCHAR(16) | 否 | — | `uk_owner_account_type_sub` 1、`ck_account_type_rule`、`ck_account_merchant_sub` | MERCHANT / PLATFORM | 内部 |
 | `owner_id` | VARCHAR(32) | 否 | — | `uk_owner_account_type_sub` 2 | 商户号；平台账户为渠道编码（CHANNEL_RECEIVABLE，如 `mockpay`）或 `PLATFORM`（FEE_INCOME、TRANSIT） | 内部 |
-| `account_type` | VARCHAR(32) | 否 | — | `uk_owner_account_type_sub` 3、`ck_account_type_rule` | MERCHANT_SETTLE / CHANNEL_RECEIVABLE / FEE_INCOME / TRANSIT（§2.5.1） | 内部 |
+| `account_type` | VARCHAR(32) | 否 | — | `uk_owner_account_type_sub` 3、`ck_account_type_rule` | MERCHANT_SETTLE / CHANNEL_RECEIVABLE / FEE_INCOME / TRANSIT（需求 §2.5.1） | 内部 |
 | `currency` | CHAR(3) | 否 | `'CNY'` | `uk_owner_account_type_sub` 4、`ck_account_currency` | 仅 CNY | 内部 |
 | `sub_no` | INT UNSIGNED | 否 | 0 | `uk_owner_account_type_sub` 5、`ck_account_merchant_sub` | 子账户号：商户账户恒为 0；平台账户 `[0, PLATFORM_SUB_ACCOUNTS)` | 内部 |
 | `balance_direction` | VARCHAR(8) | 否 | — | `ck_account_direction`、`ck_account_type_rule` | DEBIT / CREDIT，由账户类型决定：CHANNEL_RECEIVABLE 为 DEBIT，其余为 CREDIT | 内部 |
@@ -132,7 +132,7 @@
 | `ck_account_currency` | CHECK | `currency = 'CNY'` | 单币种 | migrations/account/000001_init.up.sql |
 | `ck_account_direction` | CHECK | `balance_direction IN ('DEBIT','CREDIT')` | 枚举 | migrations/account/000001_init.up.sql |
 | `ck_account_status` | CHECK | `status IN ('ACTIVE','FROZEN','CLOSED')` | 枚举 | migrations/account/000001_init.up.sql |
-| `ck_account_type_rule` | CHECK | MERCHANT_SETTLE ⇒ MERCHANT、CREDIT、不透支；CHANNEL_RECEIVABLE ⇒ PLATFORM、DEBIT、透支；FEE_INCOME / TRANSIT ⇒ PLATFORM、CREDIT、透支 | 账户类型决定所有者类型、余额方向与透支（§2.5.1、ACC-01 第 1 条），同时限定 `account_type` 枚举 | migrations/account/000001_init.up.sql |
+| `ck_account_type_rule` | CHECK | MERCHANT_SETTLE ⇒ MERCHANT、CREDIT、不透支；CHANNEL_RECEIVABLE ⇒ PLATFORM、DEBIT、透支；FEE_INCOME / TRANSIT ⇒ PLATFORM、CREDIT、透支 | 账户类型决定所有者类型、余额方向与透支（需求 §2.5.1、ACC-01 第 1 条），同时限定 `account_type` 枚举 | migrations/account/000001_init.up.sql |
 | `ck_account_merchant_sub` | CHECK | `owner_type <> 'MERCHANT' OR sub_no = 0` | 商户账户不拆子账户（D19） | migrations/account/000001_init.up.sql |
 
 #### Relationships
@@ -150,7 +150,7 @@
 - **Purpose:** 一次记账的头记录；`uk_biz` 是记账幂等的数据库兜底。
 - **Lifecycle:** 只追加，不更新、不删除。
 - **Sensitivity:** 内部财务数据。
-- **Authoritative source:** `migrations/account/000001_init.up.sql。
+- **Authoritative source:** `migrations/account/000001_init.up.sql`。
 - **Write owners/read consumers:** account 写；recon 只读（内部对账）。
 - **Retention/archival:** 永久保留。
 
@@ -160,7 +160,7 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | `id` | BIGINT UNSIGNED | 否 | AUTO_INCREMENT | PK | | 内部 |
 | `txn_no` | VARCHAR(32) | 否 | — | `uk_txn_no` | 凭证号，`TX` 前缀 | 内部 |
-| `biz_type` | VARCHAR(32) | 否 | — | `uk_biz` 1、`ck_ledger_txn_biz_type` | PAY / REFUND / TRANSFER / TRANSFER_OUT / TRANSFER_IN / REVERSAL（§2.5.2） | 内部 |
+| `biz_type` | VARCHAR(32) | 否 | — | `uk_biz` 1、`ck_ledger_txn_biz_type` | PAY / REFUND / TRANSFER / TRANSFER_OUT / TRANSFER_IN / REVERSAL（需求 §2.5.2） | 内部 |
 | `biz_no` | VARCHAR(64) | 否 | — | `uk_biz` 2 | 业务单号：pay_no、refund_no、transfer_no；REVERSAL 时为原 txn_no | 内部 |
 | `amount` | BIGINT | 否 | — | `ck_ledger_txn_amount` | 借方合计 = 贷方合计，> 0 | 财务 |
 | `currency` | CHAR(3) | 否 | `'CNY'` | — | | 内部 |
@@ -198,7 +198,7 @@
 - **Purpose:** 借贷明细，账户余额的真相来源（不变量 2、3、4）。
 - **Lifecycle:** 只追加。
 - **Sensitivity:** 内部财务数据。
-- **Authoritative source:** `migrations/account/000001_init.up.sql。
+- **Authoritative source:** `migrations/account/000001_init.up.sql`。
 - **Write owners/read consumers:** account 写；account 核对任务、recon 只读。
 - **Retention/archival:** 永久保留。
 
@@ -242,7 +242,7 @@
 - **Purpose:** 记录商户账户的资金冻结，支撑 Freeze / ConfirmFreeze / ReleaseFreeze 幂等。两种用途：退款（`biz_type = REFUND`，biz_no = refund_no）和跨分片转账付款方分支（`biz_type = TRANSFER`，biz_no = transfer_no，位于付款方分片）。
 - **Lifecycle:** FROZEN → CONFIRMED / RELEASED，终态不可变。另有一种直接以 RELEASED 插入的“墓碑记录”：ReleaseFreeze 找不到冻结单时（空回滚）插入，不改变账户 `frozen_amount`，用于占住 `uk_biz`，让迟到的 Freeze 冲突并返回 `40004`（防悬挂，需求 ACC-05）。因此 RELEASED 记录不一定对应过一次真实冻结。
 - **Sensitivity:** 内部财务数据。
-- **Authoritative source:** `migrations/account/000001_init.up.sql。
+- **Authoritative source:** `migrations/account/000001_init.up.sql`。
 - **Write owners/read consumers:** account 写；recon 只读（REC-05 检查 TRANSFER 冻结单）。
 - **Retention/archival:** 长期保留。
 
@@ -289,11 +289,11 @@
 - **Purpose:** account 侧的转账分支记录，`(transfer_no, role)` 在分片内唯一。两种角色：
   - `LOCAL`：同分片转账（ACC-07）的最终结果。成功时与 TRANSFER 凭证同一事务写入 SUCCESS；余额不足时在另一事务中写入 FAILED 墓碑（`fail_code = INSUFFICIENT_BALANCE`），之后同一 `transfer_no` 一律返回 FAILED，保证重试结果确定。
   - `PAYEE`：跨分片转账收款方分支（ACC-14），位于收款方分片。Try 写入 TRIED（不动余额），Confirm CAS 为 CONFIRMED 并记 TRANSFER_IN 凭证，Cancel CAS 为 CANCELLED；Cancel 先到时直接插入 CANCELLED 墓碑（空回滚），迟到的 Try 在唯一索引上冲突并返回 `40004`（防悬挂）。
-- **Lifecycle:** LOCAL：直接写入 SUCCESS / FAILED，不再变化。PAYEE：TRIED → CONFIRMED / CANCELLED；空回滚时直接写入 CANCELLED。终态不可变（§2.7）。
+- **Lifecycle:** LOCAL：直接写入 SUCCESS / FAILED，不再变化。PAYEE：TRIED → CONFIRMED / CANCELLED；空回滚时直接写入 CANCELLED。终态不可变（需求 §2.7）。
 - **Sensitivity:** 内部财务数据。
-- **Authoritative source:** `migrations/account/000001_init.up.sql。
+- **Authoritative source:** `migrations/account/000001_init.up.sql`。
 - **Write owners/read consumers:** account 写；account 核对任务（ACC-10 在途守恒）、recon 只读（REC-05）。
-- **Retention/archival:** 永久保留（§5.10）。
+- **Retention/archival:** 永久保留（需求 §5.10）。
 
 #### Columns
 
@@ -308,7 +308,7 @@
 | `status` | VARCHAR(16) | 否 | — | `ck_branch_status` | LOCAL：SUCCESS / FAILED；PAYEE：TRIED / CONFIRMED / CANCELLED | 内部 |
 | `fail_code` | VARCHAR(32) | 是 | NULL | `ck_branch_fail_code` | 仅 LOCAL FAILED 填写，目前只有 `INSUFFICIENT_BALANCE`（`docs/03-conventions.md` §5.4） | 内部 |
 | `txn_no` | VARCHAR(32) | 是 | NULL | — | LOCAL SUCCESS 的 TRANSFER 凭证、PAYEE CONFIRMED 的 TRANSFER_IN 凭证；同一事务内插入或 CAS 后回写 | 内部 |
-| `version` | BIGINT UNSIGNED | 否 | 0 | — | | 内部 |
+| `version` | BIGINT UNSIGNED | 否 | 0 | — | 插入时写 0；回写 `txn_no`（LOCAL SUCCESS）或 CAS 改状态（PAYEE TRIED → CONFIRMED / CANCELLED）时加 1 | 内部 |
 | `created_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | — | | 审计 |
 | `updated_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) ON UPDATE | — | | 审计 |
 
@@ -340,7 +340,7 @@
 - **Purpose:** 商户基础信息、签名密钥、通知地址、费率。
 - **Lifecycle:** 种子数据创建，ACTIVE / DISABLED。
 - **Sensitivity:** `app_secret_cipher` 为高敏数据（密文）。
-- **Authoritative source:** `migrations/payment/000001_init.up.sql。
+- **Authoritative source:** `migrations/payment/000001_init.up.sql`。
 - **Write owners/read consumers:** payment 写；网关经 RPC 读取解密后的密钥并在进程内缓存。
 - **Retention/archival:** 长期。
 
@@ -422,7 +422,7 @@
 - **Purpose:** 支付状态机（`docs/02-requirements.md` PAY-04）。
 - **Lifecycle:** INIT → PAYING → SUCCESS / FAILED / CLOSED；INIT → CLOSED。
 - **Sensitivity:** 内部交易数据，`subject` 不得包含个人信息。
-- **Authoritative source:** `migrations/payment/000001_init.up.sql。
+- **Authoritative source:** `migrations/payment/000001_init.up.sql`。
 - **Write owners/read consumers:** payment 写；recon 只读。
 - **Retention/archival:** 长期。
 
@@ -477,7 +477,7 @@
 - **Purpose:** 退款状态机（`docs/02-requirements.md` §4.5）。
 - **Lifecycle:** INIT → PROCESSING → SUCCESS / FAILED；INIT → FAILED。
 - **Sensitivity:** 内部交易数据。
-- **Authoritative source:** `migrations/payment/000001_init.up.sql。
+- **Authoritative source:** `migrations/payment/000001_init.up.sql`。
 - **Write owners/read consumers:** payment 写；recon 只读。
 - **Retention/archival:** 长期。
 
@@ -528,9 +528,9 @@
 - **Purpose:** 商户间转账的状态机与跨分片 TCC 协调者的持久化状态（`docs/02-requirements.md` §4.6、D18）。`mode` 在创建时由双方分片决定：同分片 LOCAL，由 account 一个本地事务完成；跨分片 TCC，由 payment 驱动付款方冻结分支与收款方 `transfer_branch` 分支。
 - **Lifecycle:** LOCAL：TRYING → SUCCESS / FAILED。TCC：TRYING → CONFIRMING → SUCCESS；TRYING → CANCELLING → FAILED。TRYING 是唯一可以改变决策的状态；CONFIRMING、CANCELLING 落盘后只能前进，由恢复任务（TRF-04）重试到终态。
 - **Sensitivity:** 内部交易数据，`remark` 不得包含个人信息。
-- **Authoritative source:** `migrations/payment/000001_init.up.sql。
+- **Authoritative source:** `migrations/payment/000001_init.up.sql`。
 - **Write owners/read consumers:** payment 写（TRF-01~04）；recon 只读（REC-05）。
-- **Retention/archival:** 永久保留（§5.10）。
+- **Retention/archival:** 永久保留（需求 §5.10）。
 
 #### Columns
 
@@ -594,7 +594,7 @@
 - **Purpose:** 与渠道的一次交易，记录渠道流水号、回调次数和查单调度。转账不经过渠道，不写本表。
 - **Lifecycle:** PROCESSING → SUCCESS / FAILED / CLOSED。
 - **Sensitivity:** 内部。
-- **Authoritative source:** `migrations/payment/000001_init.up.sql。
+- **Authoritative source:** `migrations/payment/000001_init.up.sql`。
 - **Write owners/read consumers:** payment 写；recon 只读（外部对账的本地侧）。
 - **Retention/archival:** 长期。
 
@@ -645,7 +645,7 @@
 - **Purpose:** 与业务状态同事务写入的待投递事件（`docs/02-requirements.md` MQ-01、MQ-02）。事件类型：`payment.succeeded`、`refund.succeeded`、`refund.failed`、`transfer.succeeded`、`transfer.failed`。
 - **Lifecycle:** PENDING → SENT / DEAD；重放时回到 PENDING。
 - **Sensitivity:** payload 只含单号与金额，无个人信息。
-- **Authoritative source:** `migrations/payment/000001_init.up.sql。
+- **Authoritative source:** `migrations/payment/000001_init.up.sql`。
 - **Write owners/read consumers:** payment 业务事务与投递器。
 - **Retention/archival:** SENT 保留 7 天（P1 清理任务）。
 
@@ -693,7 +693,7 @@
 - **Purpose:** 商户异步通知与重试（`docs/02-requirements.md` NTF-01、NTF-02）。
 - **Lifecycle:** PENDING → SUCCESS / DEAD。
 - **Sensitivity:** 内部。
-- **Authoritative source:** `migrations/payment/000001_init.up.sql。
+- **Authoritative source:** `migrations/payment/000001_init.up.sql`。
 - **Write owners/read consumers:** payment 的 `payment-notify` 消费者与通知任务。
 - **Retention/archival:** 长期，P2 归档。
 
@@ -744,7 +744,7 @@
 - **Purpose:** 每渠道每账期一个批次及汇总结果。
 - **Lifecycle:** INIT → DOWNLOADED → CHECKING → DONE；任一步 → FAILED；FAILED、DONE（force）可重跑。
 - **Sensitivity:** 内部。
-- **Authoritative source:** `migrations/recon/000001_init.up.sql。
+- **Authoritative source:** `migrations/recon/000001_init.up.sql`。
 - **Write owners/read consumers:** recon 写；管理接口读。
 - **Retention/archival:** 长期。
 
@@ -794,7 +794,7 @@
 - **Purpose:** 导入的渠道账单行，记录匹配结果。
 - **Lifecycle:** 导入后只更新 `match_status`；重跑时按批次删除重导。
 - **Sensitivity:** 内部。
-- **Authoritative source:** `migrations/recon/000001_init.up.sql。
+- **Authoritative source:** `migrations/recon/000001_init.up.sql`。
 - **Write owners/read consumers:** recon。
 - **Retention/archival:** 可按月归档。
 
@@ -837,9 +837,9 @@
 ### 4.15 `recon_diff` — 对账差错
 
 - **Purpose:** 差错明细与自动处理记录（REC-03、REC-05、REC-06）。人工处理与挂账已砍掉（REC-07 CUT），未自动解决的差错保持 PENDING，出现在对账报告和 ERROR 日志中。
-- **Lifecycle:** PENDING → RESOLVED / IGNORED，只由自动处理推进（§2.7）。批次重跑时删除该批次的 PENDING 差错，保留 RESOLVED、IGNORED。
+- **Lifecycle:** PENDING → RESOLVED / IGNORED，只由自动处理推进（需求 §2.7）。批次重跑时删除该批次的 PENDING 差错，保留 RESOLVED、IGNORED。
 - **Sensitivity:** 内部，`handler` 为处理方标识（目前只有 `system`）。
-- **Authoritative source:** `migrations/recon/000001_init.up.sql。
+- **Authoritative source:** `migrations/recon/000001_init.up.sql`。
 - **Write owners/read consumers:** recon；管理接口（触发对账的响应）只读。
 - **Retention/archival:** 长期，作为审计记录。
 
@@ -889,14 +889,14 @@
 #### Operational Notes
 
 - **Backfill/migration considerations:** 无。
-- **Compatibility/deprecation notes:** v3.0 删除的列、状态和动作以及 `handle_action` 的改名见 §5。尚无数据，直接修改设计稿。
+- **Compatibility/deprecation notes:** v3.0 删除的列、状态和动作以及 `handle_action` 的改名见 §5。设计稿已在 BASE-03 删除，之后的结构变化通过新迁移修改。
 
 ### 4.16 `mock_txn` — 模拟渠道交易
 
 - **Purpose:** channel_mock 自身的交易记录，用于查单和生成账单；代表外部系统，平台服务不得直接访问。
 - **Lifecycle:** PROCESSING → SUCCESS / FAILED / CLOSED。
 - **Sensitivity:** 测试数据。
-- **Authoritative source:** `migrations/channel_mock/000001_init.up.sql。
+- **Authoritative source:** `migrations/channel_mock/000001_init.up.sql`。
 - **Write owners/read consumers:** 仅 channel_mock。
 - **Retention/archival:** 可随时清空。
 
@@ -937,7 +937,7 @@
 #### Operational Notes
 
 - **Backfill/migration considerations:** 账单注入（CH-09）的记录直接写入本表，`req_no` 使用平台不存在的单号。
-- **Query patterns:** 受理先 INSERT，`uk_type_req_no` 冲突再按 `(txn_type, req_no)` 读已有行；INSERT 报其他错误时也按 `(txn_type, req_no)` 再读一次，确认本次的行是否已提交。自动完成写库结果不确定时，按主键 `id` 读回该行，比较 `status`、`finished_at` 确认那次是否已生效。进程启动时按主键分页扫描 `status = 'PROCESSING'` 重建调度；没有 `status` 索引，只在启动时执行，表很小时可接受。查单（CH-02）按 `(txn_type, req_no)` 只读，不更新行，不存在也不插入。关单（CH-03）只按 `(PAY, req_no)` 读写，同号 REFUND 行不参与。未知 `req_no` 先读再 INSERT 一条 CLOSED 防悬挂行：`amount = 0`，`scenario` 与 `notify_url` 用列默认值，`created_at` 由应用时钟写入，不写 `finished_at`、`bill_date`。唯一键 1062 再按 `(PAY, req_no)` 读，按当前状态处理。INSERT 报其他错误时同样再读，`channel_txn_no` 相同则视为墓碑已写入。已有 PROCESSING 且场景不是 CLOSE_RACE 时，`UPDATE status = CLOSED WHERE id = ? AND status = 'PROCESSING'`，不写 `finished_at`、`bill_date`。CLOSE_RACE 走与自动完成相同的 SUCCESS 更新（写 `finished_at` 与 `bill_date`）。CAS 得 0 行或写入结果不确定时按主键再读，按读到的状态回答，不覆盖。SUCCESS、CLOSED、FAILED 不因查单或关单更新行。渠道回调（CH-05）在发出 HTTP 之前另开短事务：`UPDATE mock_txn SET notify_sent_count = notify_sent_count + 1 WHERE id = ? AND notify_sent_count = ?`，不改 `status` 和其他列。影响 0 行则按主键再读，不覆盖状态。DUP_NOTIFY（CH-06）另用 `UPDATE mock_txn SET notify_sent_count = notify_sent_count + 1 WHERE id = ? AND notify_sent_count < 10`：影响 1 行才在事务外 POST，影响 0 行表示已经到 10，不再发。不改 `status`、`finished_at`、`bill_date`。无 DDL。
+- **Query patterns:** 受理先 INSERT，`uk_type_req_no` 冲突再按 `(txn_type, req_no)` 读已有行；INSERT 报其他错误时也按 `(txn_type, req_no)` 再读一次，确认本次的行是否已提交。自动完成写库结果不确定时，按主键 `id` 读回该行，比较 `status`、`finished_at` 确认那次是否已生效。进程启动时按主键分页扫描 `status = 'PROCESSING'` 重建调度；没有 `status` 索引，只在启动时执行，表很小时可接受。查单（CH-02）按 `(txn_type, req_no)` 只读，不更新行，不存在也不插入。关单（CH-03）只按 `(PAY, req_no)` 读写，同号 REFUND 行不参与。未知 `req_no` 先读再 INSERT 一条 CLOSED 防悬挂行：`amount = 0`，`scenario` 显式写入 `NORMAL`、`notify_url` 显式写入空串（与列默认值相同，INSERT 带上这两列），`created_at` 由应用时钟写入，不写 `finished_at`、`bill_date`。唯一键 1062 再按 `(PAY, req_no)` 读，按当前状态处理。INSERT 报其他错误时同样再读，`channel_txn_no` 相同则视为墓碑已写入。已有 PROCESSING 且场景不是 CLOSE_RACE 时，`UPDATE status = CLOSED WHERE id = ? AND status = 'PROCESSING'`，不写 `finished_at`、`bill_date`。CLOSE_RACE 走与自动完成相同的 SUCCESS 更新（写 `finished_at` 与 `bill_date`）。CAS 得 0 行或写入结果不确定时按主键再读，按读到的状态回答，不覆盖。SUCCESS、CLOSED、FAILED 不因查单或关单更新行。渠道回调（CH-05）在发出 HTTP 之前另开短事务：`UPDATE mock_txn SET notify_sent_count = notify_sent_count + 1 WHERE id = ? AND notify_sent_count = ?`，不改 `status` 和其他列。影响 0 行则按主键再读，不覆盖状态。DUP_NOTIFY（CH-06）另用 `UPDATE mock_txn SET notify_sent_count = notify_sent_count + 1 WHERE id = ? AND notify_sent_count < 10`：影响 1 行才在事务外 POST，影响 0 行表示已经到 10，不再发。不改 `status`、`finished_at`、`bill_date`。无 DDL。
 - **Compatibility/deprecation notes:** 无。
 
 ## 5. Change History
@@ -961,6 +961,7 @@
 | 2026-10-26 | 无（仅文档） | `mock_txn`（写路径说明） | CH-03：关单只写 `(PAY, req_no)`。普通关单 CAS 置 CLOSED，不写 `finished_at`、`bill_date`。CLOSE_RACE 与自动完成一样写 SUCCESS、`finished_at`、`bill_date`。未知 `req_no` 插入 `amount = 0` 的 CLOSED 防悬挂行。无 DDL | 未执行迁移 |
 | 2026-10-26 | 无（仅文档） | `mock_txn.notify_sent_count`（写路径说明） | CH-05：发出回调前按 `notify_sent_count` 条件加一，不改 `status`。无迁移 | 未执行迁移 |
 | 2026-10-27 | 无（仅文档） | `mock_txn.notify_sent_count`（写路径说明） | CH-06：DUP_NOTIFY 用 `notify_sent_count < 10` 加一，与普通回调的期望值相等条件并存。无迁移 | 未执行迁移 |
+| 2026-10-27 | 无（仅文档） | `recon_channel_bill`（审计约定）、`transfer_branch.version`、`mock_txn`（防悬挂行说明）、分片表总述、`recon_diff`（兼容说明） | 文档审查后的文字修正：`recon_channel_bill` 移出只追加表，写明只更新 `match_status`、故意不带 `updated_at`；补 `transfer_branch.version` 插入为 0、回写 `txn_no` 或 CAS 改状态时加 1；防悬挂行的 `scenario`、`notify_url` 改为代码显式写入与列默认相同的值；删除 `pay_account_1` 由 `CREATE TABLE ... LIKE` 复制的设计稿说法，改为两个分片执行同一迁移；`recon_diff` 改为“通过新迁移修改”；指需求文档的章节号补“需求”；补齐 15 处 Authoritative source 的右反引号。无 DDL，不改迁移 | 未执行迁移（无 SQL 变更） |
 
 ## 6. Open Questions
 

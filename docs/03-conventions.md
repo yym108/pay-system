@@ -1,6 +1,6 @@
 # pay-system 全局约定与编号规范
 
-> 版本：v2.14　最后修改：2026-10-26
+> 版本：v2.15　最后修改：2026-10-27
 > 适用：全部代码、文档、配置。需求见 `docs/02-requirements.md`，接口见 `docs/05-api.md`，表结构见 `docs/database.md`。
 
 本文集中登记会被多个功能点共用的约定：编号体系、业务单号、金额、时间、错误码、幂等与事务规则、命名规范、配置项。新增或修改这些内容时，先改本文并在 §9 记录，再改代码。
@@ -165,7 +165,7 @@ docker-compose 给将来会跑业务进程的 6 个占位服务写死互不相�
 | `0` | 成功 | — |
 | `10xxx` | 通用：参数、限流、可用性、幂等 | 全部服务 |
 | `20xxx` | 鉴权：签名、防重放、商户、管理 Token | gateway |
-| `30xxx` | 订单：支付单、退款单 | payment |
+| `30xxx` | 订单：支付单、退款单、转账单 | payment |
 | `40xxx` | 账户：记账、冻结 | account |
 | `50xxx` | 渠道：渠道签名、渠道数据 | payment、gateway |
 
@@ -175,7 +175,7 @@ docker-compose 给将来会跑业务进程的 6 个占位服务写死互不相�
 |---|---|---|---|---|---|
 | 0 | `OK` | 200 | `ok` | — | 成功 |
 | 10001 | `INVALID_PARAM` | 400（请求体超过 64KB 时 413） | `invalid parameter` | 否 | 参数缺失、格式或范围错误 |
-| 10002 | `NOT_FOUND` | 404 | `not found` | 否 | 资源不存在（非订单类，如对账批次、差错） |
+| 10002 | `NOT_FOUND` | 404 | `not found` | 否 | 资源不存在（非订单类，如事件重放时 `event_id` 不存在） |
 | 10003 | `INTERNAL` | 500 | `internal error` | 是，参数不变 | 内部错误；对外只返回通用消息和 request_id |
 | 10004 | `UNAVAILABLE` | 503 | `service unavailable` | 是，参数不变 | 依赖暂时不可用 |
 | 10005 | `RATE_LIMITED` | 429 | `rate limited` | 是，按 `Retry-After` | 请求过于频繁 |
@@ -246,7 +246,7 @@ docker-compose 给将来会跑业务进程的 6 个占位服务写死互不相�
 
 1. 状态字段只能通过 CAS 更新修改：`UPDATE ... SET status = ?, version = version + 1 WHERE <主键> AND status = ?`。
 2. 影响行数为 0 时重新读取：已是目标状态 → 幂等成功；其他状态 → 返回该模块的状态冲突码（订单 `30003`，冻结与转账分支 `40004`）。协调者（转账单）CAS 失败时不报错，按数据库中的当前状态继续推进（TRF-03 第 3 条）。
-3. 终态不可变，运营操作也不例外。
+3. 终态不可变，运营操作也不例外。例外只有需求 §2.7 列出的两种非资金记录：`outbox` 的 SENT、DEAD 只能由事件重放（MQ-05）CAS 回 PENDING；`recon_batch` 的 FAILED、DONE 可由重跑（REC-01，DONE 需 `force`）从 INIT 重新开始。`merchant_notify` 没有重放流转，SUCCESS、DEAD 仍不可变。
 4. 状态值为大写英文，与数据库 CHECK 约束、IDL 字符串、JSON 取值完全一致。
 
 ### 6.3 事务
@@ -427,3 +427,4 @@ BASE-09 只拼 DSN 文本，不连接数据库，也不调用驱动的 `ParseDSN
 | v2.12 | 2026-10-23 | 遗留修复：§7.1 写明 `make lint` 带 `--build-tags integration`，集成测试文件不再漏检。不改检查规则 |
 | v2.13 | 2026-10-23 | BASE-14：§8 写明 `SECRET_MASTER_KEY` 是标准 base64（带填充），与 BASE-09 `pkg/config` 已有的校验一致，`pkg/secretbox` 按同一规则解码。不新增变量，不改默认值，不新增错误码 |
 | v2.14 | 2026-10-26 | CH-05：§2.2 登记前缀 `CN`（渠道回调发送号，不落库，只出现在回调 body 的 `notify_id`）。总长仍是前缀 + 19 位。不新增错误码 |
+| v2.15 | 2026-10-27 | 文档审查后的文字修正，不改规则：§5.1 `30xxx` 码段补“转账单”（`30001` 已含转账单）；§5.2 `10002` 的例子改为事件重放时 `event_id` 不存在（对账批次、差错查询接口已在接口 2.0.0 删除）；§6.2 第 3 条写明需求 §2.7 中 `outbox` 重放、`recon_batch` 重跑两处例外，`merchant_notify` 不在例外内。§2.2 已与 `pkg/idgen` 的登记集合一致（含 `TF`、`CN`），未改 |

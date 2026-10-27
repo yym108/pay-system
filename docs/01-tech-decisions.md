@@ -1,6 +1,6 @@
 # 技术路线与决策记录
 
-> 最后更新：2026-10-23
+> 最后更新：2026-10-27
 > 状态：已决策，第 1 周开工即按本文锁定版本。推翻任一决策需在本文追加新记录，写明原因。
 > 2026-10-12：项目聚焦支付、退款、转账三条资金链路，新增 D17–D21（账户分片、跨分片转账 TCC、平台子账户、批量记账、链路延迟优化），调整 D10、D14 与 §4。
 
@@ -48,9 +48,9 @@
 | github.com/hertz-contrib/obs-opentelemetry/tracing | v0.4.1 | 发布于 2024，见 D14 |
 | github.com/kitex-contrib/obs-opentelemetry | v0.3.0 | |
 | github.com/prometheus/client_golang | v1.25.0 | |
-| golang.org/x/sync | v0.23.0 | errgroup、singleflight |
+| golang.org/x/sync | v0.22.0 | errgroup、singleflight。与 `go.mod` 一致：原表预留 v0.23.0，实际沿用 kitex 带入的 v0.22.0，CH-06 起为直接依赖（见下文 BASE-12、CH-06） |
 | golang.org/x/time | v0.16.0 | 网关商户级进程内限流 |
-| github.com/stretchr/testify | v1.12.1 | |
+| github.com/stretchr/testify | v1.12.1 | 只是 `go.mod` 中的间接依赖（由 testcontainers-go 带入），项目测试代码不 import；单元测试只用标准库 `testing`（D15） |
 | github.com/testcontainers/testcontainers-go（modules/mysql） | v0.44.0 | 集成测试 |
 | golangci-lint | v2.14.0 | 静态检查，按官方建议安装预编译二进制，不放进 `go.mod` |
 
@@ -60,7 +60,7 @@ BASE-07（2026-10-15）：`pkg/clock` 的生产时钟用 `time.FixedZone("Asia/S
 
 BASE-09（2026-10-15）：`go.mod` 已直接依赖 `github.com/caarlos0/env/v11 v11.4.1`，版本与本表相同，没有升级其他已锁定依赖。配置用 `Options.Environment` 解析调用方给出的环境，测试不继承进程环境。DSN 装配不连接数据库，也不调用驱动的 `ParseDSN`（该函数会 `LoadLocation`）。recon 不使用 `MYSQL_DSN`，由 `ACCOUNT_DB_DSN_0` 的 host、port、query 和 `MYSQL_RECON_PASSWORD` 装配四条 `svc_recon` DSN（`pay_recon`、`pay_payment`、`pay_account_0`、`pay_account_1`）。channel-mock 不使用 `MYSQL_DSN`，由 `MYSQL_HOST`（默认 `mysql`）、`MYSQL_PORT`（默认 `3306`）和 `MYSQL_CHANNEL_MOCK_PASSWORD` 装配 `svc_channel_mock` 到 `pay_channel_mock`。payment、account、seed 的 DSN 原样保存。
 
-BASE-10（2026-10-15）：新增直接依赖 `github.com/cloudwego/hertz v0.10.6`（只 import `pkg/common/hlog`，不启动 HTTP）和 `go.opentelemetry.io/otel/trace v1.47.0`（`SpanContextFromContext`）。trace API 在独立模块 `go.opentelemetry.io/otel/trace`，业务代码不 import `go.opentelemetry.io/otel` 根包；`go mod tidy` 把根模块、`otel/metric`、`otel/log` 标为间接依赖，版本都是 v1.47.0。没有加入 `otel/sdk` 或 exporter。`go get` 把 testcontainers 原先带入的 otel v1.44.0 升到本表锁定的 v1.47.0。连带把间接的 `github.com/go-logr/logr` 从 v1.4.3 升到 v1.4.4（otel v1.47.0 的 go.mod 要求这一版），`github.com/stretchr/testify` 从 v1.11.1 升到本表锁定的 v1.12.1。`gopkg.in/yaml.v3 v3.0.1` 不再被构建引用，改为间接的 `go.yaml.in/yaml/v3 v3.0.5`。hertz v0.10.6 的 go.mod 写 sonic v1.15.0；本模块已有的显式 require 和 `tools/tools.go` 让 tidy 仍选择 sonic v1.15.4，kitex 仍是 v0.16.3。本表锁定版本没有改。
+BASE-10（2026-10-15）：新增直接依赖 `github.com/cloudwego/hertz v0.10.6`（只 import `pkg/common/hlog`，不启动 HTTP）和 `go.opentelemetry.io/otel/trace v1.47.0`（`SpanContextFromContext`）。trace API 在独立模块 `go.opentelemetry.io/otel/trace`，业务代码不 import `go.opentelemetry.io/otel` 根包；`go mod tidy` 把根模块、`otel/metric`、`otel/log` 标为间接依赖，版本都是 v1.47.0（根模块在 ACC-13 改为直接依赖，见下文 ACC-13；当前 `go.mod` 中 `go.opentelemetry.io/otel` 是直接依赖）。没有加入 `otel/sdk` 或 exporter。`go get` 把 testcontainers 原先带入的 otel v1.44.0 升到本表锁定的 v1.47.0。连带把间接的 `github.com/go-logr/logr` 从 v1.4.3 升到 v1.4.4（otel v1.47.0 的 go.mod 要求这一版），`github.com/stretchr/testify` 从 v1.11.1 升到本表锁定的 v1.12.1。`gopkg.in/yaml.v3 v3.0.1` 不再被构建引用，改为间接的 `go.yaml.in/yaml/v3 v3.0.5`。hertz v0.10.6 的 go.mod 写 sonic v1.15.0；本模块已有的显式 require 和 `tools/tools.go` 让 tidy 仍选择 sonic v1.15.4，kitex 仍是 v0.16.3。本表锁定版本没有改。
 
 BASE-08（2026-10-15）：新增直接依赖 `github.com/jmoiron/sqlx v1.4.0`，版本与上表相同，不升级。`github.com/go-sql-driver/mysql` 仍是已在 `go.mod` 的 v1.10.1，不升级。没有升级 kitex、sonic、hertz、otel。
 
@@ -148,7 +148,7 @@ BASE-01（2026-10-13）：根据本机实际安装版本，将本表 Go 本机�
   - 布局：1 位符号 + 41 位毫秒时间戳（纪元 2026-01-01 00:00:00 +08:00）+ 10 位 worker ID + 12 位序列号。
   - worker ID 由环境变量 `WORKER_ID` 静态分配（docker-compose 中每个实例固定），启动时校验范围 0–1023。
   - 时钟回拨 ≤ 5ms 时等待，> 5ms 时返回错误，拒绝发号。
-  - 业务单号 = 2 位大写前缀 + 19 位定长十进制，共 21 字符。前缀：`PA` 支付单、`RF` 退款单、`TX` 记账凭证、`FZ` 冻结单、`EV` 事件、`NT` 通知、`AC` 账户、`RB` 对账批次、`RD` 差错、`MC` 模拟渠道流水。
+  - 业务单号 = 2 位大写前缀 + 19 位定长十进制，共 21 字符。前缀：`PA` 支付单、`RF` 退款单、`TF` 转账单、`TX` 记账凭证、`FZ` 冻结单、`EV` 事件、`NT` 通知、`AC` 账户、`RB` 对账批次、`RD` 差错、`MC` 模拟渠道流水、`CN` 渠道回调发送号（不落库），与约定 §2.2 一致。
 - 理由：逻辑简单，能讲清楚时钟回拨、worker 分配、趋势递增对 B+ 树写入的影响；不引入额外依赖。
 - 数据库主键仍用自增 `BIGINT`，业务单号走唯一索引。自增主键保证聚簇索引顺序写，业务单号对外暴露、不泄露订单量。
 - 补充（2026-10-14，BASE-05）：回拨比较墙上毫秒，不用单调钟。等待可被 context 取消。超过 5ms 返回 `ErrClockRollback`，由调用方映射为已有的 `10004`；本包不依赖 `pkg/errno`，也不实现 `pkg/clock`。前缀以约定 §2.2 全表为准（含后来补上的 `TF`）。worker 分配见约定 §2.5。
@@ -218,11 +218,11 @@ BASE-01（2026-10-13）：根据本机实际安装版本，将本表 Go 本机�
 
 | 层次 | 工具 | 运行方式 |
 |---|---|---|
-| 单元测试 | 标准库 testing + testify | `make test`，不依赖 Docker |
+| 单元测试 | 标准库 `testing` | `make test`，不依赖 Docker |
 | 集成测试 | testcontainers-go 启动 MySQL 8.4.11；`TEST_MYSQL_DSN` 复用已有实例。Kafka 助手使用已锁定的 `apache/kafka:4.3.1`，不随每个 MySQL 测试启动 | `make test-integration`，文件带 `//go:build integration` |
-| 端到端 | docker-compose + `paycli` + Go 测试 | `make e2e` |
-| 故障演练 | shell + docker 命令 + 校验 SQL | `make chaos` |
-| 压测 | k6（`k6/crypto` 计算 HMAC） | `make load` |
+| 端到端 | docker-compose + `paycli` + Go 测试 | `make e2e`（目前是占位目标，只打印提示后 `exit 1`，由 QA-04 实现） |
+| 故障演练 | shell + docker 命令 + 校验 SQL | `make chaos`（目前是占位目标，由 QA-01 实现） |
+| 压测 | k6（`k6/crypto` 计算 HMAC） | `make load`（目前是占位目标，由 QA-02 实现） |
 
 并发用例统一加 `-race` 运行。
 
