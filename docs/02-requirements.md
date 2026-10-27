@@ -375,7 +375,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | CH-08 | 账单下载 | P0 | M6 | CH-01、CH-04 | TODO |
 | CH-09 | 账单注入 | P0 | M6 | CH-08 | TODO |
 | PAY-01 | 商户与密钥 | P0 | M3 | BASE-14、BASE-03 | DONE |
-| PAY-02 | 创建支付单 | P0 | M3 | PAY-01 | TODO |
+| PAY-02 | 创建支付单 | P0 | M3 | PAY-01 | DONE |
 | PAY-03 | 发起支付 | P0 | M3 | PAY-02、CH-01、BASE-15 | TODO |
 | PAY-04 | 支付结果推进 | P0 | M3 | PAY-03、MQ-01 | TODO |
 | PAY-05 | 查单补偿 | P0 | M4 | PAY-04、CH-02、CH-06、GW-06、REF-03、BASE-15 | TODO |
@@ -1447,19 +1447,20 @@ M4 切片（未实现）：
 
 规则：
 
-1. 入参（`docs/05-api.md` §4.1）：`out_trade_no`、`amount`、`subject` 必填；`currency` 默认 `CNY`；`notify_url` 默认商户配置；`expire_minutes` 默认 15，范围 1–120。
-2. `notify_url` 必须是 http/https，且主机在 `NOTIFY_URL_ALLOW_HOSTS` 白名单内（防 SSRF，见 NFR-SEC-07）。
-3. 生成 `pay_no`；`expire_at = now + expire_minutes`；手续费按下单时刻已生效的费率计算，即 `effective_from <= created_at` 的最近一档，并固化到 `fee_amount`；状态 INIT。PAY-02 仍是 TODO，本条不在 PAY-10 实现下单。
-4. 插入遇 `uk_merchant_out_trade_no` 冲突时读取已有订单：`amount`、`currency`、`subject`、`notify_url` 全部一致 → 返回已有订单（不论当前状态）；否则 `10006`。
+1. 入参（`docs/05-api.md` §4.1）：`out_trade_no` 为 1–64 且匹配 `[A-Za-z0-9_-]`；`amount` 为 1–10,000,000 分；`subject` 为 1–128 个码点，不 trim；`currency` 省略或空串为 `CNY`，其他值（含 `cny`）为 `10001`；`expire_minutes` 未设置时默认 15，已设置但不在 1–120（含 0）为 `10001`。请求为 nil 返回 `10001`。
+2. 未传 `notify_url` 时存空串 `''`。通知时才用商户默认地址（NTF，本功能点不发送）。白名单只在请求带了 `notify_url` 时检查：逗号分隔、trim、忽略空段；scheme 只能是 http 或 https，主机去掉端口后与名单大小写不敏感精确比较；不解析 DNS、不访问该 URL、不跟随重定向。长度按 Unicode 码点 ≤ 512。解析失败、空 host、scheme 不对、主机不在名单、超长，以及名单解析后为空时的任何显式 URL，都是 `10001`。显式传入的地址即使等于商户默认地址，也原样入库。幂等比较用填充后的值，缺省比较的是空串。
+3. `merchant_id` 为空、商户不存在、或状态不是 `ACTIVE`：返回 `20004`，不插入。商户状态走 `MerchantConfig` 缓存；不是 `ACTIVE`（含 DISABLED）读到配置后仍拒绝。
+4. `pay_no` 前缀 `PA`，在插入前生成。时钟回拨超过 5ms 返回 `10004`，不插入。`created_at` 与 `expire_at` 用同一个注入时钟瞬间，`expire_at = created_at + expire_minutes`。INSERT 显式写 `created_at` 和 `updated_at`。手续费用 `FeeRateAt(merchant_id, created_at)` 取 `effective_from <= created_at` 的最近一档，再用 `money.Fee` 固化到 `fee_amount`。不读 `merchant.fee_rate_bp`，不缓存费率。没有生效档不插入，返回 `10003`，不把手续费当成 0。新建行 `status = INIT`，`channel`、`paid_at`、`closed_at`、`fail_code`、`fail_msg` 为 NULL，`refunded_amount = 0`，`version = 0`。
+5. 插入遇 `uk_merchant_out_trade_no` 冲突时读取已有订单：`amount`、`currency`、`subject`、`notify_url` 全部一致 → 返回已有订单（不论当前状态），不更新；否则 `10006`。`expire_minutes` / `expire_at` 不参与比较。1062 但按 `(merchant_id, out_trade_no)` 读不到行（例如撞了 `uk_pay_no`）返回 `10003`，不当作幂等成功，不重试。
 
-异常：参数错误 → `10001`；幂等冲突 → `10006`。
+异常：参数错误 → `10001`；商户不存在或已停用 → `20004`；没有生效档或内部故障 → `10003`；时钟回拨 → `10004`；幂等冲突 → `10006`。
 
 验收：
 
-- [ ] 100 个并发相同请求只生成 1 条订单，全部返回同一 `pay_no`。
-- [ ] 相同 `out_trade_no`、不同金额返回 `10006`。
-- [ ] `expire_minutes = 0` 或 `121`、`notify_url` 不在白名单，返回 `10001`。
-- [ ] 费率 60bp 的商户下单 10000，`fee_amount = 60`。
+- [x] 100 个并发相同请求只生成 1 条订单，全部返回同一 `pay_no`。
+- [x] 相同 `out_trade_no`、不同金额返回 `10006`。
+- [x] `expire_minutes = 0` 或 `121`、`notify_url` 不在白名单，返回 `10001`。
+- [x] 费率 60bp 的商户下单 10000，`fee_amount = 60`。
 
 #### PAY-03 发起支付
 
@@ -3116,3 +3117,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-10-27 | v3.0 | 文档审查补充（用户决定）：REC-06 跨批次的 REQUERY 重试与 LEDGER_MISSING 复核（含再次重放）只处理 `bill_date` 在 D−8 到 D−2 的差错（D 为运行时注入时钟的东八区日期，与 REC-01 第 1 条的前 7 个账期一致）；窗口外仍 PENDING 的已自动处理差错保持 PENDING 等人工，REC-08 报告新增“等待人工处理”列表。`recon_diff` 唯一键由 `uk_batch_type_biz_no` 改为 `uk_batch_type_biz_no_diff_type`（`batch_no, txn_type, biz_no, diff_type`），迁移随 REC-03 新增，REC-03 标头注明，同键跳过按新键，同一笔交易的外部差错与 `LEDGER_MISSING` 可在同一批次并存。REC-06 新增严重不一致：`CHANNEL_MISSING` 查单确认渠道不是 SUCCESS 时保持 PENDING，`handle_action = REQUERY`，`channel_status` 写渠道状态并作为不再自动重试的标记，`handle_note` 记录渠道状态，ERROR 日志并计 `pay_recon_channel_inconsistent_total{channel}`（已登记 OPS-03），等人工。补窗口、严重不一致、等待人工列表、外部与内部差错并存的验收。错误码与资金流向不变 |
 | 2026-10-27 | v3.0 | 文档审查补充（用户决定）：REC-01 第 2 条按状态拆写，`force` 只对 DONE 生效（FAILED 本来就重跑）；未超时的 INIT、DOWNLOADED、CHECKING 带 `force = true` 仍返回当前批次，不并发重跑；超时的带不带 force 都按第 5 条接管，不按第 3 条重跑；补验收。REC-08 的“等待人工处理”定名为响应字段 `manual_total`、`manual_diffs`，`manual_diffs` 按 `bill_date` 升序、同一 `bill_date` 内按 `id` 升序取前 100 条，补排序与截断验收。`ReconBatch` 不输出 `retry_count`。表结构、错误码与资金流向不变 |
 | 2026-10-27 | v3.0 | BASE-15：实现了 `pkg/fault`；重复名称视为初始化错误；标记写失败不发信号；空配置不碰标记目录。不改 9 个名称，不改资金，不新增错误码 |
+| 2026-10-28 | v3.0 | PAY-02 文字澄清：未传 `notify_url` 存空串，通知时才取商户默认地址；显式地址即使等于商户默认地址也原样入库。商户不存在或非 `ACTIVE` 为已有的 `20004`，不插入。没有生效费率档为已有的 `10003`，不把手续费当成 0，不读 `merchant.fee_rate_bp`，不缓存费率。时钟回拨映射为已有的 `10004`。1062 后按商户订单号读不到行返回 `10003`。不新增错误码，不改表，不改 IDL |

@@ -12,6 +12,7 @@ import (
 	"github.com/yym108/pay-system/pkg/config"
 	"github.com/yym108/pay-system/pkg/dbx"
 	"github.com/yym108/pay-system/pkg/fault"
+	"github.com/yym108/pay-system/pkg/idgen"
 	"github.com/yym108/pay-system/pkg/logx"
 	"github.com/yym108/pay-system/pkg/secretbox"
 	"github.com/yym108/pay-system/service/payment/biz"
@@ -69,6 +70,11 @@ func serve(cfg config.Payment, logOut io.Writer) error {
 	}
 	defer func() { _ = db.Close() }()
 	merchants := biz.NewMerchants(db, box, clock.Real{}, cfg.MerchantConfigCacheTTL)
+	ids, err := idgen.New(cfg.WorkerID, clock.Real{})
+	if err != nil {
+		return err
+	}
+	payments := biz.NewPayments(merchants, ids, clock.Real{}, cfg.NotifyURLAllowHosts, db)
 	// 健康检查和 SIGTERM 排空是 OPS-01。这里只阻塞到 Kitex 收到信号。
-	return handler.Run(handler.New(merchants), handler.Config{})
+	return handler.Run(handler.New(biz.NewApp(merchants, payments)), handler.Config{})
 }

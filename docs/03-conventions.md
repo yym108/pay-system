@@ -1,6 +1,6 @@
 # pay-system 全局约定与编号规范
 
-> 版本：v2.19　最后修改：2026-10-27
+> 版本：v2.20　最后修改：2026-10-28
 > 适用：全部代码、文档、配置。需求见 `docs/02-requirements.md`，接口见 `docs/05-api.md`，表结构见 `docs/database.md`。
 
 本文集中登记会被多个功能点共用的约定：编号体系、业务单号、金额、时间、错误码、幂等与事务规则、命名规范、配置项。新增或修改这些内容时，先改本文并在 §9 记录，再改代码。
@@ -376,7 +376,7 @@ Hertz `hlog` 和 Kitex `klog` 经适配器写入同一个 slog handler。`SetDef
 | `CHANNEL_MOCKPAY_URL` | payment | `http://channel-mock:9080` | BASE-09 的 recon 不读取。对账要访问渠道时再加到 recon |
 | `CHANNEL_NOTIFY_URL` | payment | `http://gateway:8080/callback/mockpay` | 交给渠道的回调地址 |
 | `ADMIN_TOKEN` | gateway | 无（必填，secret，≥ 32 字符） | 管理接口 Token |
-| `NOTIFY_URL_ALLOW_HOSTS` | payment | `merchant-demo` | 商户通知地址主机白名单，逗号分隔 |
+| `NOTIFY_URL_ALLOW_HOSTS` | payment | `merchant-demo` | 商户通知地址主机白名单，逗号分隔。解析时 trim 并忽略空段。名单解析后为空时，任何显式 URL 都拒绝。主机与名单大小写不敏感精确比较，不解析 DNS |
 | `RATE_LIMIT_DEFAULT`、`RATE_LIMIT_OVERRIDES` | gateway | `100:200`、空 | 进程内商户限流 `速率:突发`；覆盖格式 `app_id:速率:突发,...`（GW-05） |
 | `QUERY_BACKOFF` | payment | `10s,10s,30s,1m,2m,5m,10m,30m` | 查单退避，之后每小时（PAY-05） |
 | `NOTIFY_RETRY_INTERVAL`、`NOTIFY_MAX_ATTEMPTS` | payment | `30s`、`5` | 商户通知固定间隔重试（NTF-02） |
@@ -434,3 +434,4 @@ BASE-09 只拼 DSN 文本，不连接数据库，也不调用驱动的 `ParseDSN
 | v2.17 | 2026-10-27 | §8 `SEED_LOAD`：`deploy/.env.example` 补 `SEED_LOAD=0`；`deploy/seed.sh` 中调用方已设的 `SEED_LOAD` 优先于环境文件，其他变量仍以环境文件为准 |
 | v2.18 | 2026-10-27 | 对齐需求 2026-10-27 的功能点拆分（BASE-15 `pkg/fault`）：§1.2 `QA` 行注明 `pkg/fault/` 属 BASE-15；§8 `FAULT_POINTS` 归属改为 BASE-15，写明默认空、逗号分隔、可带 `:once`、未登记的名称（含空项、`:once` 以外的后缀）进程启动失败；§7.4 故障注入点注明只能用 BASE-15 第 6 条登记的名称。已核对登记的 9 个故障点都符合 `<领域>.<after\|before>_<步骤>`。不新增错误码 |
 | v2.19 | 2026-10-27 | BASE-15：同一名称在 `FAULT_POINTS` 里出现两次时初始化失败；标记目录不是配置项（默认 `/var/run/fault`，由 chaos 覆盖文件挂载）。不新增配置项，不新增错误码 |
+| v2.20 | 2026-10-28 | PAY-02：§8 `NOTIFY_URL_ALLOW_HOSTS` 补明空名单拒绝一切显式 URL、主机大小写不敏感精确比较、不解析 DNS。不新增配置项，不新增错误码 |

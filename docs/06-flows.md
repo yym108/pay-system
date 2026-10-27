@@ -1,7 +1,7 @@
 # pay-system 流程图（状态机、泳道图、控制流图）
 
-> 版本：v2.19　最后修改：2026-10-27　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐。2026-10-21 按 ACC-14 口径改正 CF-33，CF-33 已对齐。2026-10-21 按 ACC-10 口径改正 CF-17，CF-17 已对齐。2026-10-23 按 BASE-13 规则 8 补 CF-01、CF-02、CF-21 的签名配置故障出口。2026-10-23 按 CH-01 口径改正 CF-22。2026-10-26 CF-23 注明防悬挂 CLOSED 记录 amount = 0。2026-10-26 渠道查单单独画 CF-38，CH-02 的控制流改指 CF-38；SL-02 仍留给以后的补偿。2026-10-26 按 CH-03 口径补全 CF-23 的验签、参数、CAS 与再读出口，六个业务结果不变。2026-10-26 按 CH-05 在 CF-24 图下注明「其他」和 DROP_NOTIFY 不回调已实现；SLOW 与 DUP_NOTIFY 的特殊发送仍未实现，这两种场景现在不发普通回调。图本身不改。2026-10-27 按 CH-06 将 CF-24 图下改为 DUP_NOTIFY 已按「并发 5 次，之后每秒 1 次再 5 次，不论响应」实现；SLOW 仍未实现，现在不发。图本身不改。2026-10-27 文档审查修正与需求不一致的文字：SL-01 延迟范围、CF-05 未知结果分支、SL-14 C13、CF-34 与 CF-35 的 10001 / 10006、§5 R15 与 R16 状态、SL-09 与 CF-26 的定时触发写法、对 03 的版本引用；不改规则。2026-10-27 文档审查第 2 阶段按用户确认的规则修图：outbox 投递改为领取写租约、事务外发送、按租约值 CAS 回写；手续费为 0 省略分录；merchant_notify 与 recon_diff 状态 CAS；批量记账非 ACTIVE 退化逐条，Post 返回 40005 进 DLQ；退款释放额度影响 0 行回滚并返回 10003；对账批次 INIT / DOWNLOADED 超时接管与 BILL_NOT_READY 当天最多重试 6 次；SLOW 只推迟首次回调；覆盖矩阵同步 BASE-15、GW-09、QA-05。2026-10-27 文档审查第 3 阶段按需求 7d08a2c 修对账与批量记账的图：对账批次拆为 CF-26、CF-39、CF-40，差错处理拆为 CF-29、CF-41；`retry_count` 持久化；重跑与接管只删 `handle_action` 为空的 PENDING 差错；差错按 `uk_batch_type_biz_no_diff_type` 同键跳过；跨批次重试窗口与严重不一致；报告加“等待人工处理”；批量记账 F = 0 省略手续费分录。2026-10-27 BASE-15 已提供 `pkg/fault`，图中的故障点标注保持原句
-> 依据：`docs/02-requirements.md` v3.0、`docs/03-conventions.md` v2.19、`docs/01-tech-decisions.md` D17–D21；图与需求冲突处以需求文档为准
+> 版本：v2.20　最后修改：2026-10-28　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐。2026-10-21 按 ACC-14 口径改正 CF-33，CF-33 已对齐。2026-10-21 按 ACC-10 口径改正 CF-17，CF-17 已对齐。2026-10-23 按 BASE-13 规则 8 补 CF-01、CF-02、CF-21 的签名配置故障出口。2026-10-23 按 CH-01 口径改正 CF-22。2026-10-26 CF-23 注明防悬挂 CLOSED 记录 amount = 0。2026-10-26 渠道查单单独画 CF-38，CH-02 的控制流改指 CF-38；SL-02 仍留给以后的补偿。2026-10-26 按 CH-03 口径补全 CF-23 的验签、参数、CAS 与再读出口，六个业务结果不变。2026-10-26 按 CH-05 在 CF-24 图下注明「其他」和 DROP_NOTIFY 不回调已实现；SLOW 与 DUP_NOTIFY 的特殊发送仍未实现，这两种场景现在不发普通回调。图本身不改。2026-10-27 按 CH-06 将 CF-24 图下改为 DUP_NOTIFY 已按「并发 5 次，之后每秒 1 次再 5 次，不论响应」实现；SLOW 仍未实现，现在不发。图本身不改。2026-10-27 文档审查修正与需求不一致的文字：SL-01 延迟范围、CF-05 未知结果分支、SL-14 C13、CF-34 与 CF-35 的 10001 / 10006、§5 R15 与 R16 状态、SL-09 与 CF-26 的定时触发写法、对 03 的版本引用；不改规则。2026-10-27 文档审查第 2 阶段按用户确认的规则修图：outbox 投递改为领取写租约、事务外发送、按租约值 CAS 回写；手续费为 0 省略分录；merchant_notify 与 recon_diff 状态 CAS；批量记账非 ACTIVE 退化逐条，Post 返回 40005 进 DLQ；退款释放额度影响 0 行回滚并返回 10003；对账批次 INIT / DOWNLOADED 超时接管与 BILL_NOT_READY 当天最多重试 6 次；SLOW 只推迟首次回调；覆盖矩阵同步 BASE-15、GW-09、QA-05。2026-10-27 文档审查第 3 阶段按需求 7d08a2c 修对账与批量记账的图：对账批次拆为 CF-26、CF-39、CF-40，差错处理拆为 CF-29、CF-41；`retry_count` 持久化；重跑与接管只删 `handle_action` 为空的 PENDING 差错；差错按 `uk_batch_type_biz_no_diff_type` 同键跳过；跨批次重试窗口与严重不一致；报告加“等待人工处理”；批量记账 F = 0 省略手续费分录。2026-10-27 BASE-15 已提供 `pkg/fault`，图中的故障点标注保持原句。2026-10-28 按 PAY-02 口径改正 CF-04。当前环境没有 mmdc，未渲染 SVG
+> 依据：`docs/02-requirements.md` v3.0、`docs/03-conventions.md` v2.20、`docs/01-tech-decisions.md` D17–D21；图与需求冲突处以需求文档为准
 > 用途：以图的形式确认全部功能性设计。图是需求的视图，规则冲突时以需求文档为准；需求变更后同步修改对应的图。
 
 ## 0. 阅读说明
@@ -1142,18 +1142,24 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    S(["CreatePayment(merchant_id, out_trade_no, amount, subject, ...)"]) --> V{"参数合法<br/>expire_minutes 1–120，currency 默认 CNY"}
+    S(["CreatePayment(merchant_id, out_trade_no, amount, subject, ...)"]) --> V{"参数合法<br/>expire_minutes 未设置默认 15，设了须在 1–120<br/>currency 省略或空串为 CNY"}
     V -->|"否"| E10001["10001"]:::err
     V -->|"是"| NU{"传了 notify_url"}
-    NU -->|"是"| WL{"http/https 且主机在 NOTIFY_URL_ALLOW_HOSTS 内"}
-    WL -->|"否"| E10001b["10001"]:::err
-    WL -->|"是"| FEE
-    NU -->|"否，存空串，通知时取商户默认地址"| FEE["读商户配置（进程内缓存 60s）<br/>fee_amount 按当前费率计算并固化<br/>生成 pay_no，expire_at = now + expire_minutes"]
-    FEE --> INS["INSERT payment_order(INIT)"]
+    NU -->|"否，存空串<br/>通知时取商户默认地址"| MC["MerchantConfig：状态须为 ACTIVE<br/>状态走缓存；费率不缓存"]
+    NU -->|"是"| WL{"http/https，Hostname 去掉端口<br/>与白名单大小写不敏感精确匹配<br/>不解析 DNS，不访问该 URL"}
+    WL -->|"否：解析失败、空 host、scheme 不对、<br/>不在名单、超长，或名单为空"| E10001b["10001"]:::err
+    WL -->|"是，原样入库"| MC
+    MC -->|"空、不存在或非 ACTIVE"| E20004["20004"]:::err
+    MC -->|"ACTIVE"| FEE["FeeRateAt(created_at)<br/>effective_from 不晚于 created_at 的最近一档<br/>不读 merchant.fee_rate_bp<br/>money.Fee 固化 fee_amount"]
+    FEE -->|"没有生效档"| E10003a["10003"]:::err
+    FEE -->|"有档"| ID["NewNo(PA)"]
+    ID -->|"时钟回拨超过 5ms"| E10004["10004"]:::err
+    ID -->|"成功"| INS["INSERT INIT<br/>显式写 created_at 与 updated_at<br/>expire_at = created_at + expire_minutes"]
     INS -->|"成功"| OK(["返回 INIT 订单"]):::ok
-    INS -->|"1062 uk_merchant_out_trade_no"| RD{"已有订单的 amount、currency、<br/>subject、notify_url 全部一致"}
-    RD -->|"是"| OK2(["返回已有订单（不论当前状态）"]):::ok
-    RD -->|"否"| E10006["10006"]:::err
+    INS -->|"1062"| RD{"按 merchant_id + out_trade_no 读到行<br/>且 amount、currency、subject、notify_url 全部一致<br/>不比较 expire"}
+    RD -->|"读不到"| E10003b["10003"]:::err
+    RD -->|"一致，不更新"| OK2(["返回已有订单（不论当前状态）"]):::ok
+    RD -->|"不一致"| E10006["10006"]:::err
     classDef ok fill:#e3f6e8,stroke:#2e7d32
     classDef err fill:#fde4e4,stroke:#c62828
     classDef fault fill:#fff4d6,stroke:#b8860b
@@ -2505,3 +2511,4 @@ R1–R14 来自 v1.x 绘图，已落入需求文档 v2.2；R15、R16 来自 v2.0
 | 2026-10-27 | v2.17 | 文档审查第 2 阶段，按用户确认的规则修图（需求 v3.0 b12eddb 及其后补充）。A1 outbox：SM-05、SL-01、SL-07、CF-18、§4.10 改为“事务 1 领取并把 `next_retry_at` 设为租约到期 L = now + 30s 后提交 → 事务外批量发送（acks = all、幂等、5s）→ 故障点 `outbox.after_send` → 逐条按 `WHERE id = ? AND status = PENDING AND next_retry_at = L` CAS 回写，0 行丢弃”，删去“发送期间持有行锁”，补崩溃或回写报错后租约到期被重新领取。A4：SL-01、CF-19 注明 F = 0 时省略手续费分录；CF-21、SL-08 的 merchant_notify 回写改为 `WHERE id = ? AND status = PENDING` 的 CAS，0 行丢弃本次结果（NTF-02 规则 7）；CF-29 的 RESOLVED、IGNORED 改为 CAS 并补 0 行重读出口；CF-37、SL-15 补账户非 ACTIVE 时回滚、退化逐条、该事件 40005 进 DLQ；CF-19、SL-07 把 Post 返回 40005 列为不可重试，进 DLQ，可由 MQ-05 重放（MQ-04）；CF-11 两条释放 `refunded_amount` 都带 `refunded_amount ≥ R`，影响 0 行时整个事务回滚、返回 10003、ERROR 日志、`pay_refund_quota_inconsistent_total+1`（REF-03）；SM-07、SL-09、CF-26 补 INIT、DOWNLOADED 按 `updated_at` 超过 30 分钟在 RunBatch 触发时接管（不另设扫描），BILL_NOT_READY 30 分钟后由调度再次调用 RunBatch 重试、当天最多 6 次后 FAILED；CF-24、SL-02 的 SLOW 改为只推迟首次回调，失败后按 CH-05 重试（CH-06 规则 6）。编号：§1 覆盖矩阵 GW-02 改为支付与余额路由，新增 GW-09、BASE-15、QA-01 行，说明中加入 QA-05、QA-02 基线、OPT-01 新名；§0.2、§4.10 的故障点归属改为 BASE-15；SL-05、SL-11、SL-12、CF-01 覆盖加 GW-09。其他：CF-17 图下 `/metrics` 归 OPS-03；CF-35 图下分阶段耗时埋点由 OPT-01 加入（TRF-03 规则 7）；SL-15、CF-37 的“见 R16”改为 OPT-02 规则 5；文件头对 03 的引用改为 v2.17，删去“05、database 尚未同步 v3.0”。用 mermaid-cli 12.0.0 渲染全部 64 张图通过，未保存 SVG |
 | 2026-10-27 | v2.18 | 文档审查第 3 阶段，按需求 7d08a2c 的 REC-01/02/03/05/06/08 与 OPT-02 第 7 条修图。SM-07：超时统一为“满 30 分钟（now − 时间戳 ≥ 30 分钟）”；INIT 接管从下载开始；DOWNLOADED 接管 CAS 直接到 CHECKING，删去 DOWNLOADED 自环；CHECKING 接管先删 `handle_action` 为空的 PENDING 差错再比对；DONE / FAILED 的 CAS 带本次运行的 `started_at`，被接管后旧运行放弃；BILL_NOT_READY 时 CAS `retry_count + 1` 保持 INIT，已达 6 次置 FAILED；重跑 `retry_count = 0`。SM-08：插入同键跳过、失败也写 `handle_action`、严重不一致写 `channel_status`、只删 `handle_action` 为空的、窗口与“等待人工处理”。拆图：原 CF-26 拆为 CF-26（触发、状态分派、超时接管，含每日定时顺带处理 bill_date 在今天−8 ~ 今天−2 的 INIT / DOWNLOADED / CHECKING 批次）、新增 CF-39（下载、导入、BILL_NOT_READY 的持久化重试）、新增 CF-40（比对、收尾 CAS 带 `started_at = T0`、`diff_count` 按实际行数、REC-08 报告与“等待人工处理”）；原 CF-29 改为只管本次新插入差错的自动处理（失败写 `handle_action`、严重不一致、终态 CAS 0 行重新读取与“已不存在”），新增 CF-41（窗口内跨批次 REQUERY 重试、LEDGER_MISSING 复核与再次重放）。CF-27、CF-28：差错按 `uk_batch_type_biz_no_diff_type` 用 `INSERT … ON DUPLICATE KEY UPDATE id = id` 插入，同键跳过，影响 1 行才计入 `pay_recon_diffs_total`。SL-09、SL-10、CF-03 同步以上规则，SL-10、CF-03 注明管理接口不顺带处理前 7 个账期。删去 CF-26 中“重试计数只在进程内保存”的说法。CF-37、SL-15：F = 0 的事件省略手续费分录，不计入手续费收入子账户增量、不为它加锁（OPT-02 第 7 条）。覆盖矩阵：REC-01/02 → CF-26、CF-39、CF-40，REC-03 加 CF-40，REC-06 → CF-29、CF-41，REC-08 → CF-40。文件头对 03 的引用改为 v2.18。用 mermaid-cli 12.0.0 渲染全部 67 张图通过，未保存 SVG |
 | 2026-10-27 | v2.19 | BASE-15 已提供 `pkg/fault`，图中的故障点标注保持原句。§4.10 引言的登记表条号改为规则 6。不改图，不渲染 SVG |
+| 2026-10-28 | v2.20 | PAY-02：CF-04 改为未传 notify_url 存空串；白名单只在显式 URL 时检查，空名单拒绝一切显式 URL，主机大小写不敏感且不解析 DNS；商户非 ACTIVE 或不存在为 20004；费率按 created_at 读生效档、不缓存、不读 merchant.fee_rate_bp，没有生效档为 10003；时钟回拨为 10004；1062 读不到行为 10003。文件头对约定的引用改为 v2.20。当前环境没有 mmdc，未渲染 SVG |

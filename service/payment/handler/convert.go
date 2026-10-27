@@ -5,13 +5,19 @@ import (
 	"log/slog"
 	"math"
 	"strconv"
+	"time"
 
 	"github.com/cloudwego/kitex/pkg/kerrors"
 
+	"github.com/yym108/pay-system/kitex_gen/base"
 	"github.com/yym108/pay-system/kitex_gen/payment"
 	"github.com/yym108/pay-system/pkg/errno"
 	"github.com/yym108/pay-system/service/payment/biz"
 )
+
+const timestampLayout = "2006-01-02T15:04:05.000Z07:00"
+
+var shanghai = time.FixedZone("Asia/Shanghai", 8*60*60)
 
 // statusErr 把 biz 错误交给 Kitex。GetMerchantCredential 没有携带对象的错误，carryObject=false。
 // 退款和转账要连同对象返回的 40002、30006 由各自功能点用 errno.RPCExit(err, true) 处理。
@@ -56,6 +62,46 @@ func toCredential(in biz.MerchantCredential) *payment.GetMerchantCredentialRespo
 		SecretVersion:    toI32(in.SecretVersion),
 		DefaultNotifyUrl: in.DefaultNotifyURL,
 	}
+}
+
+func toPaymentOrder(in biz.PaymentOrder) *payment.PaymentOrder {
+	out := &payment.PaymentOrder{
+		PayNo:          in.PayNo,
+		OutTradeNo:     in.OutTradeNo,
+		Amount:         int64(in.Amount),
+		FeeAmount:      int64(in.FeeAmount),
+		RefundedAmount: int64(in.RefundedAmount),
+		Currency:       in.Currency,
+		Subject:        in.Subject,
+		Status:         in.Status,
+		ExpireAt:       formatTimestamp(in.ExpireAt),
+		CreatedAt:      formatTimestamp(in.CreatedAt),
+	}
+	if in.Channel != "" {
+		ch := in.Channel
+		out.Channel = &ch
+	}
+	if !in.PaidAt.IsZero() {
+		ts := formatTimestamp(in.PaidAt)
+		out.PaidAt = &ts
+	}
+	if !in.ClosedAt.IsZero() {
+		ts := formatTimestamp(in.ClosedAt)
+		out.ClosedAt = &ts
+	}
+	if in.FailCode != "" {
+		code := in.FailCode
+		out.FailCode = &code
+	}
+	if in.FailMsg != "" {
+		msg := in.FailMsg
+		out.FailMsg = &msg
+	}
+	return out
+}
+
+func formatTimestamp(t time.Time) base.Timestamp {
+	return t.Truncate(time.Millisecond).In(shanghai).Format(timestampLayout)
 }
 
 // toI32 把库里的 INT 收成 i32。secret_version 是 MySQL INT，不会超出 int32。

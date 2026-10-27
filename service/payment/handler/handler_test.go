@@ -150,8 +150,13 @@ func TestUnimplementedMethodsReturnInternal(t *testing.T) {
 	}
 	h := New(svc)
 	ctx := context.Background()
+	if _, err := h.CreatePayment(ctx, nil); !errors.Is(errno.FromBizStatus(err), errno.ErrInvalidParam) {
+		t.Fatal("nil CreatePayment request")
+	}
+	if n := svc.callCount(); n != 0 {
+		t.Fatalf("nil CreatePayment called biz %d times", n)
+	}
 	for name, fn := range map[string]func() error{
-		"CreatePayment":       func() error { _, err := h.CreatePayment(ctx, nil); return err },
 		"Pay":                 func() error { _, err := h.Pay(ctx, nil); return err },
 		"ClosePayment":        func() error { _, err := h.ClosePayment(ctx, nil); return err },
 		"QueryPayment":        func() error { _, err := h.QueryPayment(ctx, nil); return err },
@@ -281,10 +286,6 @@ type call struct {
 func unimplementedCalls(cli paymentservice.Client) []call {
 	ctx := context.Background()
 	return []call{
-		{"CreatePayment", func() error {
-			_, err := cli.CreatePayment(ctx, &payment.CreatePaymentRequest{MerchantId: "M100001", OutTradeNo: "o1", Amount: 1, Subject: "s"})
-			return err
-		}},
 		{"Pay", func() error {
 			_, err := cli.Pay(ctx, &payment.PayRequest{MerchantId: "M100001", PayNo: "PA1", Channel: "mockpay"})
 			return err
@@ -429,11 +430,13 @@ func dialKitex(t *testing.T, addr string, rpc time.Duration) paymentservice.Clie
 type scripted struct {
 	mu        sync.Mutex
 	cred      biz.MerchantCredential
+	order     biz.PaymentOrder
 	err       error
 	panicking bool
 	block     func(context.Context) error
 	calls     int32
 	appID     string
+	lastIn    biz.CreatePaymentInput
 }
 
 func (s *scripted) set(fn func(*scripted)) {
@@ -472,6 +475,83 @@ func (s *scripted) GetMerchantCredential(ctx context.Context, appID string) (biz
 		return biz.MerchantCredential{}, err
 	}
 	return cred, nil
+}
+
+func (s *scripted) CreatePayment(ctx context.Context, in *biz.CreatePaymentInput) (biz.PaymentOrder, error) {
+	s.mu.Lock()
+	s.calls++
+	order, err, panicking, block := s.order, s.err, s.panicking, s.block
+	if in != nil {
+		s.lastIn = copyPaymentInput(in)
+	}
+	s.mu.Unlock()
+	if panicking {
+		panic("boom " + testSecret)
+	}
+	if block != nil {
+		if berr := block(ctx); berr != nil {
+			return biz.PaymentOrder{}, berr
+		}
+	}
+	if err != nil {
+		return biz.PaymentOrder{}, err
+	}
+	return order, nil
+}
+
+func (s *scripted) lastPaymentInput() biz.CreatePaymentInput {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.lastIn
+}
+
+func copyPaymentInput(in *biz.CreatePaymentInput) biz.CreatePaymentInput {
+	out := *in
+	if in.Currency != nil {
+		v := *in.Currency
+		out.Currency = &v
+	}
+	if in.NotifyURL != nil {
+		v := *in.NotifyURL
+		out.NotifyURL = &v
+	}
+	if in.ExpireMinutes != nil {
+		v := *in.ExpireMinutes
+		out.ExpireMinutes = &v
+	}
+	return out
+}
+
+func TestCreatePaymentHandlerPassesOptionals(t *testing.T) {
+	created := time.Date(2026, 10, 17, 10, 0, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	svc := &scripted{order: biz.PaymentOrder{
+		PayNo: "PA0000000000000000001", OutTradeNo: "T1", Amount: 10000, FeeAmount: 60,
+		Currency: "CNY", Subject: "demo", Status: "INIT",
+		ExpireAt: created.Add(15 * time.Minute), CreatedAt: created,
+	}}
+	h := New(svc)
+	zero := int32(0)
+	raw := "http://alice@merchant-demo/default"
+	cny := "CNY"
+	got, err := h.CreatePayment(context.Background(), &payment.CreatePaymentRequest{
+		MerchantId: "M100002", OutTradeNo: "T1", Amount: 10000, Subject: "demo",
+		Currency: &cny, NotifyUrl: &raw, ExpireMinutes: &zero,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.GetPayNo() != "PA0000000000000000001" || got.GetFeeAmount() != 60 || got.GetStatus() != "INIT" ||
+		got.GetAmount() != 10000 || got.IsSetChannel() || got.IsSetPaidAt() || got.IsSetFailCode() || got.IsSetFailMsg() {
+		t.Fatalf("order = %+v", got)
+	}
+	if got.GetExpireAt() != "2026-10-17T10:15:00.000+08:00" || got.GetCreatedAt() != "2026-10-17T10:00:00.000+08:00" {
+		t.Fatalf("times expire=%s created=%s", got.GetExpireAt(), got.GetCreatedAt())
+	}
+	last := svc.lastPaymentInput()
+	if last.ExpireMinutes == nil || *last.ExpireMinutes != 0 || last.NotifyURL == nil || *last.NotifyURL != raw ||
+		last.Currency == nil || *last.Currency != cny {
+		t.Fatalf("optional pointers were dropped: %+v", last)
+	}
 }
 
 type lockedBuffer struct {

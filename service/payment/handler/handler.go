@@ -1,6 +1,7 @@
 // Package handler 是 payment 的 Kitex 适配。
 // 只做协议转换和错误码转换，不改 biz 的幂等与 CAS。
-// 目前只实现 GetMerchantCredential（PAY-01）；其余方法属于各自的功能点，实现前调用一律返回 10003，不进 biz。
+// 已实现 GetMerchantCredential（PAY-01）和 CreatePayment（PAY-02）。
+// 其余方法属于各自的功能点，实现前调用一律返回 10003，不进 biz。
 package handler
 
 import (
@@ -9,6 +10,8 @@ import (
 
 	"github.com/yym108/pay-system/kitex_gen/payment"
 	"github.com/yym108/pay-system/pkg/errno"
+	"github.com/yym108/pay-system/pkg/money"
+	"github.com/yym108/pay-system/service/payment/biz"
 )
 
 // Handler 实现 kitex 的 PaymentService。
@@ -60,9 +63,28 @@ func (h *Handler) GetMerchantCredential(ctx context.Context, req *payment.GetMer
 	return toCredential(got), nil
 }
 
-// CreatePayment 属于 PAY-02，未实现，返回 10003。
-func (h *Handler) CreatePayment(_ context.Context, _ *payment.CreatePaymentRequest) (*payment.PaymentOrder, error) {
-	return nil, notImplemented()
+// CreatePayment 创建支付单。请求为 nil 返回 10001。可选字段把指针原样交给 biz，不用 Get 的零值。
+func (h *Handler) CreatePayment(ctx context.Context, req *payment.CreatePaymentRequest) (r *payment.PaymentOrder, err error) {
+	defer recoverBiz(ctx, &err)
+	if err = h.ready(); err != nil {
+		return nil, err
+	}
+	if req == nil {
+		return nil, errno.ToBizStatus(errno.ErrInvalidParam)
+	}
+	got, callErr := h.svc.CreatePayment(ctx, &biz.CreatePaymentInput{
+		MerchantID:    req.MerchantId,
+		OutTradeNo:    req.OutTradeNo,
+		Amount:        money.Amount(req.Amount),
+		Currency:      req.Currency,
+		Subject:       req.Subject,
+		NotifyURL:     req.NotifyUrl,
+		ExpireMinutes: req.ExpireMinutes,
+	})
+	if callErr != nil {
+		return nil, statusErr(ctx, callErr)
+	}
+	return toPaymentOrder(got), nil
 }
 
 // Pay 属于 PAY-03，未实现，返回 10003。

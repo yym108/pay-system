@@ -18,6 +18,7 @@ import (
 	"github.com/yym108/pay-system/kitex_gen/payment"
 	"github.com/yym108/pay-system/pkg/clock"
 	"github.com/yym108/pay-system/pkg/errno"
+	"github.com/yym108/pay-system/pkg/idgen"
 	"github.com/yym108/pay-system/pkg/secretbox"
 	"github.com/yym108/pay-system/service/payment/biz"
 )
@@ -68,7 +69,13 @@ func TestRPCMerchantCredentialSeeded(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc := biz.NewMerchants(pay.DB, box, clock.Real{}, time.Minute)
+	merchants := biz.NewMerchants(pay.DB, box, clock.Real{}, time.Minute)
+	ids, err := idgen.New(1, clock.Real{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payments := biz.NewPayments(merchants, ids, clock.Real{}, "merchant-demo", pay.DB)
+	svc := biz.NewApp(merchants, payments)
 	addr := startServer(t, svc, Config{})
 	cli := dialKitex(t, addr, 2*time.Second)
 
@@ -102,6 +109,27 @@ func TestRPCMerchantCredentialSeeded(t *testing.T) {
 	if err != nil || got.GetStatus() != "DISABLED" || got.GetMerchantId() != "M100003" {
 		t.Fatalf("disabled: status=%s err=%v", got.GetStatus(), err)
 	}
+
+	// PAY-02：CreatePayment 已实现。nil 与 expire_minutes=0 是 10001，不再是未实现的 10003。
+	_, err = New(svc).CreatePayment(ctx, nil)
+	assertBizCode(t, "nil create", err, errno.ErrInvalidParam.Code)
+	zero := int32(0)
+	_, err = cli.CreatePayment(ctx, &payment.CreatePaymentRequest{
+		MerchantId: "M100002", OutTradeNo: "RPC-BAD", Amount: 10000, Subject: "demo", ExpireMinutes: &zero,
+	})
+	assertBizCode(t, "expire 0", err, errno.ErrInvalidParam.Code)
+	created, err := cli.CreatePayment(ctx, &payment.CreatePaymentRequest{
+		MerchantId: "M100002", OutTradeNo: "RPC-OK", Amount: 10000, Subject: "demo",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if created.GetFeeAmount() != 60 || created.GetStatus() != "INIT" || created.GetAmount() != 10000 ||
+		len(created.GetPayNo()) != 21 || created.GetPayNo()[:2] != "PA" {
+		t.Fatalf("created = %+v", created)
+	}
+	_, err = cli.Pay(ctx, &payment.PayRequest{MerchantId: "M100002", PayNo: created.GetPayNo(), Channel: "mockpay"})
+	assertBizCode(t, "pay unimplemented", err, errno.ErrInternal.Code)
 }
 
 // closeSchema 用新的上下文：测试的 ctx 在清理时可能已经取消。
