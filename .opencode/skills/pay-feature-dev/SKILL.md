@@ -121,7 +121,7 @@ IO、并发、日志：
 3. `make test`（`go test -race ./...`）通过。
 4. 涉及数据库、Redis、Kafka：`make test-integration`（`go test -race -tags integration ./...`）通过。
 5. 改了 IDL：`make gen && git diff --exit-code kitex_gen`。
-6. 涉及核心包（`service/*/biz`、`pkg/money`、`pkg/sign`、`pkg/idgen`、`pkg/outbox`）：`make cover`，覆盖率不低于 70%。
+6. 涉及核心包（`service/*/biz`、`pkg/money`、`pkg/sign`、`pkg/idgen`、`pkg/outbox`）：`make cover`（含集成测试，需要 Docker 或 `TEST_MYSQL_DSN`），每个核心包覆盖率不低于 70%；total 含 `kitex_gen` 生成代码，不作为判据。
 7. 改了 gateway 或服务的对外行为且环境已启动：用 `paycli` 手工走一遍相关接口。
 
 某一步无法执行（缺工具、Docker 未启动等）时，如实说明原因和未覆盖的风险，不能当作通过。验证失败先修复再继续，同一方法失败两次后停下分析根因。
