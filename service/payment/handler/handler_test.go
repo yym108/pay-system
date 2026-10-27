@@ -156,8 +156,13 @@ func TestUnimplementedMethodsReturnInternal(t *testing.T) {
 	if n := svc.callCount(); n != 0 {
 		t.Fatalf("nil CreatePayment called biz %d times", n)
 	}
+	if _, err := h.Pay(ctx, nil); !errors.Is(errno.FromBizStatus(err), errno.ErrInvalidParam) {
+		t.Fatal("nil Pay request")
+	}
+	if n := svc.callCount(); n != 0 {
+		t.Fatalf("nil Pay called biz %d times", n)
+	}
 	for name, fn := range map[string]func() error{
-		"Pay":                 func() error { _, err := h.Pay(ctx, nil); return err },
 		"ClosePayment":        func() error { _, err := h.ClosePayment(ctx, nil); return err },
 		"QueryPayment":        func() error { _, err := h.QueryPayment(ctx, nil); return err },
 		"CreateRefund":        func() error { _, err := h.CreateRefund(ctx, nil); return err },
@@ -276,6 +281,34 @@ func TestListenAddrAndTimeout(t *testing.T) {
 	if ServerTimeout != 2*time.Second {
 		t.Fatalf("ServerTimeout = %s", ServerTimeout)
 	}
+	if PayServerTimeout != 5*time.Second {
+		t.Fatalf("PayServerTimeout = %s", PayServerTimeout)
+	}
+	if (Config{}).timeoutFor("Pay") != PayServerTimeout || (Config{}).timeoutFor("CreatePayment") != ServerTimeout {
+		t.Fatal("method timeout split drifted")
+	}
+	if (Config{Timeout: 80 * time.Millisecond}).timeoutFor("Pay") != 80*time.Millisecond {
+		t.Fatal("Config.Timeout must override Pay")
+	}
+}
+
+// Pay 的服务端处理超时是 5 秒，短于调用方时调用方收到超时，不是 10003。
+func TestPayServerTimeoutFiveSeconds(t *testing.T) {
+	svc := &scripted{block: blockUntilDone}
+	addr := startServer(t, svc, Config{})
+	cli := dialKitex(t, addr, 8*time.Second)
+	start := time.Now()
+	_, err := cli.Pay(context.Background(), &payment.PayRequest{MerchantId: "M100001", PayNo: "PA1", Channel: "mockpay"})
+	elapsed := time.Since(start)
+	if elapsed < 4*time.Second || elapsed > 7500*time.Millisecond {
+		t.Fatalf("elapsed %s, want about 5s", elapsed)
+	}
+	if !isCallTimeout(err) {
+		t.Fatalf("want timeout, got %v", err)
+	}
+	if _, ok := kerrors.FromBizStatusError(err); ok {
+		t.Fatalf("timeout became biz status: %v", err)
+	}
 }
 
 type call struct {
@@ -286,10 +319,6 @@ type call struct {
 func unimplementedCalls(cli paymentservice.Client) []call {
 	ctx := context.Background()
 	return []call{
-		{"Pay", func() error {
-			_, err := cli.Pay(ctx, &payment.PayRequest{MerchantId: "M100001", PayNo: "PA1", Channel: "mockpay"})
-			return err
-		}},
 		{"ClosePayment", func() error {
 			_, err := cli.ClosePayment(ctx, &payment.ClosePaymentRequest{MerchantId: "M100001", PayNo: "PA1"})
 			return err
@@ -477,6 +506,28 @@ func (s *scripted) GetMerchantCredential(ctx context.Context, appID string) (biz
 	return cred, nil
 }
 
+func (s *scripted) Pay(ctx context.Context, _ *biz.PayInput) (biz.PaymentOrder, error) {
+	s.mu.Lock()
+	s.calls++
+	order, err, panicking, block := s.order, s.err, s.panicking, s.block
+	s.mu.Unlock()
+	if panicking {
+		panic("boom " + testSecret)
+	}
+	if block != nil {
+		if berr := block(ctx); berr != nil {
+			return biz.PaymentOrder{}, berr
+		}
+	}
+	if err != nil {
+		if errors.Is(err, errno.ErrChannelRejected) {
+			return order, err
+		}
+		return biz.PaymentOrder{}, err
+	}
+	return order, nil
+}
+
 func (s *scripted) CreatePayment(ctx context.Context, in *biz.CreatePaymentInput) (biz.PaymentOrder, error) {
 	s.mu.Lock()
 	s.calls++
@@ -520,6 +571,31 @@ func copyPaymentInput(in *biz.CreatePaymentInput) biz.CreatePaymentInput {
 		out.ExpireMinutes = &v
 	}
 	return out
+}
+
+func TestPayHandlerCarriesChannelRejected(t *testing.T) {
+	created := time.Date(2026, 10, 28, 10, 0, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	order := biz.PaymentOrder{
+		PayNo: "PA0000000000000000001", OutTradeNo: "T1", Amount: 10000, FeeAmount: 60,
+		Currency: "CNY", Subject: "demo", Status: "FAILED", FailCode: "CHANNEL_REJECTED",
+		ExpireAt: created.Add(15 * time.Minute), CreatedAt: created,
+	}
+	svc := &scripted{order: order, err: errno.ErrChannelRejected}
+	got, err := New(svc).Pay(context.Background(), &payment.PayRequest{
+		MerchantId: "M100002", PayNo: order.PayNo, Channel: "mockpay",
+	})
+	if err != nil || got.GetBizCode() != errno.ErrChannelRejected.Code || got.GetPaymentOrder().GetPayNo() != order.PayNo ||
+		got.GetPaymentOrder().GetStatus() != "FAILED" {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+	svc.set(func(s *scripted) { s.err = errno.ErrOrderNotFound })
+	resp, err := New(svc).Pay(context.Background(), &payment.PayRequest{
+		MerchantId: "M100002", PayNo: order.PayNo, Channel: "mockpay",
+	})
+	if resp != nil {
+		t.Fatalf("30001 carried a response: %+v", resp)
+	}
+	assertBizCode(t, "not found", err, errno.ErrOrderNotFound.Code)
 }
 
 func TestCreatePaymentHandlerPassesOptionals(t *testing.T) {

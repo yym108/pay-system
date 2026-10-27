@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 3.1.2 |
+| 文档版本 | 3.1.3 |
 | API 版本 | v1（路径前缀 `/v1`） |
 | 最后修改 | 2026-10-28 |
 | 状态 | 设计基线，实现须与本文一致 |
@@ -59,6 +59,7 @@
 | 3.1.0 | 2026-10-27 | 随需求 2026-10-27 的对账规则补充（REC-01、REC-03、REC-06、REC-08）。新增字段：`RunBatch` 响应与 `POST /admin/recon/run` 的 `data` 新增 `manual_total`、`manual_diffs`（“等待人工处理”的差错，不限批次，按 `bill_date` 升序前 100 条）；`idl/recon.thrift` 在 REC-08 实现时追加 optional 字段，向后兼容。§8.2 批次规则按 REC-01 改写：满 30 分钟（≥）接管，INIT、DOWNLOADED 按 `updated_at`、CHECKING 按 `started_at` 计时；INIT 从下载、DOWNLOADED 直接比对、CHECKING 重新比对；重跑与接管只删尚未自动处理的 PENDING 差错，同键跳过；`BILL_NOT_READY` 最多重试 6 次后 FAILED，计数持久化。§8.5 `ReconBatch` 注明不输出 `retry_count`；`ReconDiff` 的 `channel_status`（严重不一致标记）、`handle_action`（失败时也写、跨批次重试）补说明。不改已有字段，不新增错误码 | §8.2、§8.5、§10.3 | REC-01、REC-03、REC-06、REC-08 |
 | 3.1.1 | 2026-10-27 | 文字对齐需求 REC-01 第 2 条、REC-08（用户决定）：§8.2 批次规则写明 `force` 只对 DONE 生效：FAILED 带不带 `force` 都重跑，DONE 且 `force = true` 重跑；INIT、DOWNLOADED、CHECKING 未满 30 分钟时带 `force = true` 也返回当前批次；满 30 分钟按接管处理，带不带 `force` 都不重跑。请求字段 `force` 的说明同步。`manual_diffs` 排序写明 `bill_date` 升序、同一 `bill_date` 内 `id` 升序。不新增字段，不改错误码 | §8.2 | REC-01、REC-08 |
 | 3.1.2 | 2026-10-28 | 文字澄清：创建支付单未传 `notify_url` 时存空串，通知时取商户默认地址。`CreatePayment` 已实现；`20004`、`10003`、`10004` 沿用已有码，不进业务错误列。其余未实现方法仍返回 `10003`。不新增字段，不改错误码数字，不改 IDL | §4.1、§10.2 | PAY-02 |
+| 3.1.3 | 2026-10-28 | 落地 3.0.0 已预告的返回类型：`Pay`、`ClosePayment` 改为返回 `PayResponse`、`ClosePaymentResponse`（`biz_code` 与必填的 `payment_order`）。`Pay` 已实现；`ClosePayment` 仍返回 `10003`，不进 biz。`Pay` 服务端处理超时 5 秒，其他方法仍 2 秒。不改商户 HTTP 字段，不新增错误码 | §1、§10.2 | PAY-03 |
 
 ## 1. 接口总览
 
@@ -77,7 +78,7 @@
 | 接口 | 章节 | RPC | 功能点 | 引入版本 | 最后修改 |
 |---|---|---|---|---|---|
 | `POST /v1/payments` 创建支付单 | §4.1 | `PaymentService.CreatePayment` | PAY-02 | 1.0.0 | 2026-10-28 |
-| `POST /v1/payments/{pay_no}/pay` 发起支付 | §4.2 | `PaymentService.Pay` | PAY-03 | 1.0.0 | 2026-10-27 |
+| `POST /v1/payments/{pay_no}/pay` 发起支付 | §4.2 | `PaymentService.Pay` | PAY-03 | 1.0.0 | 2026-10-28 |
 | `POST /v1/payments/{pay_no}/close` 关闭支付单 | §4.3 | `PaymentService.ClosePayment` | PAY-06 | 1.0.0 | 2026-10-27 |
 | `GET /v1/payments/{pay_no}`、`GET /v1/payments?out_trade_no=` 查询支付单 | §4.4 | `PaymentService.QueryPayment` | PAY-08 | 1.0.0 | 2026-10-27 |
 | `POST /v1/refunds` 创建退款 | §4.5 | `PaymentService.CreateRefund` | REF-01、REF-02 | 1.0.0 | 2026-10-27 |
@@ -955,9 +956,9 @@ account RPC 以商户号（或 owner）为入参，由 account 按商户号路�
 
 `GetMerchantCredential` 返回明文密钥，只允许网关调用；调用双方都不得记录响应内容。
 
-`GetMerchantCredential`（PAY-01）：请求为 nil 返回 `10001`。`app_id` 按字节精确匹配，为空、不存在或只是大小写、首尾空格不同都返回 `20004`（`X-App-Id` 不在签名串里，放宽匹配会让同一请求换个写法绕过按 `app_id` 记的 nonce）。`merchant` 表列跟随库默认 `utf8mb4_bin`，区分大小写，但 PAD SPACE 会忽略尾部空格；集成测试临时库为 `utf8mb4_0900_ai_ci`，不区分大小写与重音。两种规则下 SQL 都可能匹配到字节不同的值，所以服务端读回 `app_id` 再逐字节比较。DISABLED 商户照常返回，由网关返回 `20004`。密文解不开是平台内部故障，返回 `10003`。payment 不缓存凭证，网关侧缓存属于 GW-08。除 `GetMerchantCredential` 与 `CreatePayment` 外，PaymentService 其余方法在各自功能点实现前一律返回 `10003`，不是这些方法将来的错误码语义。服务端处理超时 2 秒；要调渠道的方法由各自功能点按需求 §5.4.1 重新确定。
+`GetMerchantCredential`（PAY-01）：请求为 nil 返回 `10001`。`app_id` 按字节精确匹配，为空、不存在或只是大小写、首尾空格不同都返回 `20004`（`X-App-Id` 不在签名串里，放宽匹配会让同一请求换个写法绕过按 `app_id` 记的 nonce）。`merchant` 表列跟随库默认 `utf8mb4_bin`，区分大小写，但 PAD SPACE 会忽略尾部空格；集成测试临时库为 `utf8mb4_0900_ai_ci`，不区分大小写与重音。两种规则下 SQL 都可能匹配到字节不同的值，所以服务端读回 `app_id` 再逐字节比较。DISABLED 商户照常返回，由网关返回 `20004`。密文解不开是平台内部故障，返回 `10003`。payment 不缓存凭证，网关侧缓存属于 GW-08。除 `GetMerchantCredential`、`CreatePayment` 与 `Pay` 外，PaymentService 其余方法在各自功能点实现前一律返回 `10003`，不是这些方法将来的错误码语义。服务端处理超时：`Pay` 为 5 秒，与需求 §5.4.1、GW-01 第 5 条的网关调用超时一致，使渠道受理的 3 秒总超时先到期并返回 PAYING；其他方法仍为 2 秒。不新增环境变量。
 
-`Pay`、`ClosePayment` 的返回类型：当前 IDL 两者直接返回 `PaymentOrder`，无法同时带回 `biz_code` 与订单。PAY-03 实现时在 `idl/payment.thrift` 新增 `PayResponse`、`ClosePaymentResponse`（`1: base.BizCode biz_code`、`2: PaymentOrder payment_order`。订单字段是必填，不加 `optional`，与 `CreateRefundResponse` 的 `2: RefundOrder refund_order` 一致：这两个包装只在成功和带回订单的错误时返回，订单总有值），并把两个方法的返回类型改为这两个包装。这是返回类型变更，只在两方法都还没有调用方、handler 一律返回 `10003` 时进行；之后按“只增不删”。成功时 `biz_code = 0`。
+`Pay`、`ClosePayment` 的返回类型已落地：IDL 为 `PayResponse`、`ClosePaymentResponse`（`1: base.BizCode biz_code`、`2: PaymentOrder payment_order`。订单字段是必填，不加 `optional`，与 `CreateRefundResponse` 的 `2: RefundOrder refund_order` 一致）。这是 3.0.0 预告的返回类型变更，两个方法当时还没有业务调用方。之后按“只增不删”。成功时 `biz_code = 0`。`Pay`（PAY-03）已实现。`30006` 放在 `biz_code`，error 为 nil，并携带订单；其他业务错误仍是 `BizStatusError`，不带订单。渠道同步拒绝调用 `ApplyPayResult`，`source = SYNC`。PAY-04 接入前，生产用的该接口不改订单并返回 `10003`。`ClosePayment` 只改了签名，仍然不进 biz，返回 `10003`。
 
 `CreateTransfer` 的响应码规则同 §4.8：本次请求执行到 FAILED 且 `fail_code = INSUFFICIENT_BALANCE` → `biz_code = 40002` 并携带转账单；其他 FAILED、SUCCESS、处理中状态与幂等命中 → 成功返回。
 

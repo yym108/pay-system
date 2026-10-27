@@ -345,11 +345,15 @@ func (f *fakeMerchants) FeeRateAt(_ context.Context, _ string, at time.Time) (Fe
 }
 
 type memOrders struct {
-	mu       sync.Mutex
-	rows     []PaymentOrder
-	forceDup bool
-	updates  int
-	failIns  error
+	mu         sync.Mutex
+	rows       []PaymentOrder
+	txns       []channelTxn
+	forceDup   bool
+	updates    int
+	failIns    error
+	payNoReads int
+	forceMiss  bool
+	beforeCAS  func()
 }
 
 func (m *memOrders) insertPayment(_ context.Context, row PaymentOrder) error {
@@ -379,6 +383,79 @@ func (m *memOrders) paymentByOutTradeNo(_ context.Context, merchantID, outTradeN
 		}
 	}
 	return PaymentOrder{}, false, nil
+}
+
+func (m *memOrders) paymentByPayNo(_ context.Context, payNo string) (PaymentOrder, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.payNoReads++
+	for _, ex := range m.rows {
+		if ex.PayNo == payNo {
+			return ex, true, nil
+		}
+	}
+	return PaymentOrder{}, false, nil
+}
+
+func (m *memOrders) casInitToPaying(_ context.Context, order PaymentOrder, now time.Time) (bool, error) {
+	if m.beforeCAS != nil {
+		m.beforeCAS()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.forceMiss {
+		m.forceMiss = false
+		return false, nil
+	}
+	for i := range m.rows {
+		row := &m.rows[i]
+		if row.PayNo != order.PayNo || row.MerchantID != order.MerchantID || row.Status != payStatusInit {
+			continue
+		}
+		row.Status = payStatusPaying
+		row.Channel = channelMockpay
+		row.Version++
+		row.UpdatedAt = now
+		m.txns = append(m.txns, channelTxn{
+			Channel: channelMockpay, TxnType: txnTypePay, BizNo: order.PayNo,
+			Amount: order.Amount, Status: txnStatusProcessing,
+			NextQueryAt: now.Add(payNextQueryDelay), CreatedAt: now, UpdatedAt: now,
+		})
+		return true, nil
+	}
+	return false, nil
+}
+
+func (m *memOrders) fillChannelTxnNo(_ context.Context, bizNo, txnNo string) (int64, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.txns {
+		if m.txns[i].BizNo != bizNo {
+			continue
+		}
+		if m.txns[i].ChannelTxnNo != "" {
+			return 0, nil
+		}
+		for _, other := range m.txns {
+			if other.BizNo != bizNo && other.Channel == m.txns[i].Channel && other.ChannelTxnNo == txnNo {
+				return 0, &mysql.MySQLError{Number: 1062, Message: "Duplicate entry"}
+			}
+		}
+		m.txns[i].ChannelTxnNo = txnNo
+		return 1, nil
+	}
+	return 0, nil
+}
+
+func (m *memOrders) channelTxnByBizNo(_ context.Context, bizNo string) (channelTxn, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, txn := range m.txns {
+		if txn.BizNo == bizNo {
+			return txn, true, nil
+		}
+	}
+	return channelTxn{}, false, nil
 }
 
 type stubIDs struct {

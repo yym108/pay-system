@@ -11,6 +11,7 @@ import (
 type Service interface {
 	GetMerchantCredential(ctx context.Context, appID string) (biz.MerchantCredential, error)
 	CreatePayment(ctx context.Context, in *biz.CreatePaymentInput) (biz.PaymentOrder, error)
+	Pay(ctx context.Context, in *biz.PayInput) (biz.PaymentOrder, error)
 }
 
 var _ Service = (*biz.App)(nil)

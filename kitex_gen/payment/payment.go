@@ -648,6 +648,53 @@ var fieldIDToName_PayRequest = map[int16]string{
 	3: "channel",
 }
 
+type PayResponse struct {
+	BizCode      base.BizCode  `thrift:"biz_code,1" frugal:"1,default,i32" json:"biz_code"`
+	PaymentOrder *PaymentOrder `thrift:"payment_order,2" frugal:"2,default,PaymentOrder" json:"payment_order"`
+}
+
+func NewPayResponse() *PayResponse {
+	return &PayResponse{}
+}
+
+func (p *PayResponse) InitDefault() {
+}
+
+func (p *PayResponse) GetBizCode() (v base.BizCode) {
+	return p.BizCode
+}
+
+var PayResponse_PaymentOrder_DEFAULT *PaymentOrder
+
+func (p *PayResponse) GetPaymentOrder() (v *PaymentOrder) {
+	if !p.IsSetPaymentOrder() {
+		return PayResponse_PaymentOrder_DEFAULT
+	}
+	return p.PaymentOrder
+}
+func (p *PayResponse) SetBizCode(val base.BizCode) {
+	p.BizCode = val
+}
+func (p *PayResponse) SetPaymentOrder(val *PaymentOrder) {
+	p.PaymentOrder = val
+}
+
+func (p *PayResponse) IsSetPaymentOrder() bool {
+	return p.PaymentOrder != nil
+}
+
+func (p *PayResponse) String() string {
+	if p == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("PayResponse(%+v)", *p)
+}
+
+var fieldIDToName_PayResponse = map[int16]string{
+	1: "biz_code",
+	2: "payment_order",
+}
+
 type ClosePaymentRequest struct {
 	MerchantId string `thrift:"merchant_id,1" frugal:"1,default,string" json:"merchant_id"`
 	PayNo      string `thrift:"pay_no,2" frugal:"2,default,string" json:"pay_no"`
@@ -684,6 +731,53 @@ func (p *ClosePaymentRequest) String() string {
 var fieldIDToName_ClosePaymentRequest = map[int16]string{
 	1: "merchant_id",
 	2: "pay_no",
+}
+
+type ClosePaymentResponse struct {
+	BizCode      base.BizCode  `thrift:"biz_code,1" frugal:"1,default,i32" json:"biz_code"`
+	PaymentOrder *PaymentOrder `thrift:"payment_order,2" frugal:"2,default,PaymentOrder" json:"payment_order"`
+}
+
+func NewClosePaymentResponse() *ClosePaymentResponse {
+	return &ClosePaymentResponse{}
+}
+
+func (p *ClosePaymentResponse) InitDefault() {
+}
+
+func (p *ClosePaymentResponse) GetBizCode() (v base.BizCode) {
+	return p.BizCode
+}
+
+var ClosePaymentResponse_PaymentOrder_DEFAULT *PaymentOrder
+
+func (p *ClosePaymentResponse) GetPaymentOrder() (v *PaymentOrder) {
+	if !p.IsSetPaymentOrder() {
+		return ClosePaymentResponse_PaymentOrder_DEFAULT
+	}
+	return p.PaymentOrder
+}
+func (p *ClosePaymentResponse) SetBizCode(val base.BizCode) {
+	p.BizCode = val
+}
+func (p *ClosePaymentResponse) SetPaymentOrder(val *PaymentOrder) {
+	p.PaymentOrder = val
+}
+
+func (p *ClosePaymentResponse) IsSetPaymentOrder() bool {
+	return p.PaymentOrder != nil
+}
+
+func (p *ClosePaymentResponse) String() string {
+	if p == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("ClosePaymentResponse(%+v)", *p)
+}
+
+var fieldIDToName_ClosePaymentResponse = map[int16]string{
+	1: "biz_code",
+	2: "payment_order",
 }
 
 type QueryPaymentRequest struct {
@@ -1574,9 +1668,9 @@ var fieldIDToName_ReplayEventResponse = map[int16]string{
 type PaymentService interface {
 	CreatePayment(ctx context.Context, req *CreatePaymentRequest) (r *PaymentOrder, err error)
 
-	Pay(ctx context.Context, req *PayRequest) (r *PaymentOrder, err error)
+	Pay(ctx context.Context, req *PayRequest) (r *PayResponse, err error)
 
-	ClosePayment(ctx context.Context, req *ClosePaymentRequest) (r *PaymentOrder, err error)
+	ClosePayment(ctx context.Context, req *ClosePaymentRequest) (r *ClosePaymentResponse, err error)
 
 	QueryPayment(ctx context.Context, req *QueryPaymentRequest) (r *PaymentOrder, err error)
 
@@ -1712,7 +1806,7 @@ var fieldIDToName_PaymentServicePayArgs = map[int16]string{
 }
 
 type PaymentServicePayResult struct {
-	Success *PaymentOrder `thrift:"success,0,optional" frugal:"0,optional,PaymentOrder" json:"success,omitempty"`
+	Success *PayResponse `thrift:"success,0,optional" frugal:"0,optional,PayResponse" json:"success,omitempty"`
 }
 
 func NewPaymentServicePayResult() *PaymentServicePayResult {
@@ -1722,16 +1816,16 @@ func NewPaymentServicePayResult() *PaymentServicePayResult {
 func (p *PaymentServicePayResult) InitDefault() {
 }
 
-var PaymentServicePayResult_Success_DEFAULT *PaymentOrder
+var PaymentServicePayResult_Success_DEFAULT *PayResponse
 
-func (p *PaymentServicePayResult) GetSuccess() (v *PaymentOrder) {
+func (p *PaymentServicePayResult) GetSuccess() (v *PayResponse) {
 	if !p.IsSetSuccess() {
 		return PaymentServicePayResult_Success_DEFAULT
 	}
 	return p.Success
 }
 func (p *PaymentServicePayResult) SetSuccess(x interface{}) {
-	p.Success = x.(*PaymentOrder)
+	p.Success = x.(*PayResponse)
 }
 
 func (p *PaymentServicePayResult) IsSetSuccess() bool {
@@ -1788,7 +1882,7 @@ var fieldIDToName_PaymentServiceClosePaymentArgs = map[int16]string{
 }
 
 type PaymentServiceClosePaymentResult struct {
-	Success *PaymentOrder `thrift:"success,0,optional" frugal:"0,optional,PaymentOrder" json:"success,omitempty"`
+	Success *ClosePaymentResponse `thrift:"success,0,optional" frugal:"0,optional,ClosePaymentResponse" json:"success,omitempty"`
 }
 
 func NewPaymentServiceClosePaymentResult() *PaymentServiceClosePaymentResult {
@@ -1798,16 +1892,16 @@ func NewPaymentServiceClosePaymentResult() *PaymentServiceClosePaymentResult {
 func (p *PaymentServiceClosePaymentResult) InitDefault() {
 }
 
-var PaymentServiceClosePaymentResult_Success_DEFAULT *PaymentOrder
+var PaymentServiceClosePaymentResult_Success_DEFAULT *ClosePaymentResponse
 
-func (p *PaymentServiceClosePaymentResult) GetSuccess() (v *PaymentOrder) {
+func (p *PaymentServiceClosePaymentResult) GetSuccess() (v *ClosePaymentResponse) {
 	if !p.IsSetSuccess() {
 		return PaymentServiceClosePaymentResult_Success_DEFAULT
 	}
 	return p.Success
 }
 func (p *PaymentServiceClosePaymentResult) SetSuccess(x interface{}) {
-	p.Success = x.(*PaymentOrder)
+	p.Success = x.(*ClosePaymentResponse)
 }
 
 func (p *PaymentServiceClosePaymentResult) IsSetSuccess() bool {

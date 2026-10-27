@@ -1,11 +1,12 @@
 // Package handler 是 payment 的 Kitex 适配。
 // 只做协议转换和错误码转换，不改 biz 的幂等与 CAS。
-// 已实现 GetMerchantCredential（PAY-01）和 CreatePayment（PAY-02）。
+// 已实现 GetMerchantCredential（PAY-01）、CreatePayment（PAY-02）和 Pay（PAY-03）。
 // 其余方法属于各自的功能点，实现前调用一律返回 10003，不进 biz。
 package handler
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	"github.com/yym108/pay-system/kitex_gen/payment"
@@ -87,13 +88,36 @@ func (h *Handler) CreatePayment(ctx context.Context, req *payment.CreatePaymentR
 	return toPaymentOrder(got), nil
 }
 
-// Pay 属于 PAY-03，未实现，返回 10003。
-func (h *Handler) Pay(_ context.Context, _ *payment.PayRequest) (*payment.PaymentOrder, error) {
-	return nil, notImplemented()
+// Pay 发起支付。请求为 nil 返回 10001。
+// 30006 放在 PayResponse.biz_code，error 为 nil，并携带订单。其他业务错误走 BizStatusError，不带订单。
+func (h *Handler) Pay(ctx context.Context, req *payment.PayRequest) (r *payment.PayResponse, err error) {
+	defer recoverBiz(ctx, &err)
+	if err = h.ready(); err != nil {
+		return nil, err
+	}
+	if req == nil {
+		return nil, errno.ToBizStatus(errno.ErrInvalidParam)
+	}
+	got, callErr := h.svc.Pay(ctx, &biz.PayInput{
+		MerchantID: req.MerchantId,
+		PayNo:      req.PayNo,
+		Channel:    req.Channel,
+	})
+	if errors.Is(callErr, errno.ErrChannelRejected) {
+		code, rpcErr := errno.RPCExit(callErr, true)
+		if rpcErr != nil {
+			return nil, rpcErr
+		}
+		return &payment.PayResponse{BizCode: code, PaymentOrder: toPaymentOrder(got)}, nil
+	}
+	if callErr != nil {
+		return nil, statusErr(ctx, callErr)
+	}
+	return &payment.PayResponse{BizCode: 0, PaymentOrder: toPaymentOrder(got)}, nil
 }
 
-// ClosePayment 属于 PAY-06，未实现，返回 10003。
-func (h *Handler) ClosePayment(_ context.Context, _ *payment.ClosePaymentRequest) (*payment.PaymentOrder, error) {
+// ClosePayment 属于 PAY-06。签名已改为 ClosePaymentResponse，仍不进 biz，返回 10003。
+func (h *Handler) ClosePayment(_ context.Context, _ *payment.ClosePaymentRequest) (*payment.ClosePaymentResponse, error) {
 	return nil, notImplemented()
 }
 

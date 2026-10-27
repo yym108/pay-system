@@ -42,17 +42,7 @@ func (s sqlOrderStore) insertPayment(ctx context.Context, row PaymentOrder) erro
 }
 
 func (s sqlOrderStore) paymentByOutTradeNo(ctx context.Context, merchantID, outTradeNo string) (PaymentOrder, bool, error) {
-	var (
-		row                        PaymentOrder
-		amount, fee, refunded      int64
-		channel, failCode, failMsg sql.NullString
-		paidAt, closedAt           sql.NullTime
-	)
-	err := s.db.QueryRowContext(ctx, paymentByOutTradeNoSQL, merchantID, outTradeNo).Scan(
-		&row.PayNo, &row.MerchantID, &row.OutTradeNo, &amount, &row.Currency, &row.Subject, &row.Status,
-		&channel, &fee, &refunded, &row.NotifyURL, &row.ExpireAt,
-		&paidAt, &closedAt, &failCode, &failMsg, &row.Version, &row.CreatedAt, &row.UpdatedAt,
-	)
+	row, err := scanPayment(s.db.QueryRowContext(ctx, paymentByOutTradeNoSQL, merchantID, outTradeNo))
 	if errors.Is(err, sql.ErrNoRows) {
 		return PaymentOrder{}, false, nil
 	}
@@ -62,6 +52,24 @@ func (s sqlOrderStore) paymentByOutTradeNo(ctx context.Context, merchantID, outT
 	// 列排序规则可能命中字节不同的键。只认完全相同的商户号和商户订单号。
 	if row.MerchantID != merchantID || row.OutTradeNo != outTradeNo {
 		return PaymentOrder{}, false, nil
+	}
+	return row, true, nil
+}
+
+func scanPayment(s rowScanner) (PaymentOrder, error) {
+	var (
+		row                        PaymentOrder
+		amount, fee, refunded      int64
+		channel, failCode, failMsg sql.NullString
+		paidAt, closedAt           sql.NullTime
+	)
+	err := s.Scan(
+		&row.PayNo, &row.MerchantID, &row.OutTradeNo, &amount, &row.Currency, &row.Subject, &row.Status,
+		&channel, &fee, &refunded, &row.NotifyURL, &row.ExpireAt,
+		&paidAt, &closedAt, &failCode, &failMsg, &row.Version, &row.CreatedAt, &row.UpdatedAt,
+	)
+	if err != nil {
+		return PaymentOrder{}, err
 	}
 	row.Amount = money.Amount(amount)
 	row.FeeAmount = money.Amount(fee)
@@ -81,5 +89,5 @@ func (s sqlOrderStore) paymentByOutTradeNo(ctx context.Context, merchantID, outT
 	if closedAt.Valid {
 		row.ClosedAt = closedAt.Time
 	}
-	return row, true, nil
+	return row, nil
 }

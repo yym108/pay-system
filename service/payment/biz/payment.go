@@ -46,11 +46,15 @@ type Numberer interface {
 	NewNo(ctx context.Context, prefix string) (string, error)
 }
 
-// orderStore 只插入和按商户订单号读取支付单。
-// 假实现只给不连库的单元测试。不得在这里更新状态。
+// orderStore 读写支付单和渠道流水。
+// 假实现只给不连库的单元测试。状态只通过 casInitToPaying 做 CAS，回填不改状态。
 type orderStore interface {
 	insertPayment(ctx context.Context, row PaymentOrder) error
 	paymentByOutTradeNo(ctx context.Context, merchantID, outTradeNo string) (PaymentOrder, bool, error)
+	paymentByPayNo(ctx context.Context, payNo string) (PaymentOrder, bool, error)
+	casInitToPaying(ctx context.Context, order PaymentOrder, now time.Time) (bool, error)
+	fillChannelTxnNo(ctx context.Context, bizNo, txnNo string) (int64, error)
+	channelTxnByBizNo(ctx context.Context, bizNo string) (channelTxn, bool, error)
 }
 
 // CreatePaymentInput 是创建支付单的入参。
@@ -92,11 +96,16 @@ type PaymentOrder struct {
 // Payments 创建支付单。可被多个 goroutine 同时使用。
 // 商户状态由 MerchantLookup 决定是否缓存；费率每次按时刻读取，本类型不缓存。
 type Payments struct {
-	merchants MerchantLookup
-	ids       Numberer
-	clk       clock.Clock
-	hosts     []string
-	orders    orderStore
+	merchants        MerchantLookup
+	ids              Numberer
+	clk              clock.Clock
+	hosts            []string
+	orders           orderStore
+	channel          ChannelAcceptor
+	applier          PayResultApplier
+	channelNotifyURL string
+	// channelTimeout 大于 0 时替换渠道受理总超时。生产保持 0，用 PayChannelTimeout。
+	channelTimeout time.Duration
 }
 
 // App 把商户读取和支付单创建合成 handler 使用的服务。
@@ -125,6 +134,14 @@ func (a *App) CreatePayment(ctx context.Context, in *CreatePaymentInput) (Paymen
 		return PaymentOrder{}, errno.ErrInternal
 	}
 	return a.payments.CreatePayment(ctx, in)
+}
+
+// Pay 转给发起支付。
+func (a *App) Pay(ctx context.Context, in *PayInput) (PaymentOrder, error) {
+	if a == nil || a.payments == nil {
+		return PaymentOrder{}, errno.ErrInternal
+	}
+	return a.payments.Pay(ctx, in)
 }
 
 func newPayments(merchants MerchantLookup, ids Numberer, clk clock.Clock, allowHosts string, orders orderStore) *Payments {

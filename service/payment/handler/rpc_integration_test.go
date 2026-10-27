@@ -128,8 +128,15 @@ func TestRPCMerchantCredentialSeeded(t *testing.T) {
 		len(created.GetPayNo()) != 21 || created.GetPayNo()[:2] != "PA" {
 		t.Fatalf("created = %+v", created)
 	}
-	_, err = cli.Pay(ctx, &payment.PayRequest{MerchantId: "M100002", PayNo: created.GetPayNo(), Channel: "mockpay"})
-	assertBizCode(t, "pay unimplemented", err, errno.ErrInternal.Code)
+	_, err = cli.Pay(ctx, &payment.PayRequest{MerchantId: "M100002", PayNo: created.GetPayNo(), Channel: "alipay"})
+	assertBizCode(t, "unsupported channel", err, errno.ErrChannelUnsupported.Code)
+	var status string
+	if err = pay.DB.QueryRowContext(ctx, `SELECT status FROM payment_order WHERE pay_no = ?`, created.GetPayNo()).Scan(&status); err != nil {
+		t.Fatal(testkit.Redact(err))
+	}
+	if status != "INIT" {
+		t.Fatalf("unsupported channel changed status to %s", status)
+	}
 }
 
 // closeSchema 用新的上下文：测试的 ctx 在清理时可能已经取消。

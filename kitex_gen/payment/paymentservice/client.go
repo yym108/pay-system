@@ -12,8 +12,8 @@ import (
 // Client is designed to provide IDL-compatible methods with call-option parameter for kitex framework.
 type Client interface {
 	CreatePayment(ctx context.Context, req *payment.CreatePaymentRequest, callOptions ...callopt.Option) (r *payment.PaymentOrder, err error)
-	Pay(ctx context.Context, req *payment.PayRequest, callOptions ...callopt.Option) (r *payment.PaymentOrder, err error)
-	ClosePayment(ctx context.Context, req *payment.ClosePaymentRequest, callOptions ...callopt.Option) (r *payment.PaymentOrder, err error)
+	Pay(ctx context.Context, req *payment.PayRequest, callOptions ...callopt.Option) (r *payment.PayResponse, err error)
+	ClosePayment(ctx context.Context, req *payment.ClosePaymentRequest, callOptions ...callopt.Option) (r *payment.ClosePaymentResponse, err error)
 	QueryPayment(ctx context.Context, req *payment.QueryPaymentRequest, callOptions ...callopt.Option) (r *payment.PaymentOrder, err error)
 	CreateRefund(ctx context.Context, req *payment.CreateRefundRequest, callOptions ...callopt.Option) (r *payment.CreateRefundResponse, err error)
 	QueryRefund(ctx context.Context, req *payment.QueryRefundRequest, callOptions ...callopt.Option) (r *payment.RefundOrder, err error)
@@ -59,12 +59,12 @@ func (p *kPaymentServiceClient) CreatePayment(ctx context.Context, req *payment.
 	return p.kClient.CreatePayment(ctx, req)
 }
 
-func (p *kPaymentServiceClient) Pay(ctx context.Context, req *payment.PayRequest, callOptions ...callopt.Option) (r *payment.PaymentOrder, err error) {
+func (p *kPaymentServiceClient) Pay(ctx context.Context, req *payment.PayRequest, callOptions ...callopt.Option) (r *payment.PayResponse, err error) {
 	ctx = client.NewCtxWithCallOptions(ctx, callOptions)
 	return p.kClient.Pay(ctx, req)
 }
 
-func (p *kPaymentServiceClient) ClosePayment(ctx context.Context, req *payment.ClosePaymentRequest, callOptions ...callopt.Option) (r *payment.PaymentOrder, err error) {
+func (p *kPaymentServiceClient) ClosePayment(ctx context.Context, req *payment.ClosePaymentRequest, callOptions ...callopt.Option) (r *payment.ClosePaymentResponse, err error) {
 	ctx = client.NewCtxWithCallOptions(ctx, callOptions)
 	return p.kClient.ClosePayment(ctx, req)
 }

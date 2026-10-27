@@ -1,7 +1,7 @@
 # pay-system 流程图（状态机、泳道图、控制流图）
 
-> 版本：v2.20　最后修改：2026-10-28　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐。2026-10-21 按 ACC-14 口径改正 CF-33，CF-33 已对齐。2026-10-21 按 ACC-10 口径改正 CF-17，CF-17 已对齐。2026-10-23 按 BASE-13 规则 8 补 CF-01、CF-02、CF-21 的签名配置故障出口。2026-10-23 按 CH-01 口径改正 CF-22。2026-10-26 CF-23 注明防悬挂 CLOSED 记录 amount = 0。2026-10-26 渠道查单单独画 CF-38，CH-02 的控制流改指 CF-38；SL-02 仍留给以后的补偿。2026-10-26 按 CH-03 口径补全 CF-23 的验签、参数、CAS 与再读出口，六个业务结果不变。2026-10-26 按 CH-05 在 CF-24 图下注明「其他」和 DROP_NOTIFY 不回调已实现；SLOW 与 DUP_NOTIFY 的特殊发送仍未实现，这两种场景现在不发普通回调。图本身不改。2026-10-27 按 CH-06 将 CF-24 图下改为 DUP_NOTIFY 已按「并发 5 次，之后每秒 1 次再 5 次，不论响应」实现；SLOW 仍未实现，现在不发。图本身不改。2026-10-27 文档审查修正与需求不一致的文字：SL-01 延迟范围、CF-05 未知结果分支、SL-14 C13、CF-34 与 CF-35 的 10001 / 10006、§5 R15 与 R16 状态、SL-09 与 CF-26 的定时触发写法、对 03 的版本引用；不改规则。2026-10-27 文档审查第 2 阶段按用户确认的规则修图：outbox 投递改为领取写租约、事务外发送、按租约值 CAS 回写；手续费为 0 省略分录；merchant_notify 与 recon_diff 状态 CAS；批量记账非 ACTIVE 退化逐条，Post 返回 40005 进 DLQ；退款释放额度影响 0 行回滚并返回 10003；对账批次 INIT / DOWNLOADED 超时接管与 BILL_NOT_READY 当天最多重试 6 次；SLOW 只推迟首次回调；覆盖矩阵同步 BASE-15、GW-09、QA-05。2026-10-27 文档审查第 3 阶段按需求 7d08a2c 修对账与批量记账的图：对账批次拆为 CF-26、CF-39、CF-40，差错处理拆为 CF-29、CF-41；`retry_count` 持久化；重跑与接管只删 `handle_action` 为空的 PENDING 差错；差错按 `uk_batch_type_biz_no_diff_type` 同键跳过；跨批次重试窗口与严重不一致；报告加“等待人工处理”；批量记账 F = 0 省略手续费分录。2026-10-27 BASE-15 已提供 `pkg/fault`，图中的故障点标注保持原句。2026-10-28 按 PAY-02 口径改正 CF-04。当前环境没有 mmdc，未渲染 SVG
-> 依据：`docs/02-requirements.md` v3.0、`docs/03-conventions.md` v2.20、`docs/01-tech-decisions.md` D17–D21；图与需求冲突处以需求文档为准
+> 版本：v2.21　最后修改：2026-10-28　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐。2026-10-21 按 ACC-14 口径改正 CF-33，CF-33 已对齐。2026-10-21 按 ACC-10 口径改正 CF-17，CF-17 已对齐。2026-10-23 按 BASE-13 规则 8 补 CF-01、CF-02、CF-21 的签名配置故障出口。2026-10-23 按 CH-01 口径改正 CF-22。2026-10-26 CF-23 注明防悬挂 CLOSED 记录 amount = 0。2026-10-26 渠道查单单独画 CF-38，CH-02 的控制流改指 CF-38；SL-02 仍留给以后的补偿。2026-10-26 按 CH-03 口径补全 CF-23 的验签、参数、CAS 与再读出口，六个业务结果不变。2026-10-26 按 CH-05 在 CF-24 图下注明「其他」和 DROP_NOTIFY 不回调已实现；SLOW 与 DUP_NOTIFY 的特殊发送仍未实现，这两种场景现在不发普通回调。图本身不改。2026-10-27 按 CH-06 将 CF-24 图下改为 DUP_NOTIFY 已按「并发 5 次，之后每秒 1 次再 5 次，不论响应」实现；SLOW 仍未实现，现在不发。图本身不改。2026-10-27 文档审查修正与需求不一致的文字：SL-01 延迟范围、CF-05 未知结果分支、SL-14 C13、CF-34 与 CF-35 的 10001 / 10006、§5 R15 与 R16 状态、SL-09 与 CF-26 的定时触发写法、对 03 的版本引用；不改规则。2026-10-27 文档审查第 2 阶段按用户确认的规则修图：outbox 投递改为领取写租约、事务外发送、按租约值 CAS 回写；手续费为 0 省略分录；merchant_notify 与 recon_diff 状态 CAS；批量记账非 ACTIVE 退化逐条，Post 返回 40005 进 DLQ；退款释放额度影响 0 行回滚并返回 10003；对账批次 INIT / DOWNLOADED 超时接管与 BILL_NOT_READY 当天最多重试 6 次；SLOW 只推迟首次回调；覆盖矩阵同步 BASE-15、GW-09、QA-05。2026-10-27 文档审查第 3 阶段按需求 7d08a2c 修对账与批量记账的图：对账批次拆为 CF-26、CF-39、CF-40，差错处理拆为 CF-29、CF-41；`retry_count` 持久化；重跑与接管只删 `handle_action` 为空的 PENDING 差错；差错按 `uk_batch_type_biz_no_diff_type` 同键跳过；跨批次重试窗口与严重不一致；报告加“等待人工处理”；批量记账 F = 0 省略手续费分录。2026-10-27 BASE-15 已提供 `pkg/fault`，图中的故障点标注保持原句。2026-10-28 按 PAY-02 口径改正 CF-04。2026-10-28 按 PAY-03 改正 CF-05：故障点在事务提交之后，同步拒绝的 source 为 SYNC，Pay 服务端处理超时 5 秒。当前环境没有 mmdc，未渲染 SVG
+> 依据：`docs/02-requirements.md` v3.0、`docs/03-conventions.md` v2.21、`docs/01-tech-decisions.md` D17–D21；图与需求冲突处以需求文档为准
 > 用途：以图的形式确认全部功能性设计。图是需求的视图，规则冲突时以需求文档为准；需求变更后同步修改对应的图。
 
 ## 0. 阅读说明
@@ -382,13 +382,13 @@ sequenceDiagram
     GW-->>M: code 0，响应签名
 
     M->>GW: POST /v1/payments/{pay_no}/pay
-    GW->>P: Pay(merchant_id, pay_no, mockpay)，超时 5s
-    Note over P: 事务 1：CAS INIT→PAYING<br/>INSERT channel_txn(PAY, PROCESSING)<br/>故障点 pay.after_tx1（C2）
+    GW->>P: Pay(merchant_id, pay_no, mockpay)，网关超时 5s；payment 服务端处理超时也是 5s
+    Note over P: 事务 1 提交：CAS INIT→PAYING，INSERT channel_txn(PAY, PROCESSING)<br/>提交后、调用渠道前：故障点 pay.after_tx1（C2）
     P->>CH: POST /mockpay/v1/pay（渠道签名，总超时 3s）
     Note over CH: INSERT mock_txn(PROCESSING)<br/>按金额末两位确定场景，调度自动完成
     CH-->>P: OK、channel_txn_no
     Note over P: 回填 channel_txn_no
-    P-->>GW: PaymentOrder(PAYING)
+    P-->>GW: PayResponse(biz_code=0, PAYING)
     GW-->>M: PAYING
 
     Note over CH: 200–1999ms 后置为 SUCCESS<br/>写 finished_at、bill_date
@@ -477,12 +477,12 @@ sequenceDiagram
     participant CH as channel_mock
 
     M->>GW: POST /v1/payments/{pay_no}/pay
-    GW->>P: Pay，超时 5s
-    Note over P: 事务 1：INIT→PAYING，INSERT channel_txn(PROCESSING)
+    GW->>P: Pay，网关超时 5s；payment 服务端处理超时也是 5s
+    Note over P: 事务 1 提交：INIT→PAYING，INSERT channel_txn(PROCESSING)<br/>提交后故障点 pay.after_tx1，再调渠道
     P->>CH: POST /mockpay/v1/pay
     Note over CH: 已写入 mock_txn(PROCESSING)，阻塞 5 秒再响应
-    Note over P: 3 秒超时：结果未知，不改状态
-    P-->>GW: PaymentOrder(PAYING)
+    Note over P: 渠道 3 秒先于服务端 5 秒到期：结果未知，不改状态
+    P-->>GW: PayResponse(biz_code=0, PAYING)
     GW-->>M: PAYING（约 3 秒）
     CH--)P: 迟到的 OK 响应（连接已断开，丢弃）
     Note over CH: 自动完成为 SUCCESS
@@ -1171,27 +1171,30 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    S(["Pay(merchant_id, pay_no, channel)"]) --> CHN{"channel = mockpay"}
-    CHN -->|"否"| E30007["30007"]:::err
-    CHN -->|"是"| OWN{"订单存在且属于当前商户"}
+    S(["Pay(merchant_id, pay_no, channel)"]) --> NIL{"请求为 nil"}
+    NIL -->|"是"| E10001["10001"]:::err
+    NIL -->|"否"| CHN{"channel = mockpay"}
+    CHN -->|"否"| E30007["30007，不读库"]:::err
+    CHN -->|"是"| OWN{"订单存在且商户号逐字节相同"}
     OWN -->|"否"| E30001["30001"]:::err
     OWN -->|"是"| STS{"当前状态"}
-    STS -->|"PAYING / SUCCESS"| IDEM(["返回当前订单（幂等）"]):::ok
-    STS -->|"FAILED / CLOSED"| E30003["30003"]:::err
+    STS -->|"PAYING / SUCCESS"| IDEM(["返回当前订单，biz_code = 0"]):::ok
+    STS -->|"FAILED / CLOSED"| E30003["30003，BizStatusError，不带订单"]:::err
     STS -->|"INIT"| EXP{"expire_at ≤ now + 30s"}
     EXP -->|"是"| E30004["30004"]:::err
     EXP -->|"否"| C1
-    subgraph TX1["事务 1"]
-        C1["CAS INIT→PAYING，写 channel"] -->|"影响 1 行"| C2["INSERT channel_txn(PAY, PROCESSING, next_query_at = now + 10s)"]
+    subgraph TX1["事务 1，内部不调用外部系统"]
+        C1["CAS INIT→PAYING，写 channel=mockpay"] -->|"影响 1 行"| C2["INSERT channel_txn(PAY, PROCESSING, next_query_at = now + 10s)"]
     end
-    C1 -->|"影响 0 行（并发 Pay 或 Close）"| RR["回滚，重新读取，按当前状态返回"]
-    C2 --> F1["故障点 pay.after_tx1（C2）"]:::fault
-    F1 --> CALL["事务外调用 POST /mockpay/v1/pay<br/>req_no = pay_no，连接 500ms、总超时 3s，不重试"]
-    CALL -->|"OK"| BF["回填 channel_txn_no（WHERE channel_txn_no IS NULL）"]
-    BF --> PAYING(["返回 PAYING"]):::ok
-    CALL -->|"REJECTED"| REJ["ApplyPayResult(FAILED, CHANNEL_REJECTED)（CF-06）<br/>fail_msg 记录渠道 reason"]
-    REJ --> E30006["30006 + FAILED 订单"]:::err
-    CALL -->|"超时 / 网络错误 / 5xx / 其他非 200（含 400、401）"| UNK["结果未知，不改状态<br/>由回调或查单得到最终结果（SL-03）"]
+    C1 -->|"影响 0 行"| RR["回滚后再读：PAYING/SUCCESS 幂等，FAILED/CLOSED 为 30003，仍是 INIT 则返回该单"]
+    C2 --> COMMIT["提交"]
+    COMMIT --> F1["故障点 pay.after_tx1（提交之后、HTTP 之前）"]:::fault
+    F1 --> CALL["事务外 POST /mockpay/v1/pay<br/>notify_url = CHANNEL_NOTIFY_URL<br/>连接 500ms、总超时 3s，不重试、不跟随重定向<br/>Pay 服务端处理超时 5s"]
+    CALL -->|"OK 且有 channel_txn_no"| BF["回填 channel_txn_no（WHERE IS NULL，不覆盖已有值）"]
+    BF --> PAYING(["返回 PAYING，biz_code = 0"]):::ok
+    CALL -->|"REJECTED 且验签通过"| REJ["ApplyPayResult(FAILED, CHANNEL_REJECTED, source=SYNC)<br/>PAY-04 之前生产适配器不改单，返回 10003"]
+    REJ --> E30006["订单与 30006 原样交给调用方"]:::err
+    CALL -->|"超时 / 网络错误 / 非 200 / 验签失败 / OK 无流水号"| UNK["结果未知，不改状态，不回填"]
     UNK --> PAYING
     classDef ok fill:#e3f6e8,stroke:#2e7d32
     classDef err fill:#fde4e4,stroke:#c62828
@@ -2512,3 +2515,4 @@ R1–R14 来自 v1.x 绘图，已落入需求文档 v2.2；R15、R16 来自 v2.0
 | 2026-10-27 | v2.18 | 文档审查第 3 阶段，按需求 7d08a2c 的 REC-01/02/03/05/06/08 与 OPT-02 第 7 条修图。SM-07：超时统一为“满 30 分钟（now − 时间戳 ≥ 30 分钟）”；INIT 接管从下载开始；DOWNLOADED 接管 CAS 直接到 CHECKING，删去 DOWNLOADED 自环；CHECKING 接管先删 `handle_action` 为空的 PENDING 差错再比对；DONE / FAILED 的 CAS 带本次运行的 `started_at`，被接管后旧运行放弃；BILL_NOT_READY 时 CAS `retry_count + 1` 保持 INIT，已达 6 次置 FAILED；重跑 `retry_count = 0`。SM-08：插入同键跳过、失败也写 `handle_action`、严重不一致写 `channel_status`、只删 `handle_action` 为空的、窗口与“等待人工处理”。拆图：原 CF-26 拆为 CF-26（触发、状态分派、超时接管，含每日定时顺带处理 bill_date 在今天−8 ~ 今天−2 的 INIT / DOWNLOADED / CHECKING 批次）、新增 CF-39（下载、导入、BILL_NOT_READY 的持久化重试）、新增 CF-40（比对、收尾 CAS 带 `started_at = T0`、`diff_count` 按实际行数、REC-08 报告与“等待人工处理”）；原 CF-29 改为只管本次新插入差错的自动处理（失败写 `handle_action`、严重不一致、终态 CAS 0 行重新读取与“已不存在”），新增 CF-41（窗口内跨批次 REQUERY 重试、LEDGER_MISSING 复核与再次重放）。CF-27、CF-28：差错按 `uk_batch_type_biz_no_diff_type` 用 `INSERT … ON DUPLICATE KEY UPDATE id = id` 插入，同键跳过，影响 1 行才计入 `pay_recon_diffs_total`。SL-09、SL-10、CF-03 同步以上规则，SL-10、CF-03 注明管理接口不顺带处理前 7 个账期。删去 CF-26 中“重试计数只在进程内保存”的说法。CF-37、SL-15：F = 0 的事件省略手续费分录，不计入手续费收入子账户增量、不为它加锁（OPT-02 第 7 条）。覆盖矩阵：REC-01/02 → CF-26、CF-39、CF-40，REC-03 加 CF-40，REC-06 → CF-29、CF-41，REC-08 → CF-40。文件头对 03 的引用改为 v2.18。用 mermaid-cli 12.0.0 渲染全部 67 张图通过，未保存 SVG |
 | 2026-10-27 | v2.19 | BASE-15 已提供 `pkg/fault`，图中的故障点标注保持原句。§4.10 引言的登记表条号改为规则 6。不改图，不渲染 SVG |
 | 2026-10-28 | v2.20 | PAY-02：CF-04 改为未传 notify_url 存空串；白名单只在显式 URL 时检查，空名单拒绝一切显式 URL，主机大小写不敏感且不解析 DNS；商户非 ACTIVE 或不存在为 20004；费率按 created_at 读生效档、不缓存、不读 merchant.fee_rate_bp，没有生效档为 10003；时钟回拨为 10004；1062 读不到行为 10003。文件头对约定的引用改为 v2.20。当前环境没有 mmdc，未渲染 SVG |
+| 2026-10-28 | v2.21 | PAY-03：CF-05 改为故障点在事务提交之后、HTTP 之前；0 行再读含仍是 INIT 的出口；REJECTED 的 source 为 SYNC，并注明 PAY-04 前生产适配器不改单、返回 10003；验签失败与 OK 无流水号并入结果未知。SL-01、SL-03 注明 Pay 服务端处理超时 5 秒，渠道 3 秒先返回 PAYING。文件头对约定的引用改为 v2.21。当前环境没有 mmdc，未渲染 SVG |

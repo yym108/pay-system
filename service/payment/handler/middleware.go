@@ -63,11 +63,14 @@ func (c Config) access() AccessFunc {
 	return c.Access
 }
 
-func (c Config) timeout() time.Duration {
-	if c.Timeout <= 0 {
-		return ServerTimeout
+func (c Config) timeoutFor(method string) time.Duration {
+	if c.Timeout > 0 {
+		return c.Timeout
 	}
-	return c.Timeout
+	if method == "Pay" {
+		return PayServerTimeout
+	}
+	return ServerTimeout
 }
 
 // middleware 不读取 req 和 resp：GetMerchantCredential 的响应含明文密钥。
@@ -76,12 +79,11 @@ func (c Config) middleware() endpoint.Middleware {
 	tr := c.tracer()
 	mt := c.metrics()
 	access := c.access()
-	limit := c.timeout()
 	return func(next endpoint.Endpoint) endpoint.Endpoint {
 		return func(ctx context.Context, req, resp interface{}) (err error) {
 			method := methodName(ctx)
 			start := time.Now()
-			ctx, cancel := context.WithTimeout(ctx, limit)
+			ctx, cancel := context.WithTimeout(ctx, c.timeoutFor(method))
 			defer cancel()
 			ctx, endSpan := tr.Start(ctx, method)
 			defer func() {

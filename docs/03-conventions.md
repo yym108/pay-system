@@ -1,6 +1,6 @@
 # pay-system 全局约定与编号规范
 
-> 版本：v2.20　最后修改：2026-10-28
+> 版本：v2.21　最后修改：2026-10-28
 > 适用：全部代码、文档、配置。需求见 `docs/02-requirements.md`，接口见 `docs/05-api.md`，表结构见 `docs/database.md`。
 
 本文集中登记会被多个功能点共用的约定：编号体系、业务单号、金额、时间、错误码、幂等与事务规则、命名规范、配置项。新增或修改这些内容时，先改本文并在 §9 记录，再改代码。
@@ -321,7 +321,7 @@ docker-compose 给将来会跑业务进程的 6 个占位服务写死互不相�
 - 根上的 `trace_id`、`span_id`、`request_id` 按原值写入，不参与兜底扫描。span id 是 16 位十六进制，连续数字若按卡号改写，链路就对不上。调用方再传同名的 `service`、`trace_id`、`span_id`、`request_id` 时丢掉，避免盖住这四个字段。
 - `msg` 用简短英文动宾短语，如 `payment status changed`。消息文本同样做兜底扫描。
 
-业务字段名 snake_case，使用固定名称：`pay_no`、`refund_no`、`transfer_no`、`merchant_id`、`shard`、`biz_type`、`biz_no`、`from_status`、`to_status`、`source`（NOTIFY / QUERY / CLOSE / JOB / ADMIN）、`err_code`、`elapsed_ms`。
+业务字段名 snake_case，使用固定名称：`pay_no`、`refund_no`、`transfer_no`、`merchant_id`、`shard`、`biz_type`、`biz_no`、`from_status`、`to_status`、`source`（NOTIFY / QUERY / CLOSE / JOB / ADMIN / SYNC）、`err_code`、`elapsed_ms`。`SYNC` 只表示渠道受理的同步拒绝（PAY-03 写入，PAY-04 使用），不是新的错误码。
 
 脱敏按字段名，不区分大小写，名字包含下列片段即匹配。同时命中多条时，整段替换优先；否则按下表从上到下先命中的一条。长度按 Unicode 码点计。
 
@@ -435,3 +435,4 @@ BASE-09 只拼 DSN 文本，不连接数据库，也不调用驱动的 `ParseDSN
 | v2.18 | 2026-10-27 | 对齐需求 2026-10-27 的功能点拆分（BASE-15 `pkg/fault`）：§1.2 `QA` 行注明 `pkg/fault/` 属 BASE-15；§8 `FAULT_POINTS` 归属改为 BASE-15，写明默认空、逗号分隔、可带 `:once`、未登记的名称（含空项、`:once` 以外的后缀）进程启动失败；§7.4 故障注入点注明只能用 BASE-15 第 6 条登记的名称。已核对登记的 9 个故障点都符合 `<领域>.<after\|before>_<步骤>`。不新增错误码 |
 | v2.19 | 2026-10-27 | BASE-15：同一名称在 `FAULT_POINTS` 里出现两次时初始化失败；标记目录不是配置项（默认 `/var/run/fault`，由 chaos 覆盖文件挂载）。不新增配置项，不新增错误码 |
 | v2.20 | 2026-10-28 | PAY-02：§8 `NOTIFY_URL_ALLOW_HOSTS` 补明空名单拒绝一切显式 URL、主机大小写不敏感精确比较、不解析 DNS。不新增配置项，不新增错误码 |
+| v2.21 | 2026-10-28 | PAY-03：§7.5 的 `source` 增加 `SYNC`（渠道受理同步拒绝，不是新错误码）。payment 服务端按方法区分处理超时：`Pay` 5 秒，其他方法 2 秒，不新增环境变量，不新增错误码 |

@@ -75,6 +75,15 @@ func serve(cfg config.Payment, logOut io.Writer) error {
 		return err
 	}
 	payments := biz.NewPayments(merchants, ids, clock.Real{}, cfg.NotifyURLAllowHosts, db)
+	channelClient, err := biz.NewChannelClient(biz.ChannelClientConfig{
+		BaseURL: cfg.ChannelMockpayURL,
+		Key:     []byte(cfg.ChannelMockpayKey),
+		Clock:   clock.Real{},
+	})
+	if err != nil {
+		return err
+	}
+	payments.UsePay(channelClient, biz.UnimplementedPayResult{}, cfg.ChannelNotifyURL)
 	// 健康检查和 SIGTERM 排空是 OPS-01。这里只阻塞到 Kitex 收到信号。
 	return handler.Run(handler.New(biz.NewApp(merchants, payments)), handler.Config{})
 }

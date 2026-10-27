@@ -82,9 +82,23 @@ struct PayRequest {
     3: string channel
 }
 
+// 成功时 biz_code = 0。30006 不走 BizStatusError，把错误码放在 biz_code，并携带 payment_order。
+// payment_order 必填，不加 optional。
+struct PayResponse {
+    1: base.BizCode biz_code
+    2: PaymentOrder payment_order
+}
+
 struct ClosePaymentRequest {
     1: string merchant_id
     2: string pay_no
+}
+
+// 30003 在 PAY-06 放入 biz_code 并携带订单。本结构在 PAY-03 与 PayResponse 一起加入。
+// payment_order 必填，不加 optional。
+struct ClosePaymentResponse {
+    1: base.BizCode biz_code
+    2: PaymentOrder payment_order
 }
 
 struct QueryPaymentRequest {
@@ -197,8 +211,8 @@ struct ReplayEventResponse {
 
 service PaymentService {
     PaymentOrder CreatePayment(1: CreatePaymentRequest req)
-    PaymentOrder Pay(1: PayRequest req)
-    PaymentOrder ClosePayment(1: ClosePaymentRequest req)
+    PayResponse Pay(1: PayRequest req)
+    ClosePaymentResponse ClosePayment(1: ClosePaymentRequest req)
     PaymentOrder QueryPayment(1: QueryPaymentRequest req)
     CreateRefundResponse CreateRefund(1: CreateRefundRequest req)
     RefundOrder QueryRefund(1: QueryRefundRequest req)

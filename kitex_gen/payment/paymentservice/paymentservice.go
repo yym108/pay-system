@@ -399,7 +399,7 @@ func (p *kClient) CreatePayment(ctx context.Context, req *payment.CreatePaymentR
 	return _result.GetSuccess(), nil
 }
 
-func (p *kClient) Pay(ctx context.Context, req *payment.PayRequest) (r *payment.PaymentOrder, err error) {
+func (p *kClient) Pay(ctx context.Context, req *payment.PayRequest) (r *payment.PayResponse, err error) {
 	var _args payment.PaymentServicePayArgs
 	_args.Req = req
 	var _result payment.PaymentServicePayResult
@@ -409,7 +409,7 @@ func (p *kClient) Pay(ctx context.Context, req *payment.PayRequest) (r *payment.
 	return _result.GetSuccess(), nil
 }
 
-func (p *kClient) ClosePayment(ctx context.Context, req *payment.ClosePaymentRequest) (r *payment.PaymentOrder, err error) {
+func (p *kClient) ClosePayment(ctx context.Context, req *payment.ClosePaymentRequest) (r *payment.ClosePaymentResponse, err error) {
 	var _args payment.PaymentServiceClosePaymentArgs
 	_args.Req = req
 	var _result payment.PaymentServiceClosePaymentResult

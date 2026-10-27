@@ -1,6 +1,6 @@
 # pay-system 需求规格说明书
 
-> 版本：v3.0　最后修改：2026-10-27
+> 版本：v3.0　最后修改：2026-10-28
 > 状态：v3.0 重新聚焦支付、退款、转账三条资金链路（变更见 §8.2），2026-10-13 已确认为开发基线；开发按 §3 功能点总表逐项推进
 > 上游：`PROJECT_GOALS.md`（目标与约束）、`docs/01-tech-decisions.md`（技术选型与版本）
 > 关联：`docs/03-conventions.md`（编号、错误码、命名等全局约定）、`docs/05-api.md`（接口文档）、`docs/database.md`（表结构）、`docs/04-dev-plan.md`（周计划）、`docs/06-flows.md`（流程图）
@@ -376,7 +376,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | CH-09 | 账单注入 | P0 | M6 | CH-08 | TODO |
 | PAY-01 | 商户与密钥 | P0 | M3 | BASE-14、BASE-03 | DONE |
 | PAY-02 | 创建支付单 | P0 | M3 | PAY-01 | DONE |
-| PAY-03 | 发起支付 | P0 | M3 | PAY-02、CH-01、BASE-15 | TODO |
+| PAY-03 | 发起支付 | P0 | M3 | PAY-02、CH-01、BASE-15 | DONE |
 | PAY-04 | 支付结果推进 | P0 | M3 | PAY-03、MQ-01 | TODO |
 | PAY-05 | 查单补偿 | P0 | M4 | PAY-04、CH-02、CH-06、GW-06、REF-03、BASE-15 | TODO |
 | PAY-06 | 商户关单 | P0 | M3 | PAY-04、CH-03 | TODO |
@@ -1470,23 +1470,25 @@ M4 切片（未实现）：
 
 规则：
 
-1. `channel` 目前只支持 `mockpay`，否则 `30007`。
-2. 订单不属于当前商户 → `30001`。
-3. 当前状态为 PAYING 或 SUCCESS → 返回当前订单（幂等）；FAILED、CLOSED → `30003`；INIT 且 `expire_at ≤ now + 30s` → `30004`（为渠道处理留出余量）。
-4. 事务 1：CAS `INIT → PAYING` 并写入 `channel`；插入 `channel_txn(PAY, PROCESSING, next_query_at = now + 10s)`。故障点 `pay.after_tx1`。
-5. 事务提交后调用渠道受理，`req_no = pay_no`，`notify_url` 为平台回调地址（配置 `CHANNEL_NOTIFY_URL`），连接超时 500ms、总超时 3 秒，不自动重试。
-6. 渠道结果：
-   - `OK`：回填 `channel_txn_no`（`WHERE channel_txn_no IS NULL`），返回 PAYING。
-   - `REJECTED`：调用 PAY-04 推进为 FAILED（`fail_code = CHANNEL_REJECTED`，`fail_msg` 记录渠道 `reason`），返回 `30006` 和订单。
-   - 超时、网络错误、5xx：结果未知，不改状态，返回 PAYING，由回调或查单得到最终结果。其他非 200（含 400、401）也视为结果未知。
+1. 请求为 nil → `10001`。`channel` 不是恰好 `mockpay`（含空串、大小写或首尾空格不同）→ `30007`，不读库。
+2. 按 `pay_no` 读订单。没有，或 `merchant_id` 与订单逐字节不同（含空商户号）→ `30001`。两种情况同一错误码，不泄露另一商户的订单是否存在。
+3. `PAYING` 或 `SUCCESS`：返回当前订单，`biz_code = 0`，不再调渠道，不再插入 `channel_txn`。`FAILED` 或 `CLOSED` → `30003`，走 `BizStatusError`，不携带订单。`INIT` 且 `expire_at ≤ now + 30s`（含等于）→ `30004`。`now` 来自注入的 `clock.Clock`，先截到毫秒。`biz` 不调用 `time.Now()`。
+4. 事务 1（`dbx.WithTx`，事务内不调用 HTTP、RPC、MQ）：`UPDATE payment_order SET status='PAYING', channel='mockpay', version=version+1, updated_at=这次时钟 WHERE pay_no=? AND merchant_id=? AND status='INIT'`。影响 1 行才 `INSERT channel_txn`：`txn_type=PAY`，`biz_no=pay_no`，`channel=mockpay`，`amount` 为订单金额，`status=PROCESSING`，`channel_txn_no` 为 NULL，`next_query_at=now+10s`，`notify_count=0`，`query_count=0`，`version=0`，`created_at` / `updated_at` 显式写这次时钟。影响 0 行：回滚，事务外再读一次，按读到的状态返回（PAYING / SUCCESS 幂等，FAILED / CLOSED 为 `30003`，仍是 INIT 就返回这张 INIT 单）。不循环重试，不 `time.Sleep`。只有本次 CAS 成功的调用者继续调渠道。
+5. 事务成功提交之后、HTTP 之前，调用已有的 `fault.Point(ctx, "pay.after_tx1")`。不新增故障点名称，不在事务内部调用。杀掉进程时事务已经提交，订单停在 PAYING。
+6. 然后调渠道受理。`req_no=pay_no`，`subject` 为订单标题，`notify_url` 用配置 `CHANNEL_NOTIFY_URL`，不是订单上的商户通知地址。金额是订单金额。连接超时 500ms，总超时 3 秒，不重试，不跟随重定向。签名用 `pkg/sign` 与 `CHANNEL_MOCKPAY_KEY`，算法与 CH-01 一致。地址是 `CHANNEL_MOCKPAY_URL` 加 `/mockpay/v1/pay`。密钥不进日志和错误。签名或地址配置在发出请求前失败，按已有的 `10003` 处理。渠道客户端未装配时在 CAS 之前返回 `10003`，订单保持 INIT。
+7. 渠道结果：
+   - `OK` 且带 `channel_txn_no`：`UPDATE channel_txn SET channel_txn_no=? WHERE biz_no=? AND channel_txn_no IS NULL`（同时写 `updated_at = updated_at`，避免 `ON UPDATE CURRENT_TIMESTAMP` 改成数据库时钟）。然后返回 PAYING 订单，`biz_code = 0`。影响 0 行就再读，不覆盖已有流水号。回填撞上唯一键（1062）返回 `10003`，不猜测该写哪一条。
+   - `REJECTED`：调用窄接口 `ApplyPayResult(biz_no, result, fail_code, fail_msg, source)`，参数固定为 `biz_no=pay_no`、结果 `FAILED`、`fail_code=CHANNEL_REJECTED`、`fail_msg` 为渠道 `reason`、`source=SYNC`。`SYNC` 只表示渠道受理的同步拒绝，供 PAY-04 使用。已有来源名是 NOTIFY / QUERY / CLOSE / JOB / ADMIN，没有同义名称，因此新增这个来源名，不是新的错误码。接口返回的订单和错误原样交给调用方。`30006` 放在 `PayResponse.biz_code`，error 为 nil，并携带订单。PAY-04 换上实现之前，生产组装使用明确的未实现适配器：不改订单，返回 `10003`。本功能点不实现该接口的事务、outbox 或指标。
+   - 超时、网络错误、5xx、其他非 200（含 400、401），HTTP 200 但验签失败，以及 `OK` 但没有流水号：结果未知。不改订单状态，不回填，返回 PAYING，`biz_code = 0`。
+8. `Pay` 的服务端处理超时是 5 秒，与 §5.4.1、GW-01 第 5 条的网关调用超时一致，让 3 秒的渠道超时先到期并返回 PAYING。其他 PaymentService 方法仍是 2 秒。不新增环境变量。渠道 HTTP 的 3 秒从调用 ctx 派生，父 ctx 先到期时先到期的生效。
 
 验收的归属：`REJECTED` 分支调用 `ApplyPayResult`（PAY-04），在 PAY-04 验收；“2 秒内 SUCCESS”需要回调入口，在 GW-06 验收；Pay 与 Close 并发在 PAY-06 验收；ACCEPT_TIMEOUT 需要 CH-06 的 M4 场景和查单，在 PAY-05 验收。
 
 验收：
 
-- [ ] 同一订单并发调用 Pay 20 次，只插入 1 条 `channel_txn`，渠道只受理 1 次。
-- [ ] 渠道返回 `OK`：接口返回 PAYING，订单为 PAYING，`channel_txn` 为 PROCESSING 且已回填 `channel_txn_no`。
-- [ ] 假渠道客户端超过 3 秒不响应：接口返回 PAYING，订单仍为 PAYING，`channel_txn` 仍为 PROCESSING、`channel_txn_no` 为空。
+- [x] 同一订单并发调用 Pay 20 次，只插入 1 条 `channel_txn`，渠道只受理 1 次。
+- [x] 渠道返回 `OK`：接口返回 PAYING，订单为 PAYING，`channel_txn` 为 PROCESSING 且已回填 `channel_txn_no`。
+- [x] 假渠道客户端超过 3 秒不响应：接口返回 PAYING，订单仍为 PAYING，`channel_txn` 仍为 PROCESSING、`channel_txn_no` 为空。
 
 #### PAY-04 支付结果推进
 
@@ -3118,3 +3120,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-10-27 | v3.0 | 文档审查补充（用户决定）：REC-01 第 2 条按状态拆写，`force` 只对 DONE 生效（FAILED 本来就重跑）；未超时的 INIT、DOWNLOADED、CHECKING 带 `force = true` 仍返回当前批次，不并发重跑；超时的带不带 force 都按第 5 条接管，不按第 3 条重跑；补验收。REC-08 的“等待人工处理”定名为响应字段 `manual_total`、`manual_diffs`，`manual_diffs` 按 `bill_date` 升序、同一 `bill_date` 内按 `id` 升序取前 100 条，补排序与截断验收。`ReconBatch` 不输出 `retry_count`。表结构、错误码与资金流向不变 |
 | 2026-10-27 | v3.0 | BASE-15：实现了 `pkg/fault`；重复名称视为初始化错误；标记写失败不发信号；空配置不碰标记目录。不改 9 个名称，不改资金，不新增错误码 |
 | 2026-10-28 | v3.0 | PAY-02 文字澄清：未传 `notify_url` 存空串，通知时才取商户默认地址；显式地址即使等于商户默认地址也原样入库。商户不存在或非 `ACTIVE` 为已有的 `20004`，不插入。没有生效费率档为已有的 `10003`，不把手续费当成 0，不读 `merchant.fee_rate_bp`，不缓存费率。时钟回拨映射为已有的 `10004`。1062 后按商户订单号读不到行返回 `10003`。不新增错误码，不改表，不改 IDL |
+| 2026-10-28 | v3.0 | PAY-03：`Pay` 服务端处理超时 5 秒，其他方法仍 2 秒。渠道同步拒绝的 `source` 名为 `SYNC`。PAY-04 之前，生产用的 `ApplyPayResult` 不改订单并返回已有的 `10003`。不新增错误码，不新增环境变量，不改表 |
