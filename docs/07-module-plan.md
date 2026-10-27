@@ -35,8 +35,8 @@
 | 支付 | 核心 | 支付单状态机、发起支付、回调与查单推进、关单、补偿 | `service/payment/` | PAY-01~10 | 3–4、6 |
 | 退款 | 核心 | 额度占用、同步冻结、渠道退款、结果推进、卡单恢复 | `service/payment/` | REF-01~05 | 4 |
 | 转账 | 核心 | 转账单、同分片执行、跨分片 TCC 协调、恢复任务 | `service/payment/` | TRF-01~05 | 4 |
-| 消息与入账 | 核心 | outbox 写入与投递、Kafka 框架、account 入账消费、死信与重放 | `pkg/outbox`、`pkg/mq`、`service/*/consumer/` | MQ-01~06 | 3、5 |
-| 性能优化 | 核心 | 分阶段埋点、批量记账、子账户对比、链路延迟优化 | 分布在各服务；埋点 `pkg/obs` | OPT-01~05 | 5–7 |
+| 消息与入账 | 核心 | outbox 写入与投递、Kafka 框架、account 入账消费、死信与重放 | `pkg/outbox`、`pkg/mq`、`service/*/consumer/` | MQ-01~06 | 3、5、8 |
+| 性能优化 | 核心 | 分阶段埋点、批量记账、子账户对比、链路延迟优化 | 分布在各服务；埋点 `pkg/obs` | OPT-01~05 | 5、7–8 |
 | 质量与证据 | 核心 | C1–C13 故障演练、基线压测 S1–S7 与优化后复测、pprof 调优、验收 | `test/` | QA-01~05 | 6–8 |
 | 基础设施 | 支撑 | 工程骨架、编排、迁移种子、公共包、IDL、故障注入点 | 根目录、`internal/`、`pkg/`（含 `pkg/fault`）、`deploy/`、`migrations/`、`idl/` | BASE-01~15 | 1、3 |
 | 模拟渠道 | 支撑 | 受理、查单、关单、退款、回调、故障场景、账单 | `service/channel_mock/` | CH-01~09 | 3–4、6 |
@@ -70,17 +70,16 @@ service/account/
                           freeze.go、release.go、confirm.go：Freeze / ReleaseFreeze / ConfirmFreeze，空回滚与防悬挂
                           transfer.go、transfer_in.go：TransferLocal（失败墓碑）、TransferIn Try / Confirm / Cancel
                           check.go：CheckBalance，分片快照、在途守恒
-  dal/                    ShardDB(shard)，每个分片一个连接池；就绪检查（SQL 目前在 biz/，是否拆分见需求 §8.1 Q5）
+  dal/                    ShardDB(shard)，每个分片一个连接池；就绪检查（SQL 在 biz/，不拆，需求 §8.1 Q5 已定）
   consumer/               ledger_single.go（MQ-04 基线）、ledger_batch.go（OPT-02）
 
 service/payment/
   handler/
-  biz/
-    merchant/             商户配置与凭证（带缓存开关）；现状为 biz/ 下平铺的 merchant.go、fee_rate.go、fee_check.go
-    order/                支付单状态机、ApplyPayResult
-    refund/               退款单状态机、ApplyRefundResult
-    transfer/             转账单、LOCAL 执行、TCC 协调器
-  dal/                    目前没有，SQL 写在 biz/，待 fix/PAY-01-dal 拆出
+  biz/                    平铺一个包，不分子包，按领域分文件（2026-10-27 按已实现代码修正）：
+                          merchant.go、fee_rate.go、fee_check.go：商户配置与凭证（带缓存开关）、费率与手续费核对
+                          支付单状态机与 ApplyPayResult、退款单状态机与 ApplyRefundResult、
+                          转账单（LOCAL 执行、TCC 协调器）在同一个包内按领域分文件
+  dal/                    现状偏离：目前没有，SQL 写在 biz/，待 fix/PAY-01-dal 拆出 dal 层
   channel/                渠道 HTTP 客户端
   job/                    query_compensate、order_expire、refund_recover、transfer_recover、outbox_relay
   notify/                 通知消费与发送
@@ -89,7 +88,7 @@ pkg/shard                 Of(merchant_id)、Sub(biz_no)，payment 与 account �
 pkg/accountclient         payment 侧 account 客户端（D22，ACC-11）
 pkg/server                健康检查与优雅退出（OPS-01）
 pkg/obs                   metrics、trace、Stage(ctx, chain, stage) 分阶段埋点
-pkg/fault                 故障点（BASE-15，清单见需求 BASE-15 规则 5）
+pkg/fault                 故障点（BASE-15，清单见需求 BASE-15 规则 6）
 internal/testkit          集成测试基座（BASE-11）
 ```
 

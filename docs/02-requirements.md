@@ -196,13 +196,13 @@ pay-system/
 
 分层约束：
 
-- `handler` 只做协议转换和参数校验；`biz` 承载业务规则、状态机和事务编排；`dal` 只写 SQL。现状偏离：payment 目前没有 `dal/`，SQL 写在 `biz/`，待 fix/PAY-01-dal 拆出 dal 层；account 的 `dal/` 目前只有分片连接池与就绪检查，SQL 也写在 `biz/`，是否拆分见 §8.1 Q5。
+- `handler` 只做协议转换和参数校验；`biz` 承载业务规则、状态机和事务编排；`dal` 只写 SQL。例外：account 的 SQL 写在 `biz/`，`dal/` 只放分片连接池与就绪检查（§8.1 Q5 已定，不拆）。现状偏离：payment 目前没有 `dal/`，SQL 写在 `biz/`，待 fix/PAY-01-dal 拆出 dal 层。
 - `biz` 依赖 `dal` 的接口，不依赖具体实现，便于单测替换。
 - 服务之间只能通过 `kitex_gen` 和事件结构交互，禁止 import 其他服务的 `service/<x>/...` 包（golangci-lint `depguard` 检查）。
 - `make build` 只构建树中第一行列出的 7 个业务程序。`cmd/bootstrap`、`cmd/seed` 是运维/初始化工具，不进入这 7 个二进制，只经 `deploy/Dockerfile` 构建。`internal/` 只给 bootstrap、seed、迁移和测试使用，不被 `service/`、`gateway/`、`job/` 引用；`pkg/` 同样不得引用。`depguard` 拦截这些 import。
 - 事务中禁止调用 RPC、HTTP、MQ。
 
-核心服务的包内划分（2026-10-13 确认，来源 `docs/07-module-plan.md` §4；2026-10-27 按已实现代码修正 account）：
+核心服务的包内划分（2026-10-13 确认，来源 `docs/07-module-plan.md` §4；2026-10-27 按已实现代码修正 account 与 payment 的 biz）：
 
 ```
 service/account/
@@ -213,17 +213,16 @@ service/account/
                           freeze.go、release.go、confirm.go：Freeze / ReleaseFreeze / ConfirmFreeze，空回滚与防悬挂
                           transfer.go、transfer_in.go：TransferLocal（失败墓碑）、TransferIn Try / Confirm / Cancel
                           check.go：CheckBalance，分片快照、在途守恒
-  dal/                    ShardDB(shard)，每个分片一个连接池；就绪检查
+  dal/                    ShardDB(shard)，每个分片一个连接池；就绪检查（SQL 在 biz/，§8.1 Q5）
   consumer/               ledger_single.go（MQ-04 基线）、ledger_batch.go（OPT-02）
 
 service/payment/
   handler/
-  biz/
-    merchant/             商户配置与凭证（带缓存开关）；现状为 biz/ 下平铺的 merchant.go、fee_rate.go、fee_check.go
-    order/                支付单状态机、ApplyPayResult
-    refund/               退款单状态机、ApplyRefundResult
-    transfer/             转账单、LOCAL 执行、TCC 协调器
-  dal/
+  biz/                    平铺一个包，不分子包，按领域分文件：
+                          merchant.go、fee_rate.go、fee_check.go：商户配置与凭证（带缓存开关）、费率与手续费核对
+                          支付单状态机与 ApplyPayResult、退款单状态机与 ApplyRefundResult、
+                          转账单（LOCAL 执行、TCC 协调器）在同一个包内按领域分文件
+  dal/                    现状偏离：目前没有，SQL 写在 biz/，待 fix/PAY-01-dal 拆出 dal 层
   channel/                渠道 HTTP 客户端
   job/                    query_compensate、order_expire、refund_recover、transfer_recover、outbox_relay
   notify/                 通知消费与发送
@@ -326,7 +325,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | 订单手续费核对 | payment | 1 分钟 | 只读；多实例可同时跑 | PAY-10 |
 | outbox 清理 | payment | 每天 03:00 | 按批删除，天然幂等 | MQ-06 |
 | 余额核对 | account | 手动全量（管理接口、测试、`test/chaos/verify.sh`） | 只读 | ACC-10 |
-| 对账 | recon | 每天 10:00；停在 INIT / DOWNLOADED / CHECKING 超过 30 分钟（含 `BILL_NOT_READY`）的批次被重新接管，扫描间隔见 §8.1 Q6 | `uk_channel_bill_date` + 状态 CAS | REC-01 |
+| 对账 | recon | 每天 10:00；`BILL_NOT_READY` 的批次 30 分钟后对该批次再触发一次，当天最多 6 次；不做后台扫描，超时（INIT / DOWNLOADED 按 `updated_at`、CHECKING 按 `started_at`，30 分钟）只在 RunBatch 被调用时判定并接管 | `uk_channel_bill_date` + 状态 CAS | REC-01 |
 | 渠道自动完成与回调 | channel-mock | 进程内定时 | 单实例 | CH-01、CH-05 |
 
 所有任务使用注入的 `clock.Clock` 和 `context`，单批 panic 被恢复并计数，进程退出时等待当前批次完成。订单手续费核对（PAY-10）本次只提供可调用的扫描函数，不在 `cmd/payment/main.go` 里启动；payment 进程常驻后再按上表间隔调用。
@@ -819,7 +818,8 @@ DSN 只按驱动的文本规则装配，不连接数据库：
 2. `name:once` 表示只触发一次：发送 SIGKILL 之前先在标记目录（默认 `/var/run/fault`，由 `deploy/docker-compose.chaos.yml` 挂载）写入以故障点命名的标记文件；文件已存在时不再触发，因此进程重启后照常运行。
 3. `FAULT_POINTS` 为空（默认）时 `Point` 什么都不做：不发信号，不读写标记目录。生产与普通测试都是这个状态。
 4. 发信号的函数和标记目录可在测试中替换（包内选项，不新增配置项），以便单元测试不真的结束进程。
-5. 已登记的故障点（新增故障点须在此登记，并在 QA-01 演练表中给出场景）：
+5. 启动校验：进程启动时用 `FAULT_POINTS` 初始化本包，各项去掉首尾空白和 `:once` 后缀后必须是第 6 条登记表中的名称；出现未登记的名称（含拼写错误、空项、`:once` 以外的后缀）时初始化返回错误，错误信息带该项原文，进程启动失败。防止拼写错误使故障点静默失效、演练假通过。
+6. 已登记的故障点（新增故障点须在此登记，并在 QA-01 演练表中给出场景）：
 
    | 故障点 | 所在功能点 | 位置 |
    |---|---|---|
@@ -838,6 +838,8 @@ DSN 只按驱动的文本规则装配，不连接数据库：
 - [ ] 替换发信号函数后，`FAULT_POINTS=pay.after_tx1` 时 `Point(ctx, "pay.after_tx1")` 发信号 1 次，`Point(ctx, "callback.after_commit")` 发信号 0 次。
 - [ ] `FAULT_POINTS=pay.after_tx1:once`、标记目录为临时目录：第一次调用先写标记文件再发信号；用同一目录新建实例（模拟重启）后再调用，不发信号。
 - [ ] `FAULT_POINTS` 为空时任何名称都不发信号，临时标记目录中没有新建文件。
+- [ ] `FAULT_POINTS=pay.after_tx`（拼写错误）、`pay.after_tx1,,callback.after_commit`（空项）、`pay.after_tx1:twice` 初始化都返回错误，错误信息含出错的那一项；`pay.after_tx1:once, callback.after_commit` 初始化成功。
+- [ ] 以 `FAULT_POINTS=pay.after_tx` 启动的子进程在启动阶段以非 0 退出码退出，没有进入业务逻辑。
 - [ ] 子进程测试：以 `FAULT_POINTS=<name>` 启动的子进程执行到 `Point` 时被 SIGKILL 结束（父进程得到 `signal: killed`），`Point` 之后的语句没有执行。
 
 ### 4.2 账户与记账（ACC）
@@ -1354,14 +1356,15 @@ M3 完成 01、02、03、08，其余在 M4 完成（06、07 的账单部分在 C
 
 M4 切片（未实现）：
 
-6. SLOW：按自动完成时间变为 SUCCESS，查单立即可见；回调推迟到 `finished_at` 之后 30 秒（注入时钟）才发第 1 次。
+6. SLOW：只把首次回调推迟到 `finished_at` 之后 30 秒（注入时钟）发出，其余行为与 NORMAL 一致：按自动完成时间变为 SUCCESS，查单立即可见，`bill_date` 照常写入；首次回调失败后按 CH-05 第 3、4 条重试（按已发次数等 5s / 15s / 30s / 60s，连首次最多 5 次，计数用 `WHERE notify_sent_count = ?` 的条件更新）。（2026-10-27 用户决定）
 7. ACCEPT_TIMEOUT：受理请求照常写入 `mock_txn` 并调度自动完成，但 200 响应在 5 秒（注入时钟）后才返回；平台按 PAY-03 的 3 秒总超时得到“结果未知”。
 8. CLOSE_RACE 的关单抢成功已由 CH-03 实现并验收，本功能点不重做。BILL_MISSING、BILL_AMOUNT_DIFF 的账单表现属于 CH-08，在 CH-08 验收；本功能点只保证 CH-01 规则 4 的 `bill_date` 写法（BILL_MISSING 不写）。
 
 验收：
 
 - [x] M3：FAIL、DROP_NOTIFY、DUP_NOTIFY、NEVER_FINISH 各至少一个集成测试。FAIL 为 FAILED、`bill_date` 为空、平台回 SUCCESS 时 `notify_sent_count = 1` 且没有第 2 次、body 的 `status` 为 FAILED。DROP_NOTIFY 为 SUCCESS、`bill_date` 为 `finished_at` 的东八区日期、HTTP 0 次、`notify_sent_count = 0`。DUP_NOTIFY 第一波 5 次同时在途，之后每秒 1 次再 5 次，共 10 次，不因 SUCCESS 停止。NEVER_FINISH 推进时钟和调度后仍是 PROCESSING、没有完成任务、HTTP 0 次、`bill_date` 为空；再关单得到 CLOSED，`finished_at` 仍空，仍然 0 次 HTTP。账单只断言 `bill_date`。
-- [ ] M4 SLOW：自动完成后查单立即为 SUCCESS；注入时钟推进到 `finished_at` + 30 秒之前回调 HTTP 0 次，推进到 30 秒后发出第 1 次回调。
+- [ ] M4 SLOW：自动完成后查单立即为 SUCCESS，`bill_date` 与 NORMAL 相同；注入时钟推进到 `finished_at` + 30 秒之前回调 HTTP 0 次，推进到 30 秒后发出第 1 次回调。
+- [ ] M4 SLOW 重试：平台对首次回调返回 500、第 2 次返回 `SUCCESS`：第 2 次在首次之后 5 秒（注入时钟）发出，之后不再发送，`notify_sent_count = 2`。
 - [ ] M4 ACCEPT_TIMEOUT：受理请求在注入时钟推进 5 秒之前不返回，推进后返回 200 `OK`；返回前 `mock_txn` 已有该 `req_no` 的行，之后照常自动完成为 SUCCESS。
 
 #### CH-07 全局故障配置
@@ -1753,6 +1756,7 @@ INIT 表示已受理、尚未提交渠道；PROCESSING 表示已冻结商户资�
 2. 冻结失败或超时失败（INIT 退款）事务：CAS `refund_order INIT → FAILED`；释放 `refunded_amount`，条件同第 1 条：`UPDATE payment_order SET refunded_amount = refunded_amount - R WHERE pay_no = ? AND refunded_amount >= R`（R 为退款金额）；`outbox.Add(refund.failed)`。
 3. account 消费 `refund.succeeded` 执行 ConfirmFreeze（贷方为本分片渠道应收子账户），消费 `refund.failed` 执行 ReleaseFreeze（冻结不存在时为空回滚，ACC-05）。
 4. 重复、冲突结果的处理同 PAY-04。
+5. 第 1、2 条释放 `refunded_amount` 的 UPDATE 影响 0 行（`refunded_amount < R`，数据已不一致）时：整个事务回滚，`channel_txn`、`refund_order` 的 CAS 和 outbox 都不提交；返回 `10003`；输出 ERROR 日志（`refund_no`、`pay_no`、R，不含密钥），`pay_refund_quota_inconsistent_total + 1`。退款保持原状态，由回调重试（网关对 `10003` 返回 HTTP 500，见 GW-06 第 4 条，渠道按 CH-05 重试）、查单补偿（PAY-05）或卡单恢复（REF-04）再次调用，每次都再次暴露，直到人工修复数据。（2026-10-27 用户决定）
 
 验收：
 
@@ -1761,6 +1765,7 @@ INIT 表示已受理、尚未提交渠道；PROCESSING 表示已冻结商户资�
 - [ ] 商户余额不足（由 REF-02 移来）：接口返回 `40002`，退款 FAILED（`INSUFFICIENT_BALANCE`），`refunded_amount` 恢复，没有 FROZEN 冻结单，outbox 1 条 `refund.failed`。
 - [ ] 渠道受理拒绝（由 REF-02 移来，用假渠道客户端注入 `REJECTED`）：接口返回 `30006`，退款单 FAILED（`CHANNEL_REJECTED`），`refunded_amount` 恢复，outbox 1 条 `refund.failed`。
 - [ ] 重复回调只推进一次、只产生 1 条事件。
+- [ ] 测试用 SQL 把 `refunded_amount` 改为小于 R：以渠道 FAILED 结果调用 `ApplyRefundResult`（PROCESSING 退款），以及对 INIT 退款执行冻结失败分支，都返回 `10003`；退款单、`channel_txn` 保持原状态，`refunded_amount` 不变，outbox 没有 `refund.failed`，`pay_refund_quota_inconsistent_total` 各 +1，各有一条 ERROR 日志。
 
 #### REF-04 退款卡单恢复
 
@@ -2018,17 +2023,20 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 
 | 事件 | 处理 | 不可重试情况 |
 |---|---|---|
-| `payment.succeeded` | 按 `merchant_id` 路由分片，`Post(PAY, pay_no)`，分录按 §2.5.2：借本分片渠道应收子账户 A，贷商户 A − F，贷本分片手续费收入子账户 F（F = 0 时省略手续费分录，凭证只有 2 条分录） | 商户账户不存在 |
+| `payment.succeeded` | 按 `merchant_id` 路由分片，`Post(PAY, pay_no)`，分录按 §2.5.2：借本分片渠道应收子账户 A，贷商户 A − F，贷本分片手续费收入子账户 F（F = 0 时省略手续费分录，凭证只有 2 条分录） | 商户账户不存在；`Post` 返回 `40005`（账户非 ACTIVE） |
 | `refund.succeeded` | `ConfirmFreeze(REFUND, refund_no, merchant_id, channel)`，贷本分片渠道应收子账户 | 返回 `40004`（冻结单缺失或已解冻，属于严重不一致，计数并输出 ERROR 日志） |
 | `refund.failed` | `ReleaseFreeze(REFUND, refund_no, merchant_id, amount)`，冻结不存在时为空回滚 | 返回 `40004`（已确认扣款） |
 
 故障点 `ledger.after_commit`（数据库提交后、offset 提交前）。
+
+`Post` 返回 `40005` 视为不可重试：按 MQ-03 写入 DLQ 并提交 offset，`pay_mq_dlq_total + 1`，输出 ERROR 日志（`event_id`、`event_type`、`merchant_id`，不含密钥）。账户恢复 ACTIVE 后由 MQ-05 重放修复。（2026-10-27 用户决定）
 
 验收：
 
 - [ ] 同一 `payment.succeeded` 消息投递 5 次，只生成 1 张凭证（A3 账务层）。
 - [ ] 在 `ledger.after_commit` kill 进程，重启后重复消费不重复入账（C5）。
 - [ ] 商户账户不存在时消息进入 DLQ，后续消息正常处理。
+- [ ] 商户结算账户被测试改为非 ACTIVE：该 `payment.succeeded` 不重试，进入 DLQ，`pay_mq_dlq_total` +1，有一条 ERROR 日志，没有新凭证；后续消息正常处理。
 - [ ] `fee_amount = 0` 的 `payment.succeeded`：凭证只有借渠道应收 A、贷商户 A 两条分录，手续费收入余额不变，`CheckBalance` 通过。
 - [ ] CLOSE_RACE 关单返回 `30003` 的订单（由 PAY-06 移来）：`payment.succeeded` 经投递器投递并消费后，商户入账恰好 1 次。
 - [ ] 订单 10000 入账后退款 3000 成功（由 REF-03 移来）：消费 `refund.succeeded` 后商户余额 −3000、冻结 0、渠道应收 −3000，`CheckBalance` 通过。
@@ -2052,6 +2060,7 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 
 - [ ] 删除一张 PAY 凭证所对应的消费结果（测试环境中构造“漏入账”），重放后入账完成；对正常事件重放不产生新凭证。
 - [ ] 对 PAYING 订单重建 `payment.succeeded` 被拒绝（`30003`）。
+- [ ] 因商户账户非 ACTIVE 进入 DLQ 的 `payment.succeeded`（MQ-04）：账户恢复 ACTIVE 后按 `event_id` 重放，入账恰好 1 次，`CheckBalance` 通过。
 
 #### MQ-06 outbox 清理
 
@@ -2285,14 +2294,17 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 2. 按 `uk_channel_bill_date` 创建批次；已存在且 DONE、未指定 force → 直接返回已有结果；FAILED 或 force → 重跑；未超时的 INIT、DOWNLOADED、CHECKING → 返回当前批次，不重复执行；超时的按第 5 条接管。
 3. 重跑：删除该批次的 `recon_channel_bill` 和状态为 PENDING 的差错，保留 RESOLVED、IGNORED 的差错及处理记录；然后 CAS 把批次重置为 INIT，从下载开始执行。
 4. 批次状态：`INIT → DOWNLOADED → CHECKING → DONE`，任一步失败 → FAILED 并记录 `error_msg`。
-5. 并发控制：CAS 推进状态；处于 INIT、DOWNLOADED 或 CHECKING 且进入该状态超过 30 分钟视为卡死，可被重新接管（CAS 条件带原状态与原时间戳，同一时刻只有一个接管者）。CHECKING 用 `started_at` 判定；INIT、DOWNLOADED 用哪个时间列判定见 §8.1 Q6。
-6. 渠道返回 `BILL_NOT_READY` 时（REC-02 第 4 条）批次保持 INIT，由本功能点的调度器在 30 分钟后对该批次重新执行下载，即第 5 条 INIT 超时接管的同一路径；扫描间隔与重试上限见 §8.1 Q6。
+5. 并发控制：CAS 推进状态；超时视为卡死，可被重新接管。CHECKING 按 `started_at` 超过 30 分钟判定；INIT、DOWNLOADED 按 `updated_at` 超过 30 分钟判定（不改表）。接管用 CAS，条件带原状态与原时间戳，并把该时间戳改为当前时间，同一时刻只有一个接管者。改写 `recon_batch` 的每条 UPDATE 都显式写 `updated_at = now`（注入时钟，截到毫秒），不依赖 ON UPDATE 的数据库时间。超时只在 RunBatch 被调用时判定，调用时机是现有的三种：每日定时（第 1 条）、CLI、管理接口；不加独立的后台扫描。（2026-10-27 用户决定，§8.1 Q6）
+6. 渠道返回 `BILL_NOT_READY` 时（REC-02 第 4 条）批次保持 INIT，recon 进程用注入时钟的调度器在 30 分钟后对该批次再调用一次 RunBatch，此时 `updated_at` 已超过 30 分钟，按第 5 条接管并重新下载。只调度这一个批次，不扫描其他批次。同一批次当天（东八区日期）最多重试 6 次，第 6 次重试仍为 `BILL_NOT_READY` 时 CAS 置 FAILED，`error_msg` 记录 `BILL_NOT_READY`；之后按第 2 条可重跑。重试计数和待执行的重试只在进程内保存：进程重启后两者丢失，批次停在 INIT，直到下一次 CLI 或管理接口调用按第 5 条接管，计数从 0 重新开始。（2026-10-27 用户决定）
 
 验收：
 
 - [ ] 同一账期并发触发两次，只有一次执行。
 - [ ] 重跑后差错结果与首次一致，已处理的差错不丢失。
-- [ ] 批次停在 INIT、DOWNLOADED、CHECKING 各构造一次：Fake 时钟推进 29 分钟时再次触发返回当前批次、不执行；推进到 31 分钟时被接管并执行到 DONE；两个接管者并发时只有一个执行。
+- [ ] 批次停在 INIT、DOWNLOADED、CHECKING 各构造一次（INIT、DOWNLOADED 由 `updated_at`、CHECKING 由 `started_at` 计时）：Fake 时钟推进 29 分钟时调用 RunBatch 返回当前批次、不执行；推进到 31 分钟时调用 RunBatch 被接管并执行到 DONE；两个接管者并发时只有一个执行。
+- [ ] 没有后台扫描：停在 DOWNLOADED 的批次在 Fake 时钟推进 2 小时、期间没有 RunBatch 调用时，状态与 `updated_at` 都不变。
+- [ ] 假渠道一直返回 `BILL_NOT_READY`：首次下载之后每 30 分钟（注入时钟）重试一次，共重试 6 次（账单请求共 7 次），第 6 次重试后批次 FAILED、`error_msg` 含 `BILL_NOT_READY`，之后不再自动请求。
+- [ ] 假渠道前 3 次返回 `BILL_NOT_READY`、第 4 次返回账单：批次在第 3 次重试时执行到 DONE，之后不再请求账单。
 
 #### REC-02 账单下载与导入
 
@@ -2303,7 +2315,7 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 1. 下载超时 30 秒，失败重试 3 次（间隔 10 秒）。
 2. 校验 `X-Bill-Sha256` 与 `X-Bill-Count`，不一致 → FAILED。
 3. 严格解析 CSV：表头必须与 `docs/05-api.md` §9.6 一致；金额为整数；时间格式合法；任一行错误 → FAILED，错误信息带行号。
-4. 渠道返回 `BILL_NOT_READY` → 批次保持 INIT，30 分钟后由 REC-01 的调度器重试（REC-01 第 6 条）。
+4. 渠道返回 `BILL_NOT_READY` → 批次保持 INIT，每 30 分钟重试一次，当天最多 6 次，之后置 FAILED（REC-01 第 6 条）。
 5. 在一个事务内每 1000 行批量插入，状态置为 DOWNLOADED，写入 `bill_file_hash`。
 
 验收：
@@ -2459,6 +2471,7 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 | `pay_ledger_batch_size`、`pay_ledger_batch_fallback_total` | histogram、counter | shard |
 | `pay_stage_duration_seconds` | histogram | chain、stage（OPT-01） |
 | `pay_transfer_stuck`、`pay_transfer_inconsistent_total` | gauge、counter | mode |
+| `pay_refund_quota_inconsistent_total` | counter | —（REF-03 第 5 条） |
 | `pay_recon_diffs_total`、`pay_recon_pending_diffs` | counter、gauge | diff_type |
 | `pay_ratelimit_rejected_total`、`pay_nonce_unavailable_total` | counter | — |
 
@@ -2540,14 +2553,14 @@ ACC-10 只在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（
 
 3. 故障点 `ledger.after_batch_commit`：任一分片组提交后、offset 提交前。
 4. 所有分组提交成功后才提交该批 offset。部分分组已提交时崩溃，重新消费时第 2 步的预查会跳过已入账事件。
-5. 反序列化失败的消息取不到 `merchant_id`，在分组前识别并直接按 MQ-03 进入 DLQ，不影响任何分组（R16）。组内事件不可重试（商户账户不存在）：本组回滚并退化为逐条处理，坏消息进入 DLQ，其余事件正常入账，`pay_ledger_batch_fallback_total + 1`。组内有非 ACTIVE 账户（第 2 步的 `40005` 分支）同样回滚并退化为逐条处理、`pay_ledger_batch_fallback_total + 1`，该事件按 MQ-04 逐条模式处理 Post 返回的 `40005`，其余事件正常入账。
+5. 反序列化失败的消息取不到 `merchant_id`，在分组前识别并直接按 MQ-03 进入 DLQ，不影响任何分组（R16）。组内事件不可重试（商户账户不存在）：本组回滚并退化为逐条处理，坏消息进入 DLQ，其余事件正常入账，`pay_ledger_batch_fallback_total + 1`。组内有非 ACTIVE 账户（第 2 步的 `40005` 分支）同样回滚并退化为逐条处理、`pay_ledger_batch_fallback_total + 1`，该事件按 MQ-04 逐条模式处理 Post 返回的 `40005`：不可重试，进入 DLQ 并输出 ERROR 日志，可由 MQ-05 重放；其余事件正常入账。
 6. 入账事件不依赖顺序（MQ-02 第 4 条），批量合并不改变正确性；`balance_after` 仍逐条正确，ACC-10 核对不需要特殊处理。
 
 验收：
 
 - [ ] 1000 条 `payment.succeeded`（含 100 条重复、2 条坏消息）：凭证恰好 898 张，坏消息进入 DLQ，`CheckBalance` 通过。
 - [ ] 在 `ledger.after_batch_commit` kill account，重启后不重复入账（C12）。
-- [ ] 一批中有一个商户账户被测试改为非 ACTIVE：该组回滚并退化为逐条，`pay_ledger_batch_fallback_total` +1，其余事件各入账 1 次，该事件的结果与关闭批量开关时相同。
+- [ ] 一批中有一个商户账户被测试改为非 ACTIVE：该组回滚并退化为逐条，`pay_ledger_batch_fallback_total` +1，其余事件各入账 1 次；该事件进入 DLQ、`pay_mq_dlq_total` +1、没有凭证，与关闭批量开关时相同。
 - [ ] 压测报告给出逐条与批量模式下入账消费吞吐、`pay_mq_consume_lag`、数据库提交次数的对比（目标见 NFR-PERF-03）。
 
 #### OPT-03 热点平台账户子账户拆分
@@ -2662,7 +2675,7 @@ ACC-10 只在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（
 
 规则：
 
-1. 故障点由 BASE-15 提供，清单见 BASE-15 规则 5；演练通过 `FAULT_POINTS` 打开。
+1. 故障点由 BASE-15 提供，清单见 BASE-15 规则 6；演练通过 `FAULT_POINTS` 打开。
 2. 演练场景（`test/chaos/`，通过 `docker-compose.chaos.yml` 启动）：
 
    | # | 场景 | 方式 | 期望 |
@@ -2988,6 +3001,8 @@ ACC-10 只在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（
 | A11 | 跨分片转账在并发与任意崩溃点下资金守恒 | ACC-04~06、ACC-10、ACC-14、TRF-03、TRF-04 | TRF-03 并发测试；`docs/chaos-report.md` C9–C11、C13 |
 | A12 | 三条链路的性能优化有前后对比数据 | OPT-01 ~ OPT-04、GW-08、QA-05 | `docs/perf-report.md` |
 
+A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1–C13：前者覆盖支付、退款、入账链路的崩溃与中间件故障，后者覆盖跨分片转账的崩溃。两行各自引用、不重复计入。
+
 ## 8. 待定事项与变更记录
 
 ### 8.1 待定事项
@@ -2998,8 +3013,8 @@ ACC-10 只在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（
 | Q2 | NFR-PERF 目标是否需要调整 | 首次基线压测后按数据调整 | M6 基线压测后 |
 | Q3 | 热点账户是否做缓冲入账（OPT-05） | 子账户拆分（OPT-03）后行锁仍是瓶颈且 P0、P1 已完成才做 | M8 |
 | Q4 | `STATUS_MISMATCH`（本地已终态）的处理 | 已随 REC-07 砍掉，保持 PENDING 进入报告 | 已关闭 |
-| Q5 | account 的 SQL 是否像 payment 一样从 `biz/` 拆到 `dal/`（§2.3 现状偏离） | 保持现状：account `dal/` 只放分片连接池与就绪检查，SQL 留在 `biz/`；由用户决定是否拆 | 用户决定，不阻塞 M3 |
-| Q6 | REC-01 超时接管的细节：INIT、DOWNLOADED 用哪个时间列判定（`docs/database.md` 中 `started_at` 只在进入 CHECKING 时写入）；调度器扫描间隔；`BILL_NOT_READY` 的重试上限 | 待定。建议二选一：每次状态变化都写 `started_at`（改其含义，需同步 `docs/database.md`），或用 `updated_at`（ON UPDATE，不改表）；扫描间隔与重试上限由用户给数 | REC-01 开工前 |
+| Q5 | account 的 SQL 是否像 payment 一样从 `biz/` 拆到 `dal/` | 已定（2026-10-27）：不拆，SQL 保持在 `biz/`，`dal/` 只放分片连接池与就绪检查（§2.3） | 已关闭 |
+| Q6 | REC-01 超时接管的细节：INIT、DOWNLOADED 用哪个时间列判定；扫描间隔；`BILL_NOT_READY` 的重试上限 | 已定（2026-10-27）：INIT、DOWNLOADED 用 `updated_at` 超过 30 分钟判定，不改表（CHECKING 仍用 `started_at`）；不加独立扫描，只在现有 RunBatch 触发时机（定时、CLI、管理接口）判定；`BILL_NOT_READY` 每 30 分钟重试一次，当天最多 6 次，之后置 FAILED（REC-01 第 5、6 条） | 已关闭 |
 
 ### 8.2 变更记录
 
@@ -3052,3 +3067,4 @@ ACC-10 只在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（
 | 2026-10-27 | v3.0 | PAY-01 文字更正（接口文档 2.1.7）：上一行与 PAY-01 说明里“列排序规则不区分大小写”有误。`merchant` 表列跟随库默认 `utf8mb4_bin`（区分大小写，但 PAD SPACE 忽略尾部空格）；集成测试临时库为 `utf8mb4_0900_ai_ci`（不区分大小写与重音）。两种规则下 SQL 都可能匹配到字节不同的值，所以读回后逐字节比较。行为、错误码、IDL、表结构都不变 |
 | 2026-10-27 | v3.0 | 文档审查文字修正，不改规则：CH-07 明细标头改为与 §3 一致的 `P0 · M6`；QA-02 明细标头的里程碑与依赖改为与 §3 一致的 `M6–M7`、`全链路、OPT-01、CH-07`；BASE-03 规则 1 不再引用已删除的设计草稿，改为指向 `migrations/` 与 `docs/database.md`；本表 PAY-10 一行的日期按其提交改为 2026-10-19 并按日期排序；§5.2 的 NFR-CON-07 移到 NFR-CON-06 之后；Q2 最晚决定改为 M6 基线压测后（基线压测在 M6）；`/metrics` 暴露统一归 OPS-03，ACC-10 规则 4 与 OPS-03 末段原写的“仍是 OPS-01”作废（上面 2026-10-21 ACC-10 一行同此） |
 | 2026-10-27 | v3.0 | 文档审查第 2 阶段，按用户确认的决定修改规则（A1、A3、A4、A5、A6、A7、A9）。A1：MQ-02 改为“短事务领取并把 `next_retry_at` 推后为 30 秒租约 → 事务外发送 → 按租约值 CAS 回写”，发送期间不持有行锁，不改表结构；验收改为不注入故障时每个 `event_id` 恰好 1 次，并新增无行锁、过期租约接管、过期回写不覆盖三条；§2.8 与 QA-01 C4 同步。A3：§3 与明细标头的依赖按“验收用到的功能点都列为直接依赖、不依赖更晚里程碑、无环”重排，TL-03、QA-04 不再写“全链路”“全部 P0”（QA-04 改为列出不被其他 P0 依赖的 P0 功能点）；新增 BASE-15 故障注入点（M3，原 QA-01 规则 1、2，`pkg/fault`），QA-01 改名“故障演练”只做演练；GW-02 拆为 M3 的支付与余额路由和新增的 GW-09 退款与转账路由（M4）；QA-02 拆为 M6 基线压测（交付 `test/chaos/verify.sh`）和新增的 QA-05 优化后复测（M7），消除 QA-02 与 OPT-02 ~ OPT-04 的循环；OPT-01 改名“分阶段耗时埋点”，基线报告移到 QA-02。A4：无法判定的验收改为可判定并移到能验收的功能点：PAY-03 的 REJECTED、2 秒内成功、Pay 与 Close 并发、ACCEPT_TIMEOUT 分别移到 PAY-04、GW-06、PAY-06、PAY-05，PAY-03 补 OK 与超时两条；REF-02 的 FAILED 分支、回调成功、恢复后完成、解冻分别移到 REF-03、REF-04、MQ-04；TRF-02、TRF-03 的“由 TRF-04 推进”移到 TRF-04；PAY-06 的“商户最终入账”、REF-03 的账务结果移到 MQ-04；TL-01 的完整流程移到 GW-09，TL-01 改用假服务端验收；OPS-01 的压测中 `docker stop` 移到 QA-01，Kafka、Redis 就绪检查分别移到 MQ-03、GW-04；GW-06 的“Redis 停止时回调正常”移到 GW-04；GW-05 改为恰好 200 通过、100 个 429；OPS-03、TL-02、GW-07 验收写明具体计数；MQ-04 补 F = 0 只记两条分录；NTF-02 补 CAS 回写；REC-01 补 INIT、DOWNLOADED 超时接管和 `BILL_NOT_READY` 重试路径（细节见 §8.1 Q6）；REF-03 规则 2 写明释放条件 `refunded_amount >= R`；OPT-02 补非 ACTIVE 账户退化为逐条。A5：CH-06 保持 DOING，补 M4 的 SLOW、ACCEPT_TIMEOUT 规则与可判定验收；CLOSE_RACE 由 CH-03 覆盖不重做；BILL_MISSING、BILL_AMOUNT_DIFF 的账单表现移到 CH-08 验收。A6：§2.3 按已实现代码修正：`internal/testkit`、`pkg/accountclient`、`pkg/server` 入图，account biz 为平铺单包，payment biz 现为平铺文件；记录 payment、account 的 SQL 都在 `biz/` 的现状偏离（account 是否拆分见 §8.1 Q5）。A7：ACC-11 规则 3 改为按方法区分服务端超时，`CheckBalance` 全量模式 120 秒，其余 2 秒。A9：§0.3 DoD 增加报告类与人工验收的证据口径。已完成功能点的状态与已勾验收不变；需要改代码的后续工作待 fix/ACC-11-…、fix/PAY-01-dal、[chore] 落地：ACC-11 服务端超时按方法区分（fix/ACC-11-…）、payment SQL 拆到 `dal/`（fix/PAY-01-dal）、`make cover` 加 `integration` 构建标签（[chore]） |
+| 2026-10-27 | v3.0 | 文档审查第 2 阶段遗留问题的用户决定：REF-03 新增第 5 条，释放 `refunded_amount` 的 UPDATE 影响 0 行时整个事务回滚、返回 `10003`、ERROR 日志并计 `pay_refund_quota_inconsistent_total`（已登记到 OPS-03），由回调重试、查单补偿或卡单恢复再次暴露；REC-01 第 5、6 条：INIT、DOWNLOADED 按 `updated_at` 超过 30 分钟接管（CHECKING 仍按 `started_at`），UPDATE 显式写注入时钟的 `updated_at`，只在现有 RunBatch 触发时机判定、不加后台扫描，`BILL_NOT_READY` 每 30 分钟对该批次重试一次、当天最多 6 次后置 FAILED（重试计数与待执行重试只在进程内），REC-02 第 4 条与 §2.8 同步，§8.1 Q6 关闭；BASE-15 新增第 5 条启动校验，`FAULT_POINTS` 默认空、逗号分隔，出现未登记名称（含拼写错误、空项、`:once` 以外的后缀）时启动失败，登记表顺延为第 6 条；MQ-04 中 `Post` 返回 `40005` 为不可重试，进 DLQ 并输出 ERROR 日志，可由 MQ-05 重放，OPT-02 退化路径一致，MQ-04、MQ-05、OPT-02 补验收；§8.1 Q5 关闭，account 的 SQL 保持在 `biz/`；§2.3 的 payment biz 按现状写成平铺单包，只保留 payment SQL 待 fix/PAY-01-dal 拆出的偏离；CH-06 第 6 条 SLOW 只推迟首次回调，失败后按 CH-05 重试，其余与 NORMAL 一致，补重试验收；§7 注明 A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来是 QA-01 的 C1–C13。`docs/07-module-plan.md` 同步 §4，并把消息行、性能优化行的周改为实际里程碑。不改表结构、错误码与资金流向 |
