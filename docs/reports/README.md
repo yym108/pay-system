@@ -36,3 +36,4 @@
 | CH-05 | 渠道异步回调 | 支付 | `9ef8bff` | 2026-10-26 | [CH-05-notify.md](CH-05-notify.md) |
 | CH-06 | 确定性故障场景（M3） | 支付 | `86049ab` | 2026-10-27 | [CH-06-scenarios.md](CH-06-scenarios.md) |
 | PAY-01 | 商户与密钥 | 支付 | `8a0cf99` | 2026-10-27 | [PAY-01-merchant-credential.md](PAY-01-merchant-credential.md) |
+| BASE-15 | 故障注入点 | 基础设施 | `9de0678` | 2026-10-28 | [BASE-15-fault.md](BASE-15-fault.md) |
