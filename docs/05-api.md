@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 3.0.1 |
+| 文档版本 | 3.1.0 |
 | API 版本 | v1（路径前缀 `/v1`） |
 | 最后修改 | 2026-10-27 |
 | 状态 | 设计基线，实现须与本文一致 |
@@ -56,6 +56,7 @@
 | 2.1.8 | 2026-10-27 | 文档审查后的文字修正，不改契约：§0.2 变更记录统一为版本升序。§3.7 注明 V3 只验证签名算法，body 不含 `request_id`。§8.5 写明 `error_msg`、`handler`、`handle_note` 的库列 NULL 映射为空串、字段仍输出。§9.4 防悬挂行的 `scenario`、`notify_url` 改为显式写入与列默认相同的值。§10.1 总述把 `Reverse` 列入传分片号的例外，事务只在一个分片上开启限定为写操作，并写明 `CheckBalance` 全量、`GetAccount` 查 PLATFORM 只读两个分片；TransferInTry / Confirm / Cancel 业务错误补 `10001`；Try / Cancel 的 `txn_no` 注明是进程内返回值，RPC 响应只有 `status`；ConfirmFreeze 的 32 码点注明来自 `account.owner_id` 列宽，平台渠道编码最多 16 位；补 `Reverse` 在 ACC-08 完成前一律返回 `10003`、不写行。§10.2 CreateRefund、CreateTransfer 的响应改为 IDL 中的 `CreateRefundResponse`、`CreateTransferResponse`；GetMerchantCredential 请求为 nil 返回 `10001`。不新增字段、不改错误码数字、不改 IDL | §0.2、§3.7、§8.5、§9.4、§10.1、§10.2 | ACC-02、ACC-06、ACC-08、ACC-10、ACC-14、CH-03、PAY-01、REC-01、REF-01、TRF-01 |
 | 3.0.0 | 2026-10-27 | 用户确认（A2、A7、A1）。内部 RPC 不兼容变更：`PaymentService.Pay` 的返回类型由 `PaymentOrder` 改为 `PayResponse{biz_code, payment_order}`，`ClosePayment` 改为 `ClosePaymentResponse{biz_code, payment_order}`，使 `Pay` 的 `30006`、`ClosePayment` 的 `30003` 能连同订单返回；§10 与约定 §5.3 第 5 条的携带对象例外补上这两处。PAY-03 落地，返回类型变更在无调用方时进行：两个方法目前一律返回 `10003`，没有调用方，IDL 在 PAY-03 实现时修改并 `make gen`。商户 API 不变，路径仍为 `/v1`，HTTP 响应与 §4.2、§4.3 的 `data` 规则不变。行为变更：`CheckBalance` 服务端处理上限改为商户模式 2 秒、全量模式 120 秒（原为统一 2 秒），代码随 ACC-11 修改。文字：§11.5 写明投递器领取租约、事务外发送、按租约 CAS 回写带来的重复投递；§8.4 的 `/metrics` 归属改为 OPS-03。不新增错误码 | §1、§4.2、§4.3、§8.4、§10、§10.1、§10.2、§11.5 | PAY-03、PAY-06、ACC-10、ACC-11、MQ-02、OPS-03 |
 | 3.0.1 | 2026-10-27 | 文字对齐需求 2026-10-27 的功能点拆分：商户 API 网关路由拆为 GW-02（支付单与余额，§4.1–§4.4、§4.7）与 GW-09（退款与转账，§4.5、§4.6、§4.8、§4.9），§1 接口清单说明与 §4 各接口标头写明归属，§1 中 §4.1–§4.9 各行的“最后修改”改为 2026-10-27；2.0.0 行中的 GW-02 是当时的归属，不改写。§10.2 写明 `PayResponse`、`ClosePaymentResponse` 的订单字段 `2: PaymentOrder payment_order` 为必填，与 `CreateRefundResponse` 一致（用户确认）。不改契约，不新增字段，不改错误码 | §1、§4.1–§4.9、§10.2 | GW-02、GW-09、PAY-03 |
+| 3.1.0 | 2026-10-27 | 随需求 2026-10-27 的对账规则补充（REC-01、REC-03、REC-06、REC-08）。新增字段：`RunBatch` 响应与 `POST /admin/recon/run` 的 `data` 新增 `manual_total`、`manual_diffs`（“等待人工处理”的差错，不限批次，按 `bill_date` 升序前 100 条）；`idl/recon.thrift` 在 REC-08 实现时追加 optional 字段，向后兼容。§8.2 批次规则按 REC-01 改写：满 30 分钟（≥）接管，INIT、DOWNLOADED 按 `updated_at`、CHECKING 按 `started_at` 计时；INIT 从下载、DOWNLOADED 直接比对、CHECKING 重新比对；重跑与接管只删尚未自动处理的 PENDING 差错，同键跳过；`BILL_NOT_READY` 最多重试 6 次后 FAILED，计数持久化。§8.5 `ReconBatch` 注明不输出 `retry_count`；`ReconDiff` 的 `channel_status`（严重不一致标记）、`handle_action`（失败时也写、跨批次重试）补说明。不改已有字段，不新增错误码 | §8.2、§8.5、§10.3 | REC-01、REC-03、REC-06、REC-08 |
 
 ## 1. 接口总览
 
@@ -608,8 +609,23 @@ signature = base64(HMAC-SHA256(channel_key, canonical))
 |---|---|---|
 | `batch` | object | `ReconBatch`（§8.5） |
 | `diffs` | array | 本批次的 `ReconDiff`，最多 100 条；总数见 `batch.diff_count` |
+| `manual_total` | int | “等待人工处理”的差错总数（REC-08），不限批次 |
+| `manual_diffs` | array | “等待人工处理”的 `ReconDiff`，按 `bill_date` 升序的前 100 条，可以是空数组 |
 
-批次规则（REC-01）：已 DONE 且未指定 `force` → 直接返回已有结果；FAILED 或 `force = true` → 重跑；正在执行（INIT、DOWNLOADED、未超时的 CHECKING）→ 返回当前批次，不重复执行。批次 FAILED 时 `batch.error_msg` 记录原因。
+“等待人工处理”是自动处理已停止、只能等人工的差错，不限批次，在生成响应时按 `recon_diff` 实时查询：`status = PENDING`、`handle_action` 非空且 `bill_date` 早于 D−8（已过自动重试窗口，REC-06），以及已判定为严重不一致的 `CHANNEL_MISSING`（`channel_status` 非空）。D 为本次运行时的东八区日期。`handle_action` 为空的 PENDING 差错（如 `LOCAL_MISSING`）不在其中，它们出现在所属批次的 `diffs` 里。
+
+`manual_total`、`manual_diffs` 在 REC-08 实现时加入 `idl/recon.thrift` 的 `RunBatchResponse`，是 optional 新字段，向后兼容（§10.3）。网关在字段缺失时输出 `manual_total = 0`、`manual_diffs = []`。
+
+批次规则（REC-01）：
+
+- 已 DONE 且未指定 `force` → 直接返回已有结果。
+- FAILED 或 `force = true` → 重跑：删除本批次的账单行和尚未自动处理的差错（PENDING 且 `handle_action` 为空），保留已自动处理的差错和 RESOLVED、IGNORED 差错；批次重置为 INIT、`BILL_NOT_READY` 重试计数清零，从下载开始。重新比对得到与保留差错同键的结果时跳过，不覆盖已有差错。
+- INIT、DOWNLOADED、CHECKING 且未满 30 分钟 → 返回当前批次，不重复执行。
+- INIT、DOWNLOADED、CHECKING 且满 30 分钟（当前时间 − 计时列 ≥ 30 分钟）→ 视为卡死，由本次调用接管，同一时刻只有一个接管者。计时列：INIT、DOWNLOADED 用 `updated_at`，CHECKING 用 `started_at`。接管后：INIT 从下载开始；DOWNLOADED 不重新下载，直接比对；CHECKING 先删除尚未自动处理的差错，再重新比对。被接管的旧运行不会覆盖新运行的结果。
+- 超时只在 RunBatch 被调用时判定（每日定时、`BILL_NOT_READY` 的延迟重试、CLI、本接口），没有后台扫描。每日定时触发还会对前 7 个账期（D−8 到 D−2）中未完成的批次逐个调用 RunBatch。
+- 渠道返回 `BILL_NOT_READY`：批次保持 INIT，30 分钟后自动重试；首次下载之后最多重试 6 次（账单请求共 7 次），第 6 次重试仍未就绪时批次置为 FAILED，`batch.error_msg = BILL_NOT_READY`。重试计数保存在库里，recon 重启不丢。
+
+批次 FAILED 时 `batch.error_msg` 记录原因。
 
 业务错误：`10001`（渠道未配置、日期格式错误或晚于今天）。
 
@@ -668,7 +684,7 @@ ACC-10 交付进程内 `biz.CheckBalance`。RPC handler 由 ACC-11 转发到该�
 
 ### 8.5 管理对象
 
-`ReconBatch`：`batch_no`、`channel`、`bill_date`、`status`（INIT / DOWNLOADED / CHECKING / DONE / FAILED）、`channel_count`、`channel_amount`、`local_count`、`local_amount`、`matched_count`、`diff_count`、`error_msg`、`started_at`、`finished_at`。`error_msg` 在 IDL 中是必填 string，库列可空：NULL 映射为空串，字段仍输出。
+`ReconBatch`：`batch_no`、`channel`、`bill_date`、`status`（INIT / DOWNLOADED / CHECKING / DONE / FAILED）、`channel_count`、`channel_amount`、`local_count`、`local_amount`、`matched_count`、`diff_count`、`error_msg`、`started_at`、`finished_at`。`error_msg` 在 IDL 中是必填 string，库列可空：NULL 映射为空串，字段仍输出。库表的 `retry_count`（`BILL_NOT_READY` 重试计数）不输出。
 
 `ReconDiff`：
 
@@ -677,9 +693,10 @@ ACC-10 交付进程内 `biz.CheckBalance`。RPC handler 由 ACC-11 转发到该�
 | `diff_no`、`batch_no`、`channel`、`bill_date` | 差错与所属批次 |
 | `diff_type` | `LOCAL_MISSING` / `CHANNEL_MISSING` / `AMOUNT_MISMATCH` / `STATUS_MISMATCH`（外部对账，REC-03）；`LEDGER_MISSING` / `TRANSFER_MISMATCH`（内部对账，REC-05） |
 | `txn_type`、`biz_no` | 匹配键；`txn_type` 为 `PAY` / `REFUND`，`TRANSFER_MISMATCH` 为 `TRANSFER`，`biz_no` 为 `transfer_no` |
-| `channel_txn_no`、`local_amount`、`channel_amount`、`local_status`、`channel_status` | 双方数据，无对应方时省略 |
+| `channel_txn_no`、`local_amount`、`channel_amount`、`local_status` | 双方数据，无对应方时省略 |
+| `channel_status` | 渠道侧状态，无值时省略。来自账单行；`CHANNEL_MISSING` 插入时渠道侧没有账单行，为空。`CHANNEL_MISSING` 查单成功但渠道状态不是 SUCCESS（严重不一致，REC-06）时写入查单返回的渠道状态：非空表示已判定、不再自动重试，等待人工处理；查单调用出错时不写，下次批次运行会重试 |
 | `status` | `PENDING` / `RESOLVED` / `IGNORED`，只由自动处理推进（REC-06） |
-| `handle_action` | `REQUERY`（同步渠道状态）/ `REPLAY`（重放事件，保持 PENDING，下次批次复核凭证后置为 RESOLVED）；未处理时省略 |
+| `handle_action` | `REQUERY`（同步渠道状态）/ `REPLAY`（重放事件，保持 PENDING，下次批次复核凭证后置为 RESOLVED）；未处理时省略。自动处理失败（如查单或重放调用出错）时同样写入，差错保持 PENDING，`handle_note` 记录失败原因。非空的差错在重跑和接管时保留，`bill_date` 在 D−8 到 D−2 之间时由之后任意账期的批次运行自动重试（REC-06） |
 | `handler` | 自动处理为 `system`；未处理时库列为 NULL，映射为空串，字段仍输出（IDL 中为必填 string） |
 | `handle_note` | 处理说明；`LEDGER_MISSING` 金额不等、`TRANSFER_MISMATCH` 时记录各方实际情况；库列为 NULL 时映射为空串，字段仍输出（IDL 中为必填 string） |
 | `resolved_at`、`created_at` | 时间 |
@@ -944,7 +961,9 @@ account RPC 以商户号（或 owner）为入参，由 account 按商户号路�
 
 | 方法 | 请求 | 响应 | 业务错误 | 调用方 | 功能点 |
 |---|---|---|---|---|---|
-| `RunBatch` | `channel`、`bill_date`、`force` | `batch`（`ReconBatch`）、`diffs`（`ReconDiff`，≤ 100 条） | 10001 | gateway（§8.2）、recon 定时任务、CLI | REC-01、REC-08 |
+| `RunBatch` | `channel`、`bill_date`、`force` | `batch`（`ReconBatch`）、`diffs`（`ReconDiff`，≤ 100 条）、`manual_total`（i32）、`manual_diffs`（`ReconDiff`，≤ 100 条） | 10001 | gateway（§8.2）、recon 定时任务、CLI | REC-01、REC-08 |
+
+`manual_total`、`manual_diffs` 是“等待人工处理”的差错（§8.2）。当前 IDL 的 `RunBatchResponse` 只有 `1: batch`、`2: diffs`；REC-08 实现时追加 `3: optional i32 manual_total`、`4: optional list<ReconDiff> manual_diffs`，只增不删，旧调用方不受影响。
 
 ## 11. 事件
 

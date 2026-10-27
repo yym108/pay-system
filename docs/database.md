@@ -15,7 +15,7 @@
 | Naming | 表名、列名小写下划线；唯一索引 `uk_`，普通索引 `idx_`，检查约束 `ck_`；业务单号列以 `_no` 结尾；分片 schema 为 `pay_<服务>_<分片号>`（`docs/03-conventions.md` §7.2） |
 | Primary key convention | 每表 `id BIGINT UNSIGNED AUTO_INCREMENT`，只作物理主键、不对外暴露；分片表的 `id` 只在分片内唯一。业务单号（2 位前缀 + 19 位雪花数字，见 `docs/01-tech-decisions.md` D5）全局唯一，走唯一索引 |
 | Audit convention | `created_at`、`updated_at` 为 `DATETIME(3)`，由数据库默认值维护；只追加表（`ledger_txn`、`ledger_entry`、`merchant_fee_rate`）没有 `updated_at`。`recon_channel_bill` 不是只追加表：导入后只更新 `match_status`（重跑时按批次删除重导，见 §4.14），故意不带 `updated_at`；可变的核心表带 `version` 用于排查并发更新 |
-| Deletion convention | 一律不物理删除业务数据，不使用软删除标记；状态终结通过状态字段表达。例外：`outbox` 中 SENT 记录保留 7 天后清理（P1）；对账重跑时清理该批次的 `recon_channel_bill` 与 PENDING 差错 |
+| Deletion convention | 一律不物理删除业务数据，不使用软删除标记；状态终结通过状态字段表达。例外：`outbox` 中 SENT 记录保留 7 天后清理（P1）；对账重跑时清理该批次的 `recon_channel_bill` 与尚未自动处理的差错（`status = 'PENDING' AND handle_action IS NULL`），接管 CHECKING 批次时只清理这类差错（REC-01 第 3、5 条） |
 | Time convention | 数据库与连接时区均为 `+08:00`；毫秒精度；账期按东八区自然日 |
 | Money convention | 金额统一 `BIGINT`，单位分，币种仅 `CNY`（CHECK 约束） |
 | Sensitive data convention | 不存储卡号、手机号、身份证等个人信息；商户签名密钥以 AES-256-GCM 密文存储；日志按字段名脱敏（`docs/01-tech-decisions.md` D13） |
@@ -742,9 +742,9 @@
 ### 4.13 `recon_batch` — 对账批次
 
 - **Purpose:** 每渠道每账期一个批次及汇总结果。
-- **Lifecycle:** INIT → DOWNLOADED → CHECKING → DONE；任一步 → FAILED；FAILED、DONE（force）可重跑。卡死接管（REC-01 第 5 条）：CHECKING 按 `started_at`、INIT 与 DOWNLOADED 按 `updated_at` 超过 30 分钟视为卡死；只在 RunBatch 被调用时判定（每日定时、CLI、管理接口），没有独立的后台扫描。渠道返回 `BILL_NOT_READY`（REC-01 第 6 条）：批次保持 INIT，recon 进程在 30 分钟后对该批次再调用一次 RunBatch，此时按 `updated_at` 超时接管并重新下载；同一批次当天（东八区日期）最多重试 6 次，第 6 次重试仍未就绪时 CAS 置 FAILED，`error_msg` 记 `BILL_NOT_READY`。重试计数和待执行的重试只在进程内保存，不落表；进程重启后丢失，批次停在 INIT，等下一次 CLI 或管理接口调用按超时接管，计数从 0 开始。
+- **Lifecycle:** INIT → DOWNLOADED → CHECKING → DONE；任一步 → FAILED；FAILED、DONE（force）可重跑。重跑（REC-01 第 3 条）：删除本批次的 `recon_channel_bill` 和 `status = 'PENDING' AND handle_action IS NULL` 的差错，CAS 把批次重置为 INIT 并把 `retry_count` 归 0，从下载开始。卡死接管（REC-01 第 5 条）：距计时列满 30 分钟（now − 时间戳 ≥ 30 分钟）视为卡死，CHECKING 按 `started_at`，INIT 与 DOWNLOADED 按 `updated_at`；接管后 INIT 从下载开始，DOWNLOADED 不重新下载、CAS 推进为 CHECKING 后比对，CHECKING 改写 `started_at` 后删除未自动处理的 PENDING 差错再重新比对。超时只在 RunBatch 被调用时判定（每日定时，含 D−8 到 D−2 的未完成批次；`BILL_NOT_READY` 的单批次延迟重试；CLI；管理接口），没有独立的后台扫描。渠道返回 `BILL_NOT_READY`（REC-01 第 6 条）：批次保持 INIT，`retry_count` 用 CAS 加一，30 分钟后对该批次再调用一次 RunBatch，按 `updated_at` 超时接管并重新下载；`retry_count` 已到 6 时 CAS 置 FAILED，`error_msg = BILL_NOT_READY`。计数在表里，进程重启不丢；重启丢失的只是调度器里待执行的那次调用，由下一次每日定时、CLI 或管理接口接管后从已有 `retry_count` 继续。
 - **Sensitivity:** 内部。
-- **Authoritative source:** `migrations/recon/000001_init.up.sql`。
+- **Authoritative source:** `migrations/recon/000001_init.up.sql`。`retry_count` 列已规划、迁移未落，随 REC-01 新增（见 §6）。
 - **Write owners/read consumers:** recon 写；管理接口读。
 - **Retention/archival:** 长期。
 
@@ -765,10 +765,11 @@
 | `matched_count` | INT | 否 | 0 | — | 匹配笔数 | 内部 |
 | `diff_count` | INT | 否 | 0 | — | 差错笔数 | 内部 |
 | `error_msg` | VARCHAR(512) | 是 | NULL | — | FAILED 原因 | 内部 |
-| `started_at` | DATETIME(3) | 是 | NULL | — | 进入 CHECKING 的时间。只用于 CHECKING 的卡死判定：超过 30 分钟视为卡死，接管 CAS 带 `status = 'CHECKING' AND started_at = <原值>`（REC-01 第 5 条）。INIT、DOWNLOADED 不看此列 | 内部 |
+| `retry_count` | INT | 否 | 0 | — | **REC-01 新增，迁移未落。** `BILL_NOT_READY` 已重试次数（REC-01 第 6 条）。小于 6 时 `UPDATE recon_batch SET retry_count = retry_count + 1, updated_at = now WHERE id = ? AND status = 'INIT' AND retry_count = ?`，批次保持 INIT；已到 6 时用同一条件 CAS 置 FAILED、`error_msg = BILL_NOT_READY`。重跑重置为 INIT 时归 0。不对外输出（`ReconBatch` 无此字段） | 内部 |
+| `started_at` | DATETIME(3) | 是 | NULL | — | 本次 CHECKING 运行的开始时间，只用于 CHECKING。进入 CHECKING（含 DOWNLOADED 接管时的 `DOWNLOADED → CHECKING`）时写 now；距它满 30 分钟视为卡死，接管 CAS 带 `status = 'CHECKING' AND started_at = <原值>` 并把它改写为 now（REC-01 第 5 条）。CHECKING 运行把批次推进为 DONE 或 FAILED 的 CAS 带本次运行写入的 `started_at`，批次被接管后旧运行的这条 CAS 影响 0 行，旧运行放弃。INIT、DOWNLOADED 不看此列 | 内部 |
 | `finished_at` | DATETIME(3) | 是 | NULL | — | | 内部 |
 | `created_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | — | | 审计 |
-| `updated_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) ON UPDATE | — | 兼作 INIT、DOWNLOADED 的卡死判定时间（REC-01 第 5 条，不改表）：处于这两个状态且超过 30 分钟视为卡死。接管 CAS 带原状态与原 `updated_at`（`WHERE id = ? AND status = ? AND updated_at = <原值>`），同时把 `updated_at` 改为当前时间，影响 1 行才执行，所以同一时刻只有一个接管者。改写本表的每条 UPDATE 都显式写 `updated_at = now`（注入时钟，截到毫秒），不依赖 ON UPDATE 的数据库时间；状态不变的接管（INIT → INIT）也靠这一写法让行真正变化 | 审计 |
+| `updated_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) ON UPDATE | — | 兼作 INIT、DOWNLOADED 的卡死计时列（REC-01 第 5 条）：处于这两个状态且 now − `updated_at` ≥ 30 分钟视为卡死。接管 CAS 带原状态与原 `updated_at`（`WHERE id = ? AND status = ? AND updated_at = <原值>`），同时把 `updated_at` 改为 now，影响 1 行才执行，所以同一时刻只有一个接管者。改写本表的每条 UPDATE 都显式写 `updated_at = now`（now 为注入时钟，截到毫秒），不依赖 ON UPDATE 的数据库时间；状态不变的接管（INIT → INIT）也靠这一写法让行真正变化 | 审计 |
 
 #### Keys, Indexes, and Constraints
 
@@ -776,7 +777,7 @@
 | --- | --- | --- | --- | --- |
 | `PRIMARY` | PK | `id` | | migrations/recon/000001_init.up.sql |
 | `uk_batch_no` | UNIQUE | `batch_no` | | migrations/recon/000001_init.up.sql |
-| `uk_channel_bill_date` | UNIQUE | `channel, bill_date` | 同一账期只有一个批次，防止并发重复对账 | migrations/recon/000001_init.up.sql |
+| `uk_channel_bill_date` | UNIQUE | `channel, bill_date` | 同一账期只有一个批次，防止并发重复对账；每日定时按 `channel` 加 `bill_date` 范围（D−8 到 D−2）查出未完成的批次（REC-01 第 1 条） | migrations/recon/000001_init.up.sql |
 | `ck_batch_status` | CHECK | 枚举 | | migrations/recon/000001_init.up.sql |
 
 #### Relationships
@@ -786,7 +787,7 @@
 
 #### Operational Notes
 
-- **Backfill/migration considerations:** 无。
+- **Backfill/migration considerations:** REC-01 新增迁移 `ALTER TABLE recon_batch ADD COLUMN retry_count INT NOT NULL DEFAULT 0`，已有行取默认值 0，不需要回填。
 - **Compatibility/deprecation notes:** 无。
 
 ### 4.14 `recon_channel_bill` — 渠道账单明细
@@ -837,9 +838,13 @@
 ### 4.15 `recon_diff` — 对账差错
 
 - **Purpose:** 差错明细与自动处理记录（REC-03、REC-05、REC-06）。人工处理与挂账已砍掉（REC-07 CUT），未自动解决的差错保持 PENDING，出现在对账报告和 ERROR 日志中。
-- **Lifecycle:** PENDING → RESOLVED / IGNORED，只由自动处理推进（需求 §2.7）。批次重跑时删除该批次的 PENDING 差错，保留 RESOLVED、IGNORED。
+- **Lifecycle:** PENDING → RESOLVED / IGNORED，只由自动处理推进（需求 §2.7）。
+  - 插入（REC-03 第 4 条、REC-05 第 6 条）：`INSERT … ON DUPLICATE KEY UPDATE id = id`，本批次已有同键差错（`batch_no, txn_type, biz_no, diff_type`）时跳过，不改已有行的任何列；影响 1 行才计入 `pay_recon_diffs_total`。不用 `INSERT IGNORE`（会把 CHECK 失败等错误降为警告），也不用 `REPLACE`。批次的 `diff_count` 按本批次实际行数统计（含保留的行）。
+  - 重跑与 CHECKING 接管（REC-01 第 3、5 条）只删 `status = 'PENDING' AND handle_action IS NULL` 的差错；`handle_action` 非空的 PENDING 差错和 RESOLVED、IGNORED 差错保留，`id` 不变。
+  - 自动处理（REC-06）：写 `handle_action`、`handler`、`handle_note` 和置为 RESOLVED / IGNORED 都用 CAS `WHERE id = ? AND status = 'PENDING'`；影响 0 行时重新读取，按当前状态返回，不覆盖。处理失败同样写 `handle_action`，差错保持 PENDING。
+  - 跨批次重试：任意账期的批次运行都处理 `bill_date` 在 D−8 到 D−2 之间（D 为运行时的东八区日期）、`status = 'PENDING'` 的 `REQUERY` 差错（排除 `channel_status` 非空的 `CHANNEL_MISSING`）和 `REPLAY` 的 `LEDGER_MISSING`。窗口外仍为 PENDING 的不再自动处理，列入对账报告的“等待人工处理”（REC-08）。
 - **Sensitivity:** 内部，`handler` 为处理方标识（目前只有 `system`）。
-- **Authoritative source:** `migrations/recon/000001_init.up.sql`。
+- **Authoritative source:** `migrations/recon/000001_init.up.sql`。唯一键 `uk_batch_type_biz_no_diff_type` 已规划、迁移未落，随 REC-03 新增（见 §6）。
 - **Write owners/read consumers:** recon；管理接口（触发对账的响应）只读。
 - **Retention/archival:** 长期，作为审计记录。
 
@@ -849,19 +854,19 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | `id` | BIGINT UNSIGNED | 否 | AUTO_INCREMENT | PK | | 内部 |
 | `diff_no` | VARCHAR(32) | 否 | — | `uk_diff_no` | `RD` 前缀 | 内部 |
-| `batch_no` | VARCHAR(32) | 否 | — | `uk_batch_type_biz_no` 1 | 发现差错的批次 | 内部 |
+| `batch_no` | VARCHAR(32) | 否 | — | `uk_batch_type_biz_no` 1；REC-03 后 `uk_batch_type_biz_no_diff_type` 1 | 发现差错的批次 | 内部 |
 | `channel` | VARCHAR(16) | 否 | — | — | 批次渠道；内部对账差错（LEDGER_MISSING、TRANSFER_MISMATCH）同样取批次渠道 | 内部 |
 | `bill_date` | DATE | 否 | — | `idx_status_bill_date` 2 | | 内部 |
-| `diff_type` | VARCHAR(32) | 否 | — | `ck_diff_type` | LOCAL_MISSING / CHANNEL_MISSING / AMOUNT_MISMATCH / STATUS_MISMATCH（外部对账）；LEDGER_MISSING / TRANSFER_MISMATCH（内部对账） | 内部 |
-| `txn_type` | VARCHAR(16) | 否 | — | `uk_batch_type_biz_no` 2、`ck_diff_txn_type` | PAY / REFUND / TRANSFER；TRANSFER 只用于 TRANSFER_MISMATCH | 内部 |
-| `biz_no` | VARCHAR(32) | 否 | — | `uk_batch_type_biz_no` 3 | pay_no / refund_no / transfer_no | 内部 |
+| `diff_type` | VARCHAR(32) | 否 | — | `ck_diff_type`；REC-03 后 `uk_batch_type_biz_no_diff_type` 4 | LOCAL_MISSING / CHANNEL_MISSING / AMOUNT_MISMATCH / STATUS_MISMATCH（外部对账）；LEDGER_MISSING / TRANSFER_MISMATCH（内部对账） | 内部 |
+| `txn_type` | VARCHAR(16) | 否 | — | `uk_batch_type_biz_no` 2（REC-03 后 `uk_batch_type_biz_no_diff_type` 2）、`ck_diff_txn_type` | PAY / REFUND / TRANSFER；TRANSFER 只用于 TRANSFER_MISMATCH | 内部 |
+| `biz_no` | VARCHAR(32) | 否 | — | `uk_batch_type_biz_no` 3；REC-03 后 `uk_batch_type_biz_no_diff_type` 3 | pay_no / refund_no / transfer_no | 内部 |
 | `channel_txn_no` | VARCHAR(64) | 是 | NULL | — | 内部对账差错为 NULL | 内部 |
 | `local_amount` | BIGINT | 是 | NULL | — | 本地侧金额，一侧缺失时为 NULL | 财务 |
 | `channel_amount` | BIGINT | 是 | NULL | — | 渠道侧金额，一侧缺失或内部对账时为 NULL | 财务 |
 | `local_status` | VARCHAR(16) | 是 | NULL | — | 本地侧状态 | 内部 |
-| `channel_status` | VARCHAR(16) | 是 | NULL | — | 渠道侧状态 | 内部 |
+| `channel_status` | VARCHAR(16) | 是 | NULL | — | 渠道侧状态，来自账单行；`CHANNEL_MISSING` 插入时没有账单行，为 NULL。`CHANNEL_MISSING` 查单成功但渠道状态不是 SUCCESS（严重不一致，REC-06）时，与 `handle_action = REQUERY` 在同一条 CAS 中写入 `SyncChannelTxn` 返回的渠道状态。对 `CHANNEL_MISSING` 而言非空表示已判定、不再自动重试，等人工；查单调用出错时不写，仍会重试 | 内部 |
 | `status` | VARCHAR(16) | 否 | `'PENDING'` | `idx_status_bill_date` 1、`ck_diff_status` | PENDING / RESOLVED / IGNORED | 内部 |
-| `handle_action` | VARCHAR(32) | 是 | NULL | `ck_diff_action` | REQUERY（调用 `SyncChannelTxn`）/ REPLAY（LEDGER_MISSING 调用 `ReplayEvent`，写入后保持 PENDING，等待后续批次复核） | 内部 |
+| `handle_action` | VARCHAR(32) | 是 | NULL | `ck_diff_action` | REQUERY（调用 `SyncChannelTxn`）/ REPLAY（LEDGER_MISSING 调用 `ReplayEvent`，写入后保持 PENDING，等待后续批次复核）。自动处理失败（调用出错或超时）时同样写入，`handler = system`，`handle_note` 记失败原因，差错保持 PENDING。非空即“已自动处理过”：重跑和接管不删除该行 | 内部 |
 | `handler` | VARCHAR(64) | 是 | NULL | — | 自动处理为 `system` | 内部 |
 | `handle_note` | VARCHAR(512) | 是 | NULL | — | 处理说明；LEDGER_MISSING 金额不等时注明双方金额；TRANSFER_MISMATCH 记录各分片实际情况 | 内部 |
 | `resolved_at` | DATETIME(3) | 是 | NULL | — | | 内部 |
@@ -874,8 +879,9 @@
 | --- | --- | --- | --- | --- |
 | `PRIMARY` | PK | `id` | | migrations/recon/000001_init.up.sql |
 | `uk_diff_no` | UNIQUE | `diff_no` | | migrations/recon/000001_init.up.sql |
-| `uk_batch_type_biz_no` | UNIQUE | `batch_no, txn_type, biz_no` | 同一批次同一交易只记一条差错 | migrations/recon/000001_init.up.sql |
-| `idx_status_bill_date` | INDEX | `status, bill_date` | 待处理列表、LEDGER_MISSING 跨批次复核（`status = 'PENDING'` 前缀） | migrations/recon/000001_init.up.sql |
+| `uk_batch_type_biz_no` | UNIQUE | `batch_no, txn_type, biz_no` | 当前迁移：同一批次同一交易只记一条差错。REC-03 新增迁移删除此键，换成 `uk_batch_type_biz_no_diff_type` | migrations/recon/000001_init.up.sql |
+| `uk_batch_type_biz_no_diff_type` | UNIQUE | `batch_no, txn_type, biz_no, diff_type` | **REC-03 新增，迁移未落。** 同一批次同一交易的每类差错一条，使外部差错与内部差错可以并存（如 `AMOUNT_MISMATCH` 与 `LEDGER_MISSING`）；插入同键时 `ON DUPLICATE KEY UPDATE id = id` 跳过 | 计划（REC-03 迁移，见 §6） |
+| `idx_status_bill_date` | INDEX | `status, bill_date` | `status = 'PENDING'` 加 `bill_date` 范围：D−8 到 D−2 窗口内的跨批次 REQUERY 重试与 LEDGER_MISSING 复核（REC-06）；对账报告“等待人工处理”列表（`bill_date` 早于 D−8，或严重不一致的 `CHANNEL_MISSING`，REC-08） | migrations/recon/000001_init.up.sql |
 | `ck_diff_type` | CHECK | `diff_type IN ('LOCAL_MISSING','CHANNEL_MISSING','AMOUNT_MISMATCH','STATUS_MISMATCH','LEDGER_MISSING','TRANSFER_MISMATCH')` | | migrations/recon/000001_init.up.sql |
 | `ck_diff_txn_type` | CHECK | `txn_type IN ('PAY','REFUND','TRANSFER')` | | migrations/recon/000001_init.up.sql |
 | `ck_diff_status` | CHECK | `status IN ('PENDING','RESOLVED','IGNORED')` | | migrations/recon/000001_init.up.sql |
@@ -888,7 +894,7 @@
 
 #### Operational Notes
 
-- **Backfill/migration considerations:** 无。
+- **Backfill/migration considerations:** REC-03 新增迁移：删除 `uk_batch_type_biz_no`，新建 `uk_batch_type_biz_no_diff_type (batch_no, txn_type, biz_no, diff_type)`。新键比旧键多一列，已有数据在旧键下唯一，在新键下也唯一，不需要清理或回填。
 - **Compatibility/deprecation notes:** v3.0 删除的列、状态和动作以及 `handle_action` 的改名见 §5。设计稿已在 BASE-03 删除，之后的结构变化通过新迁移修改。
 
 ### 4.16 `mock_txn` — 模拟渠道交易
@@ -964,6 +970,7 @@
 | 2026-10-27 | 无（仅文档） | `recon_channel_bill`（审计约定）、`transfer_branch.version`、`mock_txn`（防悬挂行说明）、分片表总述、`recon_diff`（兼容说明） | 文档审查后的文字修正：`recon_channel_bill` 移出只追加表，写明只更新 `match_status`、故意不带 `updated_at`；补 `transfer_branch.version` 插入为 0、回写 `txn_no` 或 CAS 改状态时加 1；防悬挂行的 `scenario`、`notify_url` 改为代码显式写入与列默认相同的值；删除 `pay_account_1` 由 `CREATE TABLE ... LIKE` 复制的设计稿说法，改为两个分片执行同一迁移；`recon_diff` 改为“通过新迁移修改”；指需求文档的章节号补“需求”；补齐 15 处 Authoritative source 的右反引号。无 DDL，不改迁移 | 未执行迁移（无 SQL 变更） |
 | 2026-10-27 | 无（仅文档） | `outbox.next_retry_at`、`idx_status_next_retry_at`（说明） | 用户确认（A1）：投递器改为领取（`FOR UPDATE SKIP LOCKED`，把 `next_retry_at` 设为租约到期 now + 30s）→ 提交 → 事务外发送 → 按 `id`、`status = 'PENDING'`、`next_retry_at = <租约值>` CAS 回写。`next_retry_at` 兼作投递租约，重放回 PENDING 时设为 now。不改表结构、不改索引、不新增状态 | 未执行迁移（无 SQL 变更） |
 | 2026-10-27 | 无（仅文档） | `recon_batch.updated_at`、`recon_batch.started_at`、`recon_batch`（Lifecycle）、`mock_txn.notify_sent_count`（说明） | 用户决定（需求 §8.1 Q6，REC-01 第 5、6 条）：INIT、DOWNLOADED 的卡死判定用 `updated_at` 超过 30 分钟，CHECKING 仍用 `started_at`；只在 RunBatch 被调用时判定；接管 CAS 带原状态与原时间戳，每条 UPDATE 显式写 `updated_at`。`BILL_NOT_READY` 每 30 分钟重试、当天最多 6 次后置 FAILED，计数只在进程内。`notify_sent_count` 区分 SLOW 的现状（不发、不加）与 CH-06 第 6 条（只推迟首次回调，之后按普通回调计数）。不改表结构、不改索引 | 未执行迁移（无 SQL 变更） |
+| 2026-10-27 | 无（仅文档，迁移随 REC-01、REC-03 新增） | `recon_batch.retry_count`（新增，计划）、`recon_batch.updated_at`、`recon_batch.started_at`、`recon_batch`（Lifecycle）；`recon_diff.uk_batch_type_biz_no_diff_type`（替换 `uk_batch_type_biz_no`，计划）、`recon_diff.channel_status`、`recon_diff.handle_action`、`idx_status_bill_date`（说明）、`recon_diff`（Lifecycle）；§1 Deletion convention | 用户决定（需求 REC-01、REC-03、REC-05、REC-06、REC-08，2026-10-27）。`BILL_NOT_READY` 重试计数改为持久化到 `recon_batch.retry_count INT NOT NULL DEFAULT 0`（每次 CAS 加一，到 6 置 FAILED，重跑归 0），作废上一行“计数只在进程内、重启从 0 开始”。卡死判定写明满 30 分钟（≥）；`started_at` 接管 CHECKING 时改写，DONE / FAILED 的 CAS 带它。`recon_diff` 唯一键加 `diff_type`；重跑与接管只删 PENDING 且 `handle_action` 为空的差错；插入同键跳过（`ON DUPLICATE KEY UPDATE id = id`）；终态 CAS `WHERE id = ? AND status = 'PENDING'`；`handle_action` 失败时也写；`channel_status` 非空表示严重不一致、不再自动重试。§6 新增两条计划变更，按 REC-05 第 4 条关闭转账差错归属与 TRANSFER_MISMATCH 取值两条问题 | 未执行迁移（迁移未落，计划见 §6） |
 
 ## 6. Open Questions
 
@@ -973,6 +980,8 @@
 | 是否为热点账户引入子账户表或子账户编号规则 | D19、OPT-03、ACC-13 第 4 条 | — | 已关闭（v3.0）：`account.sub_no` + `uk_owner_account_type_sub`，不新增表 |
 | `recon_channel_bill` 跨批次按 `biz_no` 查询的索引 | REC-04 已 CUT，REC-03 只在本批次内匹配 | — | 已关闭（v3.0）：不需要 |
 | ACC-10 在途守恒汇总 `account_freeze(TRANSFER, CONFIRMED)`、`transfer_branch(PAYEE, CONFIRMED)` 是否需要 `(biz_type, status)` / `(role, status)` 索引 | ACC-10 第 2 条只在全量模式、手动触发 | 全量核对时全表扫描，压测数据量下耗时待测 | 第 7 周压测后决定，待确认 |
-| 转账差错归属哪个对账批次 | REC-01 批次按渠道建立，REC-05 第 4 条按 `finished_at` 检查转账；转账与渠道无关 | 目前只有 `mockpay` 一个渠道，TRANSFER_MISMATCH 写入当日该渠道批次；渠道增加后会在每个批次重复检查 | 待确认（需求未定义） |
-| TRANSFER_MISMATCH 的 `local_amount` / `local_status` 取值 | REC-05 只规定 `handle_note` 记录各分片情况 | 报告展示口径 | 待确认；建议取转账单金额与状态 |
+| 转账差错归属哪个对账批次 | REC-01 批次按渠道建立，REC-05 第 4 条按 `finished_at` 检查转账；转账与渠道无关 | 目前只有 `mockpay` 一个渠道，TRANSFER_MISMATCH 写入当日该渠道批次；渠道增加后会在每个批次重复检查 | 已关闭（2026-10-27）：需求 REC-05 第 4 条定为挂在该账期的 mockpay 批次中执行，差错归入该批次，重跑时一并重算。增加渠道后的归属仍未定义 |
+| TRANSFER_MISMATCH 的 `local_amount` / `local_status` 取值 | REC-05 只规定 `handle_note` 记录各分片情况 | 报告展示口径 | 已关闭（2026-10-27）：需求 REC-05 第 4 条定为取转账单的金额与状态，渠道字段为空 |
 | 设计稿中 `pay_account_1` 的 CHECK 约束名与分片 0 不同 | BASE-03 在 MySQL 8.4.11 上对两个分片各执行 `migrations/account/000001_init.up.sql`，`%_chk_%` 计数为 0，比较脚本无差异 | 已消除 | 已关闭（2026-10-14） |
+| 计划变更：`recon_batch` 新增 `retry_count INT NOT NULL DEFAULT 0` | 需求 REC-01 标头与第 6 条；当前 `migrations/recon/000001_init.up.sql` 无此列 | 迁移落地前，代码不能读写此列；§4.13 已按规划写出该列 | REC-01 实现时新增迁移，落地后把 §4.13 的“迁移未落”标注改为迁移文件路径 |
+| 计划变更：`recon_diff` 唯一键 `uk_batch_type_biz_no` 换成 `uk_batch_type_biz_no_diff_type (batch_no, txn_type, biz_no, diff_type)` | 需求 REC-03 标头与第 4 条；当前迁移仍是 `uk_batch_type_biz_no` | 迁移落地前，同一笔交易的外部差错与内部差错会冲突（1062）；§4.15 两个键都列出 | REC-03 实现时新增迁移，落地后删除 §4.15 中旧键一行 |
