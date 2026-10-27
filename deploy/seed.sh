@@ -15,9 +15,18 @@ if [ ! -f "$env_file" ]; then
   exit 1
 fi
 
+# 调用方已设的 SEED_LOAD（如 make seed-load 设的 1）优先于环境文件。其他变量仍以环境文件为准。
+caller_seed_load_set=${SEED_LOAD+x}
+caller_seed_load=${SEED_LOAD-}
+
 # shellcheck disable=SC1091
 . "$root/deploy/load-env.sh"
 load_env_file "$env_file"
+
+if [ -n "$caller_seed_load_set" ]; then
+  SEED_LOAD=$caller_seed_load
+  export SEED_LOAD
+fi
 
 if ! sh "$root/deploy/compose.sh" exec -T mysql \
   mysqladmin ping -h 127.0.0.1 -uroot -p"$MYSQL_ROOT_PASSWORD" --silent

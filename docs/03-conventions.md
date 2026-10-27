@@ -1,6 +1,6 @@
 # pay-system 全局约定与编号规范
 
-> 版本：v2.16　最后修改：2026-10-27
+> 版本：v2.17　最后修改：2026-10-27
 > 适用：全部代码、文档、配置。需求见 `docs/02-requirements.md`，接口见 `docs/05-api.md`，表结构见 `docs/database.md`。
 
 本文集中登记会被多个功能点共用的约定：编号体系、业务单号、金额、时间、错误码、幂等与事务规则、命名规范、配置项。新增或修改这些内容时，先改本文并在 §9 记录，再改代码。
@@ -392,7 +392,7 @@ Hertz `hlog` 和 Kitex `klog` 经适配器写入同一个 slog handler。`SetDef
 | `MYSQL_CHANNEL_MOCK_PASSWORD` | bootstrap、channel-mock | 无（必填，secret） | `svc_channel_mock` 口令。channel-mock 装配出的 DSN 用这个口令，必须与 bootstrap 创建的账号一致 |
 | `MYSQL_MIGRATOR_PASSWORD` | bootstrap、migrate | 无（必填，secret） | `migrator` 口令，只给迁移容器做 DDL |
 | `DEMO_APP_SECRET_FORMAT` | seed | `demo_secret_%s_0123456789ab` | 种子商户明文，`%s` 为商户号。种子加密后写入，明文只出现在环境文件。secret |
-| `SEED_LOAD` | seed | `0` | `1` 时额外创建 `M200000`–`M200099`。不入账 |
+| `SEED_LOAD` | seed | `0` | `1` 时额外创建 `M200000`–`M200099`。不入账。`deploy/seed.sh` 读环境文件时，调用方已设的 `SEED_LOAD` 优先（`make seed-load` 据此设为 `1`）；其他变量仍以环境文件为准 |
 | `TEST_MYSQL_DSN` | 集成测试（`internal/testkit`） | 无 | 只给测试。非空时复用已有 MySQL，不启动容器。不是服务配置，不进入配置结构体，也不写入 `deploy/.env.example` |
 
 ### 8.1 DSN 装配
@@ -431,3 +431,4 @@ BASE-09 只拼 DSN 文本，不连接数据库，也不调用驱动的 `ParseDSN
 | v2.14 | 2026-10-26 | CH-05：§2.2 登记前缀 `CN`（渠道回调发送号，不落库，只出现在回调 body 的 `notify_id`）。总长仍是前缀 + 19 位。不新增错误码 |
 | v2.15 | 2026-10-27 | 文档审查后的文字修正，不改规则：§5.1 `30xxx` 码段补“转账单”（`30001` 已含转账单）；§5.2 `10002` 的例子改为事件重放时 `event_id` 不存在（对账批次、差错查询接口已在接口 2.0.0 删除）；§6.2 第 3 条写明需求 §2.7 中 `outbox` 重放、`recon_batch` 重跑两处例外，`merchant_notify` 不在例外内。§2.2 已与 `pkg/idgen` 的登记集合一致（含 `TF`、`CN`），未改 |
 | v2.16 | 2026-10-27 | 用户确认（A2、A1、A8、B）：§5.2 `30003` 注明关闭支付单时携带支付单；§5.3 第 5 条列全携带对象的错误，补发起支付 `30006`、关闭支付单 `30003`（`PayResponse`、`ClosePaymentResponse`，PAY-03 加入 IDL）。§6.2 第 3 条写明 outbox 重放同时把 `next_retry_at` 设为 now；§6.3 第 2 条加 outbox 投递示例：领取并写租约、提交、事务外发送、按租约值 CAS 回写。§7.1 写明 `make test` 不依赖 Docker，`make cover` 带 `-tags integration`、覆盖率包含集成测试、需要 Docker。§7.6 改为一次提交只含一个功能点，删除多功能点逗号写法与 `[ACC-04,ACC-05]` 例子，补功能点报告提交后由 lead `git merge --ff-only` 合回 `main`，推送仍需用户要求。不新增错误码 |
+| v2.17 | 2026-10-27 | §8 `SEED_LOAD`：`deploy/.env.example` 补 `SEED_LOAD=0`；`deploy/seed.sh` 中调用方已设的 `SEED_LOAD` 优先于环境文件，其他变量仍以环境文件为准 |

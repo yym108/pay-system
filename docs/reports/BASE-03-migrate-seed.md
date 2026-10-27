@@ -317,11 +317,11 @@ ON DUPLICATE KEY UPDATE merchant_id = merchant_id
 
 `SEED_LOAD` 是种子程序的开关，决定要不要额外创建压测商户：
 
-- 取值：只有字符串 `1` 打开（`cmd/seed/main.go` 判断 `os.Getenv("SEED_LOAD") == "1"`）。不设、`0`、`true` 等其他值都是关闭。默认关闭，约定 §8 登记的默认值是 `0`，compose 里 seed 容器写的是 `${SEED_LOAD:-0}`。`deploy/.env.example` 里没有这一项。
+- 取值：只有字符串 `1` 打开（`cmd/seed/main.go` 判断 `os.Getenv("SEED_LOAD") == "1"`）。不设、`0`、`true` 等其他值都是关闭。默认关闭，约定 §8 登记的默认值是 `0`，compose 里 seed 容器写的是 `${SEED_LOAD:-0}`。`deploy/.env.example` 里写的是 `SEED_LOAD=0`（2026-10-27 补）。
 - 关闭时：只建平台子账户和三个演示商户 `M100001`–`M100003`。
 - 打开时：再加 100 个压测商户 `M200000`–`M200099`，费率 0，每个只在所属分片开一个零余额结算账户（两个分片各 50 个）。不写分录，不写余额。
 - 与 `make seed-load` 的关系：`make seed-load` 就是 `SEED_LOAD=1` 加上 `make seed` 用的同一个脚本 `deploy/seed.sh`，不需要手动设这个变量。`make seed` 不设它。
-- 注意：`deploy/seed.sh` 读环境文件时会把文件里的每一行重新 `export`。如果环境文件里写了 `SEED_LOAD=0`，会覆盖 `make seed-load` 设的 `1`。这一点是读代码得出的，没有实测。
+- 优先级：`deploy/seed.sh` 读环境文件时会把文件里的每一行重新 `export`，但 `SEED_LOAD` 例外：调用方已设置时以调用方为准（2026-10-27 修改）。所以环境文件里的 `SEED_LOAD=0` 不会覆盖 `make seed-load` 设的 `1`。这一点在加载层用桩验证过，没有连库实跑。
 
 第二轮修订时在 compose 上实测（在两次 `make seed` 之后）：`make seed-load` 连续两次，都打印 `accounts_shard_0=75 accounts_shard_1=76 merchants=103 load=true`。75 = 25 + 50，76 = 26 + 50。查库：`M2` 开头商户 100 个，从 `M200000` 到 `M200099`，费率非 0 的 0 个；两个分片的压测结算账户各 50 个；两个分片非零余额或非零冻结的行 0，分录 0。再执行 `SEED_LOAD=true make seed`，日志是 `load=false`，确认 `true` 不算打开。种子打印的是表里的总行数，所以这次仍显示 75 / 76 / 103：关闭开关不会删除已经建好的压测商户。
 
@@ -443,3 +443,4 @@ make down V=1 ENV_FILE=deploy/.env.example
 | 2026-10-14 | 代码 `28061d8`；报告尚未提交 | 初稿。验证数字来自写报告当天在该提交上的重新执行 |
 | 2026-10-14 | 同上，只改报告 | 可读性自检修订。补术语、建库 SQL、子账户选择的归属、密文 SHA-256 实测、第二次 `make migrate` 的 `no change`、检查约束查询。没测过的标成未验证 |
 | 2026-10-23 | 同上，只改报告；实测在分支 `fix/leftovers-base03-lint`（`339b262` 之上）的 compose 上执行 | 第二轮可读性修订。3.2 补 `GRANT` 摘要和重复执行恢复权限的实测；改正平台子账户允许为负的推理；3.4、4.3 按集成测试实际断言写清覆盖范围，补 1142 / 1044 的含义和手工实测；密文长度写明 `VARBINARY` 并改用 `LENGTH()` 实测；4.2 写明 `SEED_LOAD` 的取值和与 `make seed-load` 的关系 |
+| 2026-10-27 | `[chore]` 补 `SEED_LOAD` 到 example 并调整 `seed.sh` 优先级 | 更新 4.2 中 `SEED_LOAD` 的 example 状态和优先级说明 |
