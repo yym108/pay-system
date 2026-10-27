@@ -70,6 +70,8 @@ ACC-13（2026-10-15）：`pkg/shard` 调用 `Span.SetAttributes` 时 import `go.
 
 CH-06（2026-10-27）：DUP_NOTIFY 的第一波用 `golang.org/x/sync/errgroup`。`go mod tidy` 只把已在模块图里的 `golang.org/x/sync v0.22.0` 从间接依赖改成直接依赖，版本不变。版本表里预留的 v0.23.0 没有抬上去，和 BASE-12 留下的间接版本一致。没有新增别的模块。
 
+BASE-15（2026-10-27）：`pkg/fault` 只用标准库，不新增 Go 模块，也不新增配置项。取舍见 §2.4。
+
 ### 2.2 容器镜像（均已确认提供 arm64 与 amd64）
 
 | 组件 | 镜像 |
@@ -102,6 +104,14 @@ BASE-01（2026-10-13）：根据本机实际安装版本，将本表 Go 本机�
 - 设计稿 DDL 已拆成 `migrations/` 并删除。`make migrate` 在 compose 的 `mysql:8.4.11` 上 up、down、再 up 成功，详见 `docs/database.md` §5。
 
 未验证项（第 1 周验证）：franz-go 与 Kafka 4.3.1 的实际收发、Hertz/Kitex OTel 中间件的链路串联、testcontainers 在 CI 外环境的启动耗时。
+
+### 2.4 故障注入（BASE-15）
+
+故障点要模拟 `kill -9`：进程立刻消失，不跑 defer，所以不能靠返回错误或取消 context。生产实现是 `syscall.Kill(os.Getpid(), syscall.SIGKILL)`，不引入故障注入框架，也不新增依赖。
+
+`:once` 要在进程重启后不再触发。内存里的标记会随进程一起消失，所以发信号前先把以故障点命名的文件写进标记目录（默认 `/var/run/fault`，不是配置项）。`deploy/docker-compose.chaos.yml` 给 profile `apps` 里的六个服务挂同一个命名卷，新进程仍看得到旧标记。写标记失败则不发信号，避免没留下标记却已经杀掉，之后每次重启都再杀一次。空配置不创建、不读取这个目录。
+
+单元测试用 `Init` 的选项替换发信号函数和标记目录，因此除专门的子进程用例外，测试不会真的结束进程。同一名称在配置里出现两次视为初始化错误，避免一次带 `:once`、一次不带。
 
 ## 3. 决策详情
 

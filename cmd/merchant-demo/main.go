@@ -1,10 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"io"
 	"os"
 
 	"github.com/yym108/pay-system/pkg/config"
+	"github.com/yym108/pay-system/pkg/fault"
 )
 
 func main() {
@@ -14,5 +16,12 @@ func main() {
 
 func run(environ []string, stdout, stderr io.Writer) int {
 	cfg, err := config.LoadMerchantDemo(environ)
-	return config.WriteResult(stdout, stderr, cfg, err)
+	if err != nil {
+		return config.WriteResult(stdout, stderr, cfg, err)
+	}
+	if err = fault.Init(cfg.FaultPoints); err != nil {
+		_, _ = fmt.Fprintf(stderr, "%s\n", err)
+		return 1
+	}
+	return config.WriteResult(stdout, stderr, cfg, nil)
 }

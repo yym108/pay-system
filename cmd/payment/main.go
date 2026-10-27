@@ -11,6 +11,7 @@ import (
 	"github.com/yym108/pay-system/pkg/clock"
 	"github.com/yym108/pay-system/pkg/config"
 	"github.com/yym108/pay-system/pkg/dbx"
+	"github.com/yym108/pay-system/pkg/fault"
 	"github.com/yym108/pay-system/pkg/logx"
 	"github.com/yym108/pay-system/pkg/secretbox"
 	"github.com/yym108/pay-system/service/payment/biz"
@@ -40,6 +41,10 @@ func runWith(environ []string, stdout, stderr io.Writer, start func(config.Payme
 	}
 	if _, werr := fmt.Fprintln(stdout, config.Redact(cfg)); werr != nil {
 		_, _ = fmt.Fprintf(stderr, "write config: %v\n", werr)
+		return 1
+	}
+	if err = fault.Init(cfg.FaultPoints); err != nil {
+		_, _ = fmt.Fprintf(stderr, "%s\n", err)
 		return 1
 	}
 	if err = start(cfg); err != nil {

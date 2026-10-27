@@ -350,7 +350,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | BASE-12 | IDL 与代码生成 | P0 | M1 | BASE-01 | DONE |
 | BASE-13 | 签名库 | P0 | M3 | BASE-01 | DONE |
 | BASE-14 | 密钥加密 | P0 | M3 | BASE-01 | DONE |
-| BASE-15 | 故障注入点 | P0 | M3 | BASE-01、BASE-09 | TODO |
+| BASE-15 | 故障注入点 | P0 | M3 | BASE-01、BASE-09 | DONE |
 | ACC-13 | 账户分片路由 | P0 | M1 | BASE-08、BASE-09 | DONE |
 | ACC-01 | 开户 | P0 | M1 | ACC-13、BASE-05 | DONE |
 | ACC-02 | 账户查询 | P0 | M1 | ACC-01 | DONE |
@@ -814,11 +814,11 @@ DSN 只按驱动的文本规则装配，不连接数据库：
 
 规则：
 
-1. `fault.Point(ctx, name)`：配置项 `FAULT_POINTS`（约定 §8，默认空）按逗号分隔，包含 `name` 时向本进程发送 SIGKILL，模拟 `kill -9`；不包含时立即返回。
-2. `name:once` 表示只触发一次：发送 SIGKILL 之前先在标记目录（默认 `/var/run/fault`，由 `deploy/docker-compose.chaos.yml` 挂载）写入以故障点命名的标记文件；文件已存在时不再触发，因此进程重启后照常运行。
-3. `FAULT_POINTS` 为空（默认）时 `Point` 什么都不做：不发信号，不读写标记目录。生产与普通测试都是这个状态。
-4. 发信号的函数和标记目录可在测试中替换（包内选项，不新增配置项），以便单元测试不真的结束进程。
-5. 启动校验：进程启动时用 `FAULT_POINTS` 初始化本包，各项去掉首尾空白和 `:once` 后缀后必须是第 6 条登记表中的名称；出现未登记的名称（含拼写错误、空项、`:once` 以外的后缀）时初始化返回错误，错误信息带该项原文，进程启动失败。防止拼写错误使故障点静默失效、演练假通过。
+1. `fault.Point(ctx, name)`：配置项 `FAULT_POINTS`（约定 §8，默认空）按逗号分隔，包含 `name` 时向本进程发送 SIGKILL，模拟 `kill -9`；不包含时立即返回。已取消的 `ctx` 不跳过已经启用的信号；`ctx` 为 nil 不 panic。没调用过初始化时与空配置相同。
+2. `name:once` 表示只触发一次：发送 SIGKILL 之前先在标记目录（默认 `/var/run/fault`，由 `deploy/docker-compose.chaos.yml` 挂载，不是配置项）写入以故障点命名的标记文件，名称中的点保留；文件已存在时不再触发，因此进程重启后照常运行。写标记失败（目录不存在或没有权限）时不发信号，也不 panic。生产路径在发 `:once` 之前对该目录 `MkdirAll`（0755），没有挂载时本地演练也能写。
+3. `FAULT_POINTS` 为空（默认）时 `Point` 什么都不做：不发信号，不创建、不读取标记目录，也不做 `MkdirAll`。生产与普通测试都是这个状态。
+4. 发信号的函数和标记目录可在测试中替换（包内选项，不新增配置项），以便单元测试不真的结束进程。初始化每次替换整个启用集合；空字符串表示清空。
+5. 启动校验：进程启动时用 `FAULT_POINTS` 初始化本包，各项去掉首尾空白和恰好一个 `:once` 后缀后必须是第 6 条登记表中的名称；出现未登记的名称（含拼写错误、空项、`:once` 以外的后缀）时初始化返回错误，错误信息带该项原文，进程启动失败。同一名称出现两次（不论是否带 `:once`）同样返回错误，错误信息含该名称，避免一次带 `:once`、一次不带，行为含糊。防止拼写错误使故障点静默失效、演练假通过。
 6. 已登记的故障点（新增故障点须在此登记，并在 QA-01 演练表中给出场景）：
 
    | 故障点 | 所在功能点 | 位置 |
@@ -835,12 +835,12 @@ DSN 只按驱动的文本规则装配，不连接数据库：
 
 验收：
 
-- [ ] 替换发信号函数后，`FAULT_POINTS=pay.after_tx1` 时 `Point(ctx, "pay.after_tx1")` 发信号 1 次，`Point(ctx, "callback.after_commit")` 发信号 0 次。
-- [ ] `FAULT_POINTS=pay.after_tx1:once`、标记目录为临时目录：第一次调用先写标记文件再发信号；用同一目录新建实例（模拟重启）后再调用，不发信号。
-- [ ] `FAULT_POINTS` 为空时任何名称都不发信号，临时标记目录中没有新建文件。
-- [ ] `FAULT_POINTS=pay.after_tx`（拼写错误）、`pay.after_tx1,,callback.after_commit`（空项）、`pay.after_tx1:twice` 初始化都返回错误，错误信息含出错的那一项；`pay.after_tx1:once, callback.after_commit` 初始化成功。
-- [ ] 以 `FAULT_POINTS=pay.after_tx` 启动的子进程在启动阶段以非 0 退出码退出，没有进入业务逻辑。
-- [ ] 子进程测试：以 `FAULT_POINTS=<name>` 启动的子进程执行到 `Point` 时被 SIGKILL 结束（父进程得到 `signal: killed`），`Point` 之后的语句没有执行。
+- [x] 替换发信号函数后，`FAULT_POINTS=pay.after_tx1` 时 `Point(ctx, "pay.after_tx1")` 发信号 1 次，`Point(ctx, "callback.after_commit")` 发信号 0 次。
+- [x] `FAULT_POINTS=pay.after_tx1:once`、标记目录为临时目录：第一次调用先写标记文件再发信号；用同一目录新建实例（模拟重启）后再调用，不发信号。
+- [x] `FAULT_POINTS` 为空时任何名称都不发信号，临时标记目录中没有新建文件。
+- [x] `FAULT_POINTS=pay.after_tx`（拼写错误）、`pay.after_tx1,,callback.after_commit`（空项）、`pay.after_tx1:twice` 初始化都返回错误，错误信息含出错的那一项；`pay.after_tx1:once, callback.after_commit` 初始化成功。
+- [x] 以 `FAULT_POINTS=pay.after_tx` 启动的子进程在启动阶段以非 0 退出码退出，没有进入业务逻辑。
+- [x] 子进程测试：以 `FAULT_POINTS=<name>` 启动的子进程执行到 `Point` 时被 SIGKILL 结束（父进程得到 `signal: killed`），`Point` 之后的语句没有执行。
 
 ### 4.2 账户与记账（ACC）
 
@@ -3115,3 +3115,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-10-27 | v3.0 | 文档审查补充（用户选择方案 A）：重新比对前只删除本批次 `status = 'PENDING' AND handle_action IS NULL` 的差错，已自动处理的 PENDING 差错和 RESOLVED、IGNORED 的保留；REC-01 第 3 条重跑与第 5 条 CHECKING 接管共用这一条件（第 3 条原来的“删除状态为 PENDING 的差错”改为此条件），并写明 CHECKING 推进为 DONE、FAILED 的 CAS 带本次 `started_at`，被接管后旧运行的 CAS 影响 0 行。REC-03 第 4 条与 REC-05 第 6 条：本批次已有同一 `uk_batch_type_biz_no` 键时跳过、不改已有行（`ON DUPLICATE KEY UPDATE id = id`），`diff_count` 按实际行数统计，插入影响 1 行才计 `pay_recon_diffs_total`。REC-06：自动处理失败也写 `handle_action` 并保持 PENDING，后续任意账期的批次运行跨批次重试 `REQUERY`，LEDGER_MISSING 复核在凭证仍缺失时再次重放；CAS 影响 0 行且重新读取查不到时按“已不存在”返回并输出 WARN 日志。补重跑无 1062、自动处理差错保留、中断接管与一次性运行一致、旧运行不覆盖、同键跳过、处理失败重试、读不到行的验收。不改表结构、错误码与资金流向 |
 | 2026-10-27 | v3.0 | 文档审查补充（用户决定）：REC-06 跨批次的 REQUERY 重试与 LEDGER_MISSING 复核（含再次重放）只处理 `bill_date` 在 D−8 到 D−2 的差错（D 为运行时注入时钟的东八区日期，与 REC-01 第 1 条的前 7 个账期一致）；窗口外仍 PENDING 的已自动处理差错保持 PENDING 等人工，REC-08 报告新增“等待人工处理”列表。`recon_diff` 唯一键由 `uk_batch_type_biz_no` 改为 `uk_batch_type_biz_no_diff_type`（`batch_no, txn_type, biz_no, diff_type`），迁移随 REC-03 新增，REC-03 标头注明，同键跳过按新键，同一笔交易的外部差错与 `LEDGER_MISSING` 可在同一批次并存。REC-06 新增严重不一致：`CHANNEL_MISSING` 查单确认渠道不是 SUCCESS 时保持 PENDING，`handle_action = REQUERY`，`channel_status` 写渠道状态并作为不再自动重试的标记，`handle_note` 记录渠道状态，ERROR 日志并计 `pay_recon_channel_inconsistent_total{channel}`（已登记 OPS-03），等人工。补窗口、严重不一致、等待人工列表、外部与内部差错并存的验收。错误码与资金流向不变 |
 | 2026-10-27 | v3.0 | 文档审查补充（用户决定）：REC-01 第 2 条按状态拆写，`force` 只对 DONE 生效（FAILED 本来就重跑）；未超时的 INIT、DOWNLOADED、CHECKING 带 `force = true` 仍返回当前批次，不并发重跑；超时的带不带 force 都按第 5 条接管，不按第 3 条重跑；补验收。REC-08 的“等待人工处理”定名为响应字段 `manual_total`、`manual_diffs`，`manual_diffs` 按 `bill_date` 升序、同一 `bill_date` 内按 `id` 升序取前 100 条，补排序与截断验收。`ReconBatch` 不输出 `retry_count`。表结构、错误码与资金流向不变 |
+| 2026-10-27 | v3.0 | BASE-15：实现了 `pkg/fault`；重复名称视为初始化错误；标记写失败不发信号；空配置不碰标记目录。不改 9 个名称，不改资金，不新增错误码 |

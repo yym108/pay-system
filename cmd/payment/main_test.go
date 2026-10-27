@@ -128,6 +128,37 @@ func TestPaymentServeHidesOpenError(t *testing.T) {
 	assertNoSecret(t, err.Error()+logs.String(), "payment-plain-password", "127.0.0.1:1", paymentMasterKey())
 }
 
+// BASE-15 验收 5：未登记的 FAULT_POINTS 在 start 之前失败；空配置仍走原来的成功路径。
+func TestPaymentFaultPointsCheckedBeforeStart(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	started := false
+	code := runWith(append(paymentFixture(true), "FAULT_POINTS=pay.after_tx"), &stdout, &stderr, func(config.Payment) error {
+		started = true
+		return nil
+	})
+	if code == 0 {
+		t.Fatal("exit code = 0, want non-zero")
+	}
+	if started {
+		t.Fatal("start was called")
+	}
+	if !strings.Contains(stderr.String(), "pay.after_tx") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+	assertNoSecret(t, stdout.String()+stderr.String(), paymentMasterKey(), "payment-plain-password", "mockpay-plain-key")
+
+	stdout.Reset()
+	stderr.Reset()
+	started = false
+	code = runWith(paymentFixture(true), &stdout, &stderr, func(config.Payment) error {
+		started = true
+		return nil
+	})
+	if code != 0 || !started {
+		t.Fatalf("empty FAULT_POINTS: code=%d started=%v stderr=%s", code, started, stderr.String())
+	}
+}
+
 // PAY-01：主密钥解不开时不连库，直接失败。
 func TestPaymentServeRejectsBadMasterKey(t *testing.T) {
 	cfg := config.Payment{SecretMasterKey: "not-base64", MySQLDSN: "svc_payment:payment-plain-password@tcp(127.0.0.1:1)/pay_payment"}

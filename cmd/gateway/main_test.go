@@ -24,6 +24,34 @@ func TestGatewayRunRejectsMissingAdminToken(t *testing.T) {
 	}
 }
 
+// BASE-15 验收 5：未登记的 FAULT_POINTS 不以成功配置退出；空配置仍走原来的成功路径。
+func TestGatewayFaultPointsCheckedBeforeStart(t *testing.T) {
+	base := []string{
+		"WORKER_ID=1",
+		"ADMIN_TOKEN=0123456789abcdef0123456789abcdef",
+		"CHANNEL_MOCKPAY_KEY=mockpay-plain-key",
+	}
+	var stdout, stderr bytes.Buffer
+	code := run(append(append([]string{}, base...), "FAULT_POINTS=pay.after_tx"), &stdout, &stderr)
+	if code == 0 {
+		t.Fatal("exit code = 0, want non-zero")
+	}
+	if !strings.Contains(stderr.String(), "pay.after_tx") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+	out := stdout.String() + stderr.String()
+	if strings.Contains(out, "mockpay-plain-key") || strings.Contains(out, "0123456789abcdef0123456789abcdef") {
+		t.Fatal("output contains secret material")
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	code = run(base, &stdout, &stderr)
+	if code != 0 {
+		t.Fatalf("empty FAULT_POINTS: code=%d stderr=%s", code, stderr.String())
+	}
+}
+
 func TestGatewayRunRedacts(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := run([]string{

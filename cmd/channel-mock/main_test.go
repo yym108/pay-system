@@ -56,6 +56,44 @@ func TestChannelMockRunStartsWithoutPrintingSecret(t *testing.T) {
 	}
 }
 
+// BASE-15 验收 5：未登记的 FAULT_POINTS 在 start 之前失败；空配置仍走原来的成功路径。
+func TestChannelMockFaultPointsCheckedBeforeStart(t *testing.T) {
+	env := []string{
+		"WORKER_ID=5",
+		"CHANNEL_MOCKPAY_KEY=mockpay-plain-key",
+		"MYSQL_CHANNEL_MOCK_PASSWORD=mock-plain-password",
+	}
+	var stdout, stderr bytes.Buffer
+	started := false
+	code := runWith(append(append([]string{}, env...), "FAULT_POINTS=pay.after_tx"), &stdout, &stderr, func(config.ChannelMock) error {
+		started = true
+		return nil
+	})
+	if code == 0 {
+		t.Fatal("exit code = 0, want non-zero")
+	}
+	if started {
+		t.Fatal("start was called")
+	}
+	if !strings.Contains(stderr.String(), "pay.after_tx") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+	if strings.Contains(stdout.String()+stderr.String(), "mockpay-plain-key") || strings.Contains(stdout.String()+stderr.String(), "mock-plain-password") {
+		t.Fatal("output contains secret material")
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	started = false
+	code = runWith(env, &stdout, &stderr, func(config.ChannelMock) error {
+		started = true
+		return nil
+	})
+	if code != 0 || !started {
+		t.Fatalf("empty FAULT_POINTS: code=%d started=%v stderr=%s", code, started, stderr.String())
+	}
+}
+
 func TestChannelMockRunReportsStartError(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := runWith([]string{

@@ -1,8 +1,31 @@
 # QA-01 故障注入覆盖文件。
 # BASE-02 只保证本文件能与 deploy/docker-compose.yml 合并，不实现演练场景。
-# 不在此配置故障点或 kill 行为。
+# BASE-15 只挂标记目录，故障点取值和演练场景仍由 QA-01 负责。
 name: pay-system
 
 x-chaos:
   owner: QA-01
   note: placeholder
+
+services:
+  gateway:
+    volumes:
+      - fault-markers:/var/run/fault
+  payment:
+    volumes:
+      - fault-markers:/var/run/fault
+  account:
+    volumes:
+      - fault-markers:/var/run/fault
+  recon:
+    volumes:
+      - fault-markers:/var/run/fault
+  channel-mock:
+    volumes:
+      - fault-markers:/var/run/fault
+  merchant-demo:
+    volumes:
+      - fault-markers:/var/run/fault
+
+volumes:
+  fault-markers:

@@ -1,6 +1,6 @@
 # pay-system 全局约定与编号规范
 
-> 版本：v2.18　最后修改：2026-10-27
+> 版本：v2.19　最后修改：2026-10-27
 > 适用：全部代码、文档、配置。需求见 `docs/02-requirements.md`，接口见 `docs/05-api.md`，表结构见 `docs/database.md`。
 
 本文集中登记会被多个功能点共用的约定：编号体系、业务单号、金额、时间、错误码、幂等与事务规则、命名规范、配置项。新增或修改这些内容时，先改本文并在 §9 记录，再改代码。
@@ -383,7 +383,7 @@ Hertz `hlog` 和 Kitex `klog` 经适配器写入同一个 slog handler。`SetDef
 | `RECON_RUN_AT` | recon | `10:00` | 每日对账时间 |
 | `MOCK_DELAY_MIN_MS`、`MOCK_DELAY_MAX_MS` | channel-mock | `200`、`2000` | 自动完成延迟范围 |
 | `MOCK_ALLOW_PARTIAL_BILL` | channel-mock | `false` | 允许下载当天账单（测试与演练） |
-| `FAULT_POINTS` | 全部服务 | 空 | 故障注入点（BASE-15，QA-01 演练使用）。逗号分隔，各项可带 `:once` 后缀表示只触发一次；为空时 `fault.Point` 什么都不做。各项去掉首尾空白和 `:once` 后，必须是需求 BASE-15 第 6 条登记的名称，否则（含拼写错误、空项、`:once` 以外的后缀）进程启动失败 |
+| `FAULT_POINTS` | 全部服务 | 空 | 故障注入点（BASE-15，QA-01 演练使用）。逗号分隔，各项可带 `:once` 后缀表示只触发一次；为空时 `fault.Point` 什么都不做。各项去掉首尾空白和恰好一个 `:once` 后，必须是需求 BASE-15 第 6 条登记的名称，否则（含拼写错误、空项、`:once` 以外的后缀）进程启动失败。同一名称出现两次时也启动失败。标记目录不是配置项 |
 | `FAIL_FIRST_N` | merchant-demo | `0` | 每个单号前 N 次通知返回失败（TL-02） |
 | `MYSQL_ROOT_PASSWORD` | compose / MySQL、bootstrap | 无（必填，secret） | 仅本地 MySQL root。业务服务不使用 root；bootstrap 用它建库。最小权限账号由 BASE-03 创建 |
 | `MYSQL_HOST` | bootstrap、channel-mock | bootstrap `127.0.0.1`；channel-mock `mysql` | 不写入 `deploy/.env.example`：写进去会被 compose 插值覆盖容器内地址。bootstrap 在宿主机上建库，默认 `127.0.0.1`；compose 里的 bootstrap 容器仍固定为 `mysql`。channel-mock 跑在 compose 网络里，默认 `mysql` |
@@ -433,3 +433,4 @@ BASE-09 只拼 DSN 文本，不连接数据库，也不调用驱动的 `ParseDSN
 | v2.16 | 2026-10-27 | 用户确认（A2、A1、A8、B）：§5.2 `30003` 注明关闭支付单时携带支付单；§5.3 第 5 条列全携带对象的错误，补发起支付 `30006`、关闭支付单 `30003`（`PayResponse`、`ClosePaymentResponse`，PAY-03 加入 IDL）。§6.2 第 3 条写明 outbox 重放同时把 `next_retry_at` 设为 now；§6.3 第 2 条加 outbox 投递示例：领取并写租约、提交、事务外发送、按租约值 CAS 回写。§7.1 写明 `make test` 不依赖 Docker，`make cover` 带 `-tags integration`、覆盖率包含集成测试、需要 Docker。§7.6 改为一次提交只含一个功能点，删除多功能点逗号写法与 `[ACC-04,ACC-05]` 例子，补功能点报告提交后由 lead `git merge --ff-only` 合回 `main`，推送仍需用户要求。不新增错误码 |
 | v2.17 | 2026-10-27 | §8 `SEED_LOAD`：`deploy/.env.example` 补 `SEED_LOAD=0`；`deploy/seed.sh` 中调用方已设的 `SEED_LOAD` 优先于环境文件，其他变量仍以环境文件为准 |
 | v2.18 | 2026-10-27 | 对齐需求 2026-10-27 的功能点拆分（BASE-15 `pkg/fault`）：§1.2 `QA` 行注明 `pkg/fault/` 属 BASE-15；§8 `FAULT_POINTS` 归属改为 BASE-15，写明默认空、逗号分隔、可带 `:once`、未登记的名称（含空项、`:once` 以外的后缀）进程启动失败；§7.4 故障注入点注明只能用 BASE-15 第 6 条登记的名称。已核对登记的 9 个故障点都符合 `<领域>.<after\|before>_<步骤>`。不新增错误码 |
+| v2.19 | 2026-10-27 | BASE-15：同一名称在 `FAULT_POINTS` 里出现两次时初始化失败；标记目录不是配置项（默认 `/var/run/fault`，由 chaos 覆盖文件挂载）。不新增配置项，不新增错误码 |

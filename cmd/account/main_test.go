@@ -74,6 +74,44 @@ func TestAccountRunHidesOpenError(t *testing.T) {
 	}
 }
 
+// BASE-15 验收 5：未登记的 FAULT_POINTS 在 start 之前失败；空配置仍走原来的成功路径。
+func TestAccountFaultPointsCheckedBeforeStart(t *testing.T) {
+	env := []string{
+		"WORKER_ID=3",
+		"ACCOUNT_DB_DSN_0=svc_account:account-plain-password@tcp(mysql:3306)/pay_account_0",
+		"ACCOUNT_DB_DSN_1=svc_account:account-plain-password@tcp(mysql:3306)/pay_account_1",
+	}
+	var stdout, stderr bytes.Buffer
+	started := false
+	code := runWith(append(append([]string{}, env...), "FAULT_POINTS=pay.after_tx"), &stdout, &stderr, func(config.Account) error {
+		started = true
+		return nil
+	})
+	if code == 0 {
+		t.Fatal("exit code = 0, want non-zero")
+	}
+	if started {
+		t.Fatal("start was called")
+	}
+	if !strings.Contains(stderr.String(), "pay.after_tx") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+	if strings.Contains(stdout.String()+stderr.String(), "account-plain-password") {
+		t.Fatal("output contains secret material")
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	started = false
+	code = runWith(env, &stdout, &stderr, func(config.Account) error {
+		started = true
+		return nil
+	})
+	if code != 0 || !started {
+		t.Fatalf("empty FAULT_POINTS: code=%d started=%v stderr=%s", code, started, stderr.String())
+	}
+}
+
 type configSeen struct {
 	called bool
 	worker int
