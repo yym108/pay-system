@@ -2292,12 +2292,14 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 
 1. 每天 `RECON_RUN_AT`（默认 10:00）对 D−1 发起对账，渠道列表来自配置（目前只有 `mockpay`）。同一次定时触发还顺带处理前 7 个账期（`bill_date` 为 D−8 到 D−2）中状态为 INIT、DOWNLOADED、CHECKING 的已有批次：按 `uk_channel_bill_date` 的 `channel, bill_date` 前缀范围查出后，逐个调用 RunBatch，由第 5 条判定是否超时接管。不为缺失的账期补建批次，FAILED、DONE 不处理（重跑仍需 force 或手工触发）。只有每日定时触发做这一步，第 6 条的单批次延迟重试、CLI、管理接口不做；这不是独立的后台扫描。
 2. 按 `uk_channel_bill_date` 创建批次；已存在且 DONE、未指定 force → 直接返回已有结果；FAILED 或 force → 重跑；未超时的 INIT、DOWNLOADED、CHECKING → 返回当前批次，不重复执行；超时的按第 5 条接管。
-3. 重跑：删除该批次的 `recon_channel_bill` 和状态为 PENDING 的差错，保留 RESOLVED、IGNORED 的差错及处理记录；然后 CAS 把批次重置为 INIT（同时 `retry_count = 0`），从下载开始执行。
+3. 重跑：删除该批次的 `recon_channel_bill`，以及该批次中尚未自动处理的差错（`status = 'PENDING' AND handle_action IS NULL`）；保留已自动处理的 PENDING 差错（`handle_action` 非空，如已重放待复核的 `LEDGER_MISSING`）和 RESOLVED、IGNORED 的差错及处理记录。然后 CAS 把批次重置为 INIT（同时 `retry_count = 0`），从下载开始执行。重新比对时与保留差错同键的结果按 REC-03 第 4 条跳过，不会触发 1062。（2026-10-27 用户决定，方案 A）
 4. 批次状态：`INIT → DOWNLOADED → CHECKING → DONE`，任一步失败 → FAILED 并记录 `error_msg`。
 5. 并发控制：CAS 推进状态；超时视为卡死，可被重新接管。超时指距该时间戳满 30 分钟（now − 时间戳 ≥ 30 分钟）：CHECKING 按 `started_at`，INIT、DOWNLOADED 按 `updated_at`。接管用 CAS，条件带原状态与原时间戳，并把该时间戳改为当前时间，同一时刻只有一个接管者。接管后从哪一步继续：
    - INIT：从下载开始（REC-02）。INIT 时还没有账单行，REC-02 第 5 条的导入与置 DOWNLOADED 在同一事务提交。
    - DOWNLOADED：账单行已在进入 DOWNLOADED 的同一事务中导入（REC-02 第 5 条），不重新下载；接管 CAS 即 `DOWNLOADED → CHECKING`（条件带原 `updated_at`，写 `started_at = now`），然后执行比对。
-   - CHECKING：CAS 把 `started_at` 改为 now 后重新执行比对。
+   - CHECKING：CAS 把 `started_at` 改为 now 后，先按第 3 条的条件删除本批次 `status = 'PENDING' AND handle_action IS NULL` 的差错（不删账单行），再重新执行比对（REC-03、REC-05、REC-06）。中断的那次运行留下的已自动处理差错、RESOLVED、IGNORED 差错保留，重新比对时同键跳过（REC-03 第 4 条）。
+
+   CHECKING 运行把批次推进为 DONE 或 FAILED 的 CAS 条件带本次运行写入的 `started_at`。批次被接管后，旧运行（若仍在执行）的这条 CAS 影响 0 行，旧运行放弃，不覆盖新运行的结果。
 
    改写 `recon_batch` 的每条 UPDATE 都显式写 `updated_at = now`（注入时钟，截到毫秒），不依赖 ON UPDATE 的数据库时间。超时只在 RunBatch 被调用时判定，调用时机是：每日定时（第 1 条，含前 7 个账期）、第 6 条的单批次延迟重试、CLI、管理接口；不加独立的后台扫描。（2026-10-27 用户决定，§8.1 Q6）
 6. 渠道返回 `BILL_NOT_READY` 时（REC-02 第 4 条），重试状态持久化在 `recon_batch.retry_count`（`INT NOT NULL DEFAULT 0`，迁移随本功能点新增）：
@@ -2311,6 +2313,9 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 
 - [ ] 同一账期并发触发两次，只有一次执行。
 - [ ] 重跑后差错结果与首次一致，已处理的差错不丢失。
+- [ ] 重跑不触发 1062、已自动处理的差错保留：DONE 批次中有 IGNORED 的 `CHANNEL_MISSING`、RESOLVED 的 `STATUS_MISMATCH`、PENDING 且 `handle_action = REPLAY` 的 `LEDGER_MISSING`、PENDING 且 `handle_action` 为空的 `LOCAL_MISSING`；force 重跑执行到 DONE，没有 1062；前三条的 `id`、`status`、`handle_action`、`handle_note` 都不变，`LOCAL_MISSING` 被删除后重新生成（新 `id`，键相同）。
+- [ ] 中断后接管与一次性运行一致：同一份账单和本地数据准备两份。一份一次执行到 DONE。另一份构造中断状态：批次 CHECKING、`started_at` 早于 30 分钟，已插入部分差错，其中一部分已由 REC-06 自动处理（`LEDGER_MISSING` 已写 `REPLAY`，`CHANNEL_MISSING` 已置 IGNORED），其余 `handle_action` 为空；接管后执行到 DONE。两份的差错集合按 (`txn_type`, `biz_no`, `diff_type`, `status`) 比较完全一致，`diff_count`、匹配数、双方笔数与金额一致，过程中没有 1062。
+- [ ] 接管后旧运行不覆盖结果：批次被接管后，旧运行用原 `started_at` 把批次置为 DONE 或 FAILED 的 CAS 影响 0 行。
 - [ ] 批次停在 INIT、DOWNLOADED、CHECKING 各构造一次（INIT、DOWNLOADED 由 `updated_at`、CHECKING 由 `started_at` 计时）：Fake 时钟推进 29 分钟时调用 RunBatch 返回当前批次、不执行；推进到 31 分钟时调用 RunBatch 被接管并执行到 DONE；两个接管者并发时只有一个执行。
 - [ ] 没有后台扫描：停在 DOWNLOADED 的批次在 Fake 时钟推进 2 小时、期间没有 RunBatch 调用时，状态与 `updated_at` 都不变。
 - [ ] 假渠道一直返回 `BILL_NOT_READY`：首次下载之后每 30 分钟（注入时钟）重试一次，`retry_count` 依次为 1 … 6，第 6 次重试（第 7 次请求）后批次 FAILED、`error_msg = BILL_NOT_READY`，之后不再自动请求。
@@ -2353,13 +2358,14 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
    | 本地 SUCCESS，金额相同（不论本地归属哪天） | 匹配 |
 
 3. L 中未匹配的记录 → `CHANNEL_MISSING`（短款）。不做跨日处理：模拟渠道账单的账期与本地 `channel_finished_at` 都取自渠道完成时间，两边不会归入不同账期。真实渠道存在日切差异，需要挂起复核，本项目不实现（REC-04 CUT）。
-4. 更新账单行 `match_status`；差错按 `uk_batch_type_biz_no` 插入；批次写入双方笔数、金额、匹配数、差错数。
+4. 更新账单行 `match_status`；差错按 `uk_batch_type_biz_no`（`batch_no, txn_type, biz_no`）插入：本批次已有同键差错（重跑或接管时保留的行，REC-01 第 3、5 条）时跳过，不改已有行的任何列。写法用 `INSERT … ON DUPLICATE KEY UPDATE id = id`，不用 `INSERT IGNORE`（它会把 CHECK 约束失败等其他错误也降为警告），也不用 `REPLACE`。插入影响 1 行才计入 `pay_recon_diffs_total`。批次写入本次比对重新计算的双方笔数、金额、匹配数；`diff_count` 按比对完成后本批次 `recon_diff` 的实际行数统计（含保留的行）。（2026-10-27 用户决定）
 5. 数据量假设：单渠道单日 ≤ 100 万笔。P0 实现可在内存中按匹配键建索引；超过假设规模时改为按 `biz_no` 排序分段归并。
 
 验收（A6）：
 
 - [ ] 构造账单：注入一笔平台不存在的交易（长款）、BILL_MISSING（短款）、BILL_AMOUNT_DIFF（金额不符）、DROP_NOTIFY 且关闭查单补偿（状态不符），四类各识别 1 条，其余全部匹配。
 - [ ] 全部正常的账单差错数为 0。
+- [ ] 同键跳过：本批次已有一条 IGNORED 的 `CHANNEL_MISSING`，重新比对再次得到同键差错时不报 1062，已有行的 `status`、`handle_action`、`handle_note`、`updated_at` 都不变，`pay_recon_diffs_total` 不增加，`diff_count` 等于本批次差错实际行数。
 
 #### REC-04 跨日处理
 
@@ -2381,6 +2387,7 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
    - 不符 → `TRANSFER_MISMATCH`，`txn_type = TRANSFER`，`local_amount` / `local_status` 取转账单的金额与状态，渠道字段为空，`handle_note` 记录各分片实际情况。
    - 转账不经过渠道，但只有一个渠道（mockpay），转账检查挂在该账期的 mockpay 批次中执行，差错归入该批次；批次重跑时一并重算（REC-01 第 3 条）。
 5. 分别从各 schema 读取后在内存比对，不做跨 schema JOIN（模拟数据来自不同数据源）。
+6. `LEDGER_MISSING`、`TRANSFER_MISMATCH` 的插入规则同 REC-03 第 4 条：本批次已有同键差错时跳过，不改已有行，`diff_count` 按实际行数统计。
 
 验收：
 
@@ -2400,16 +2407,19 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 | `LEDGER_MISSING` | `PaymentService.ReplayEvent(biz_no, event_type)`，写 `handle_action = REPLAY`，保持 PENDING | 由下面的复核推进为 RESOLVED |
 | `LOCAL_MISSING`、`AMOUNT_MISMATCH`、`STATUS_MISMATCH`（本地已是终态）、`TRANSFER_MISMATCH` | 无 | 保持 PENDING，ERROR 日志，写入对账报告；真实系统需要人工处理与挂账，本项目不实现（REC-07 CUT） |
 
-自动处理记录 `handle_action`、`handler = system`；处理失败保持 PENDING，下次批次再试。
+自动处理记录 `handle_action`、`handler = system`。处理失败（如 `SyncChannelTxn` 调用出错或超时）时同样写 `handle_action`（`REQUERY` 或 `REPLAY`）、`handler = system`，`handle_note` 记录失败原因，差错保持 PENDING。写入用 CAS `WHERE id = ? AND status = 'PENDING'`。因为 `handle_action` 非空，重跑和接管（REC-01 第 3、5 条）都不会删除它。后续批次重试：每次批次运行（任意账期）都查询全部 `status = 'PENDING' AND handle_action = 'REQUERY'` 的差错（不限批次，与下面的 LEDGER_MISSING 复核相同），再执行一次 `SyncChannelTxn`，成功后按上表置为终态。`REPLAY` 失败的差错由 LEDGER_MISSING 复核发现凭证仍缺失后再次 `ReplayEvent`。（2026-10-27 用户决定）
 
-置为 RESOLVED 或 IGNORED 的更新都用 CAS：`UPDATE recon_diff SET status = ?, handler = 'system', handle_note = ? … WHERE id = ? AND status = 'PENDING'`（本次处理要写的 `handle_action` 在同一条语句里写）。影响 0 行说明该差错已被其他运行（另一账期的批次、并发触发）处理：重新读取，按当前状态返回，不报错，不覆盖已有的 `handle_action`、`handler`、`handle_note`。
+置为 RESOLVED 或 IGNORED 的更新都用 CAS：`UPDATE recon_diff SET status = ?, handler = 'system', handle_note = ? … WHERE id = ? AND status = 'PENDING'`（本次处理要写的 `handle_action` 在同一条语句里写）。影响 0 行说明该差错已被其他运行（另一账期的批次、并发触发）处理：重新读取，按当前状态返回，不报错，不覆盖已有的 `handle_action`、`handler`、`handle_note`。重新读取查不到该行（已被删除）时，按“已不存在”返回：不报错、不重试、不重新插入，输出 WARN 日志（`diff_no`、`batch_no`）。按 REC-01 第 3、5 条，只有 `handle_action` 为空的 PENDING 差错会被删除，删除它的那次运行会重新比对生成，所以这种情况只出现在两种场景：旧运行在批次被接管或重跑后仍在处理一条尚未写入 `handle_action` 的差错；人工误删。
 
-LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `diff_type = LEDGER_MISSING AND status = 'PENDING' AND handle_action = 'REPLAY'` 的差错（不限批次），到对应账户分片确认凭证存在且金额一致 → CAS `PENDING → RESOLVED`（`handler = system`，说明“重放后复核通过”）；否则保持 PENDING。
+LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `diff_type = LEDGER_MISSING AND status = 'PENDING' AND handle_action = 'REPLAY'` 的差错（不限批次），到对应账户分片确认凭证存在且金额一致 → CAS `PENDING → RESOLVED`（`handler = system`，说明“重放后复核通过”）；否则再执行一次 `ReplayEvent`（重放幂等，MQ-05 第 3 条），更新 `handle_note`，差错保持 PENDING。
 
 验收：
 
 - [ ] 状态不符（本地 PAYING）自动修复后，订单 SUCCESS 且商户入账。
 - [ ] `LEDGER_MISSING` 经重放后，下一次任意账期的对账运行把它置为 RESOLVED。
+- [ ] 自动处理失败也写 `handle_action`：假渠道查单返回错误时，`STATUS_MISMATCH`（本地 PROCESSING）差错保持 PENDING，`handle_action = REQUERY`、`handler = system`，`handle_note` 含失败原因；对同一批次 force 重跑后该行仍在（`id` 不变）；下一次任意账期的批次运行在查单恢复后把它置为 RESOLVED。
+- [ ] `ReplayEvent` 调用失败的 `LEDGER_MISSING`：`handle_action = REPLAY`、保持 PENDING；下一次任意账期的批次运行复核时凭证仍缺失，再次重放；重放入账后的下一次运行置为 RESOLVED。
+- [ ] CAS 读不到行：测试删除一条正在处理的 PENDING 差错后，处理方的 CAS 影响 0 行，重新读取查不到，返回“已不存在”，不报错、不重新插入，有一条 WARN 日志。
 - [ ] 同一条 PENDING 差错被两个运行并发置为终态：只有一次更新影响 1 行；另一次影响 0 行，重新读取后返回 RESOLVED（或 IGNORED），不报错，`handle_note` 保持先完成那次写入的值。
 
 #### REC-07 差错人工处理与挂账
@@ -3087,3 +3097,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-10-27 | v3.0 | 文档审查第 2 阶段，按用户确认的决定修改规则（A1、A3、A4、A5、A6、A7、A9）。A1：MQ-02 改为“短事务领取并把 `next_retry_at` 推后为 30 秒租约 → 事务外发送 → 按租约值 CAS 回写”，发送期间不持有行锁，不改表结构；验收改为不注入故障时每个 `event_id` 恰好 1 次，并新增无行锁、过期租约接管、过期回写不覆盖三条；§2.8 与 QA-01 C4 同步。A3：§3 与明细标头的依赖按“验收用到的功能点都列为直接依赖、不依赖更晚里程碑、无环”重排，TL-03、QA-04 不再写“全链路”“全部 P0”（QA-04 改为列出不被其他 P0 依赖的 P0 功能点）；新增 BASE-15 故障注入点（M3，原 QA-01 规则 1、2，`pkg/fault`），QA-01 改名“故障演练”只做演练；GW-02 拆为 M3 的支付与余额路由和新增的 GW-09 退款与转账路由（M4）；QA-02 拆为 M6 基线压测（交付 `test/chaos/verify.sh`）和新增的 QA-05 优化后复测（M7），消除 QA-02 与 OPT-02 ~ OPT-04 的循环；OPT-01 改名“分阶段耗时埋点”，基线报告移到 QA-02。A4：无法判定的验收改为可判定并移到能验收的功能点：PAY-03 的 REJECTED、2 秒内成功、Pay 与 Close 并发、ACCEPT_TIMEOUT 分别移到 PAY-04、GW-06、PAY-06、PAY-05，PAY-03 补 OK 与超时两条；REF-02 的 FAILED 分支、回调成功、恢复后完成、解冻分别移到 REF-03、REF-04、MQ-04；TRF-02、TRF-03 的“由 TRF-04 推进”移到 TRF-04；PAY-06 的“商户最终入账”、REF-03 的账务结果移到 MQ-04；TL-01 的完整流程移到 GW-09，TL-01 改用假服务端验收；OPS-01 的压测中 `docker stop` 移到 QA-01，Kafka、Redis 就绪检查分别移到 MQ-03、GW-04；GW-06 的“Redis 停止时回调正常”移到 GW-04；GW-05 改为恰好 200 通过、100 个 429；OPS-03、TL-02、GW-07 验收写明具体计数；MQ-04 补 F = 0 只记两条分录；NTF-02 补 CAS 回写；REC-01 补 INIT、DOWNLOADED 超时接管和 `BILL_NOT_READY` 重试路径（细节见 §8.1 Q6）；REF-03 规则 2 写明释放条件 `refunded_amount >= R`；OPT-02 补非 ACTIVE 账户退化为逐条。A5：CH-06 保持 DOING，补 M4 的 SLOW、ACCEPT_TIMEOUT 规则与可判定验收；CLOSE_RACE 由 CH-03 覆盖不重做；BILL_MISSING、BILL_AMOUNT_DIFF 的账单表现移到 CH-08 验收。A6：§2.3 按已实现代码修正：`internal/testkit`、`pkg/accountclient`、`pkg/server` 入图，account biz 为平铺单包，payment biz 现为平铺文件；记录 payment、account 的 SQL 都在 `biz/` 的现状偏离（account 是否拆分见 §8.1 Q5）。A7：ACC-11 规则 3 改为按方法区分服务端超时，`CheckBalance` 全量模式 120 秒，其余 2 秒。A9：§0.3 DoD 增加报告类与人工验收的证据口径。已完成功能点的状态与已勾验收不变；需要改代码的后续工作待 fix/ACC-11-…、fix/PAY-01-dal、[chore] 落地：ACC-11 服务端超时按方法区分（fix/ACC-11-…）、payment SQL 拆到 `dal/`（fix/PAY-01-dal）、`make cover` 加 `integration` 构建标签（[chore]） |
 | 2026-10-27 | v3.0 | 文档审查第 2 阶段遗留问题的用户决定：REF-03 新增第 5 条，释放 `refunded_amount` 的 UPDATE 影响 0 行时整个事务回滚、返回 `10003`、ERROR 日志并计 `pay_refund_quota_inconsistent_total`（已登记到 OPS-03），由回调重试、查单补偿或卡单恢复再次暴露；REC-01 第 5、6 条：INIT、DOWNLOADED 按 `updated_at` 超过 30 分钟接管（CHECKING 仍按 `started_at`），UPDATE 显式写注入时钟的 `updated_at`，只在现有 RunBatch 触发时机判定、不加后台扫描，`BILL_NOT_READY` 每 30 分钟对该批次重试一次、当天最多 6 次后置 FAILED（重试计数与待执行重试只在进程内），REC-02 第 4 条与 §2.8 同步，§8.1 Q6 关闭；BASE-15 新增第 5 条启动校验，`FAULT_POINTS` 默认空、逗号分隔，出现未登记名称（含拼写错误、空项、`:once` 以外的后缀）时启动失败，登记表顺延为第 6 条；MQ-04 中 `Post` 返回 `40005` 为不可重试，进 DLQ 并输出 ERROR 日志，可由 MQ-05 重放，OPT-02 退化路径一致，MQ-04、MQ-05、OPT-02 补验收；§8.1 Q5 关闭，account 的 SQL 保持在 `biz/`；§2.3 的 payment biz 按现状写成平铺单包，只保留 payment SQL 待 fix/PAY-01-dal 拆出的偏离；CH-06 第 6 条 SLOW 只推迟首次回调，失败后按 CH-05 重试，其余与 NORMAL 一致，补重试验收；§7 注明 A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来是 QA-01 的 C1–C13。`docs/07-module-plan.md` 同步 §4，并把消息行、性能优化行的周改为实际里程碑。不改表结构、错误码与资金流向 |
 | 2026-10-27 | v3.0 | 文档审查最后一轮补充（用户决定）：REC-01 的 `BILL_NOT_READY` 重试改为持久化，`recon_batch` 新增列 `retry_count INT NOT NULL DEFAULT 0`（迁移随 REC-01 新增，标头“表”已注明）。每次 `BILL_NOT_READY` CAS 写 `retry_count + 1` 和注入时钟的 `updated_at`，满 30 分钟才重试，已重试 6 次后 CAS 置 FAILED（`error_msg = BILL_NOT_READY`），重跑时 `retry_count` 归 0；上一行“当天最多 6 次”“计数只在进程内、重启丢失”的表述作废。每日定时触发顺带对前 7 个账期（D−8 到 D−2）中 INIT、DOWNLOADED、CHECKING 的已有批次调用 RunBatch，按第 5 条超时接管，仍不加独立后台扫描。第 5 条的超时改为“满 30 分钟”（≥），并写明接管后的续跑点：INIT 从下载开始，DOWNLOADED 以 CAS `DOWNLOADED → CHECKING` 继续比对（账单行已在进入 DOWNLOADED 的同一事务导入），CHECKING 重新比对。REC-02 第 4 条、§2.8、§8.1 Q6 同步；补重启计数不丢、旧账期由定时触发接管、重跑归 0 的验收。REC-06：`recon_diff` 置 RESOLVED、IGNORED 用 CAS `WHERE id = ? AND status = 'PENDING'`，影响 0 行时重新读取按当前状态返回，补并发验收。OPT-02 新增第 7 条：F = 0 时同样省略手续费分录，与逐条模式结果一致，补验收。表结构文档由另一 coder 同步；不改错误码与资金流向 |
+| 2026-10-27 | v3.0 | 文档审查补充（用户选择方案 A）：重新比对前只删除本批次 `status = 'PENDING' AND handle_action IS NULL` 的差错，已自动处理的 PENDING 差错和 RESOLVED、IGNORED 的保留；REC-01 第 3 条重跑与第 5 条 CHECKING 接管共用这一条件（第 3 条原来的“删除状态为 PENDING 的差错”改为此条件），并写明 CHECKING 推进为 DONE、FAILED 的 CAS 带本次 `started_at`，被接管后旧运行的 CAS 影响 0 行。REC-03 第 4 条与 REC-05 第 6 条：本批次已有同一 `uk_batch_type_biz_no` 键时跳过、不改已有行（`ON DUPLICATE KEY UPDATE id = id`），`diff_count` 按实际行数统计，插入影响 1 行才计 `pay_recon_diffs_total`。REC-06：自动处理失败也写 `handle_action` 并保持 PENDING，后续任意账期的批次运行跨批次重试 `REQUERY`，LEDGER_MISSING 复核在凭证仍缺失时再次重放；CAS 影响 0 行且重新读取查不到时按“已不存在”返回并输出 WARN 日志。补重跑无 1062、自动处理差错保留、中断接管与一次性运行一致、旧运行不覆盖、同键跳过、处理失败重试、读不到行的验收。不改表结构、错误码与资金流向 |
