@@ -1,7 +1,7 @@
 # pay-system 流程图（状态机、泳道图、控制流图）
 
-> 版本：v2.16　最后修改：2026-10-27　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐。2026-10-21 按 ACC-14 口径改正 CF-33，CF-33 已对齐。2026-10-21 按 ACC-10 口径改正 CF-17，CF-17 已对齐。2026-10-23 按 BASE-13 规则 8 补 CF-01、CF-02、CF-21 的签名配置故障出口。2026-10-23 按 CH-01 口径改正 CF-22。2026-10-26 CF-23 注明防悬挂 CLOSED 记录 amount = 0。2026-10-26 渠道查单单独画 CF-38，CH-02 的控制流改指 CF-38；SL-02 仍留给以后的补偿。2026-10-26 按 CH-03 口径补全 CF-23 的验签、参数、CAS 与再读出口，六个业务结果不变。2026-10-26 按 CH-05 在 CF-24 图下注明「其他」和 DROP_NOTIFY 不回调已实现；SLOW 与 DUP_NOTIFY 的特殊发送仍未实现，这两种场景现在不发普通回调。图本身不改。2026-10-27 按 CH-06 将 CF-24 图下改为 DUP_NOTIFY 已按「并发 5 次，之后每秒 1 次再 5 次，不论响应」实现；SLOW 仍未实现，现在不发。图本身不改。2026-10-27 文档审查修正与需求不一致的文字：SL-01 延迟范围、CF-05 未知结果分支、SL-14 C13、CF-34 与 CF-35 的 10001 / 10006、§5 R15 与 R16 状态、SL-09 与 CF-26 的定时触发写法、对 03 的版本引用；不改规则
-> 依据：`docs/02-requirements.md` v3.0、`docs/03-conventions.md` v2.14、`docs/01-tech-decisions.md` D17–D21；`docs/05-api.md`、`docs/database.md` 尚未同步 v3.0，冲突处以需求文档为准
+> 版本：v2.17　最后修改：2026-10-27　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐。2026-10-21 按 ACC-14 口径改正 CF-33，CF-33 已对齐。2026-10-21 按 ACC-10 口径改正 CF-17，CF-17 已对齐。2026-10-23 按 BASE-13 规则 8 补 CF-01、CF-02、CF-21 的签名配置故障出口。2026-10-23 按 CH-01 口径改正 CF-22。2026-10-26 CF-23 注明防悬挂 CLOSED 记录 amount = 0。2026-10-26 渠道查单单独画 CF-38，CH-02 的控制流改指 CF-38；SL-02 仍留给以后的补偿。2026-10-26 按 CH-03 口径补全 CF-23 的验签、参数、CAS 与再读出口，六个业务结果不变。2026-10-26 按 CH-05 在 CF-24 图下注明「其他」和 DROP_NOTIFY 不回调已实现；SLOW 与 DUP_NOTIFY 的特殊发送仍未实现，这两种场景现在不发普通回调。图本身不改。2026-10-27 按 CH-06 将 CF-24 图下改为 DUP_NOTIFY 已按「并发 5 次，之后每秒 1 次再 5 次，不论响应」实现；SLOW 仍未实现，现在不发。图本身不改。2026-10-27 文档审查修正与需求不一致的文字：SL-01 延迟范围、CF-05 未知结果分支、SL-14 C13、CF-34 与 CF-35 的 10001 / 10006、§5 R15 与 R16 状态、SL-09 与 CF-26 的定时触发写法、对 03 的版本引用；不改规则。2026-10-27 文档审查第 2 阶段按用户确认的规则修图：outbox 投递改为领取写租约、事务外发送、按租约值 CAS 回写；手续费为 0 省略分录；merchant_notify 与 recon_diff 状态 CAS；批量记账非 ACTIVE 退化逐条，Post 返回 40005 进 DLQ；退款释放额度影响 0 行回滚并返回 10003；对账批次 INIT / DOWNLOADED 超时接管与 BILL_NOT_READY 当天最多重试 6 次；SLOW 只推迟首次回调；覆盖矩阵同步 BASE-15、GW-09、QA-05
+> 依据：`docs/02-requirements.md` v3.0、`docs/03-conventions.md` v2.17、`docs/01-tech-decisions.md` D17–D21；图与需求冲突处以需求文档为准
 > 用途：以图的形式确认全部功能性设计。图是需求的视图，规则冲突时以需求文档为准；需求变更后同步修改对应的图。
 
 ## 0. 阅读说明
@@ -34,16 +34,16 @@ flowchart LR
     classDef fault fill:#fff4d6,stroke:#b8860b
 ```
 
-- 泳道图中 `Note` 内的“事务：……”表示一个数据库事务内完成的步骤；“故障点 xxx”为 QA-01 的故障注入点。
+- 泳道图中 `Note` 内的“事务：……”表示一个数据库事务内完成的步骤；“故障点 xxx”为 BASE-15（`pkg/fault`）登记的故障注入点，括号里的 Cn 是 QA-01 故障演练的场景编号。
 - “分片 s”指商户所属账户分片（`shard.Of(merchant_id)`，ACC-13）；“子账户 k”指 `crc32(biz_no) % PLATFORM_SUB_ACCOUNTS` 选中的平台子账户（OPT-03）。
 
 ### 0.3 渲染
 
-GitHub、GitLab、IDEA/GoLand（Markdown 插件）、VS Code（Markdown Preview Mermaid Support）可直接渲染。截至 v2.12，图已用 `@mermaid-js/mermaid-cli` 12.0.0 渲染校验。v2.13 的 CF-23 未再渲染：当前环境没有 `mmdc`，也不新增 SVG。v2.14 只在 CF-24 图下加了文字，图本身没改，同样没有 `mmdc`，不新增 SVG。
+GitHub、GitLab、IDEA/GoLand（Markdown 插件）、VS Code（Markdown Preview Mermaid Support）可直接渲染。截至 v2.12，图已用 `@mermaid-js/mermaid-cli` 12.0.0 渲染校验。v2.13 的 CF-23 未再渲染：当前环境没有 `mmdc`，也不新增 SVG。v2.14 只在 CF-24 图下加了文字，图本身没改，同样没有 `mmdc`，不新增 SVG。v2.16、v2.17 用 `npx -y @mermaid-js/mermaid-cli`（12.0.0）渲染全部 64 张图通过，不新增 SVG。
 
 ## 1. 覆盖矩阵
 
-业务功能点与图的对应关系。BASE（公共包）、OPS-02、OPS-03、OPS-05、OPT-01（分阶段埋点）、TL、QA-02~04、DOC 属于工程与交付类功能点，没有业务流程，不画图；QA-01 的故障点标注在各图中，§4.10 汇总。删除线为 v3.0 砍掉的功能点。
+业务功能点与图的对应关系。BASE（公共包，BASE-15 除外）、OPS-02、OPS-03、OPS-05、OPT-01（分阶段耗时埋点）、TL、QA-02（基线压测）、QA-03、QA-04、QA-05（优化后复测）、DOC 属于工程与交付类功能点，没有业务流程，不画图；BASE-15 的故障点标注在各图中，§4.10 汇总，QA-01 故障演练的场景编号写在 §4.10 的演练列。删除线为 v3.0 砍掉的功能点。
 
 | 功能点 | 状态机 | 泳道图 | 控制流图 |
 |---|---|---|---|
@@ -85,7 +85,8 @@ GitHub、GitLab、IDEA/GoLand（Markdown 插件）、VS Code（Markdown Preview 
 | MQ-03 消费框架、MQ-04 account 消费（逐条） | — | SL-07 | CF-19 |
 | MQ-05 死信与重放、MQ-06 清理 | SM-05 | SL-07、SL-10 | CF-20 |
 | NTF-01 生成、NTF-02 发送与固定间隔重试 | SM-06 | SL-08、SL-11、SL-12 | CF-21 |
-| GW-01 骨架、GW-02 路由、GW-03 验签、GW-04 防重放、GW-05 进程内限流、GW-08 密钥缓存 | — | SL-01 | CF-01 |
+| GW-01 骨架、GW-02 支付与余额路由、GW-03 验签、GW-04 防重放、GW-05 进程内限流、GW-08 密钥缓存 | — | SL-01 | CF-01 |
+| GW-09 退款与转账路由 | — | SL-05、SL-11、SL-12 | CF-01 |
 | GW-06 渠道回调入口 | — | SL-01 | CF-02 |
 | GW-07 管理接口（重放、核对、触发对账） | — | SL-10 | CF-03 |
 | REC-01 批次调度、REC-02 账单导入 | SM-07 | SL-09 | CF-26 |
@@ -96,6 +97,8 @@ GitHub、GitLab、IDEA/GoLand（Markdown 插件）、VS Code（Markdown Preview 
 | ~~REC-07 人工处理与挂账~~（CUT，CF-30 只保留编号） | — | — | — |
 | REC-08 报告 | — | SL-09、SL-10 | CF-26 |
 | OPS-01 健康检查与优雅退出 | — | — | CF-31 |
+| BASE-15 故障注入点（`pkg/fault`） | — | 各泳道图中的“故障点 xxx” | 各控制流图中的故障点节点，§4.10 汇总 |
+| QA-01 故障演练（C1–C13） | — | SL-02、SL-14、SL-15 等标注了场景编号的图 | §4.10 演练列 |
 | ~~OPS-04 监控面板与告警规则~~（CUT） | — | — | — |
 | OPT-02 批量记账合并提交 | — | SL-15 | CF-37 |
 | OPT-03 平台子账户拆分 | — | SL-01、SL-15 | CF-16、CF-19、CF-37 |
@@ -189,12 +192,17 @@ stateDiagram-v2
 ```mermaid
 stateDiagram-v2
     [*] --> PENDING: outbox.Add，与业务同事务（MQ-01）
-    PENDING --> SENT: Kafka 确认（MQ-02）
-    PENDING --> PENDING: 发送失败，退避 min(2^n 秒, 5 分钟)
-    PENDING --> DEAD: 失败满 20 次
+    PENDING --> PENDING: 领取写租约 / 发送失败退避 min(2^n 秒, 5 分钟) / 租约到期重新领取
+    PENDING --> SENT: Kafka 确认后按租约值 CAS 回写（MQ-02）
+    PENDING --> DEAD: 失败满 20 次，按租约值 CAS 回写
     SENT --> PENDING: 重放（MQ-05）
     DEAD --> PENDING: 重放（MQ-05）
     SENT --> [*]: sent_at 超过 7 天删除（MQ-06）
+    note right of PENDING
+        领取事务把 next_retry_at 设为租约到期 L = now + 30s 后提交
+        事务外发送，回写条件 status = PENDING 且 next_retry_at = L
+        影响 0 行表示租约已被接管，丢弃本次结果
+    end note
 ```
 
 ### SM-06 商户通知 `merchant_notify`
@@ -214,20 +222,26 @@ stateDiagram-v2
 ```mermaid
 stateDiagram-v2
     [*] --> INIT: 按 (channel, bill_date) 创建（REC-01）
-    INIT --> INIT: BILL_NOT_READY，30 分钟后重试
+    INIT --> INIT: BILL_NOT_READY，30 分钟后调度再次调用 RunBatch，按超时接管重试，当天最多 6 次
     INIT --> DOWNLOADED: 下载、校验、导入账单（REC-02）
     DOWNLOADED --> CHECKING: 开始比对
     CHECKING --> DONE: 外部比对、内部对账、自动处理完成（REC-03、REC-05、REC-06）
-    INIT --> FAILED: 下载重试耗尽
+    INIT --> FAILED: 下载重试耗尽 / BILL_NOT_READY 当天重试 6 次后仍未就绪
     DOWNLOADED --> FAILED: 异常
     CHECKING --> FAILED: 异常
-    CHECKING --> CHECKING: started_at 超过 30 分钟，被重新接管
+    DOWNLOADED --> DOWNLOADED: updated_at 超过 30 分钟，RunBatch 触发时被接管
+    CHECKING --> CHECKING: started_at 超过 30 分钟，RunBatch 触发时被接管
     FAILED --> INIT: 重跑
     DONE --> INIT: force 重跑
     note right of FAILED
         重跑时删除本批账单行和 PENDING 差错
         保留 RESOLVED、IGNORED 差错（REC-01 第 3 条）
         重跑从 INIT 开始
+    end note
+    note right of INIT
+        INIT、DOWNLOADED 按 updated_at，CHECKING 按 started_at
+        超过 30 分钟视为卡死，只在 RunBatch 触发时接管，不另设扫描
+        接管 CAS 带原状态与原时间戳，同一时刻只有一个接管者
     end note
 ```
 
@@ -381,13 +395,13 @@ sequenceDiagram
     P-->>GW: APPLIED
     GW-->>CH: 200 SUCCESS
 
-    Note over P: 投递器每 200ms 扫描 PENDING（CF-18）
+    Note over P: 投递器每 200ms 领取 PENDING，写 30 秒租约后提交，事务外发送（CF-18）
     P->>K: pay.payment.succeeded（key = pay_no）
-    Note over P: 故障点 outbox.after_send（C4）<br/>outbox → SENT
+    Note over P: 故障点 outbox.after_send（C4）<br/>按租约值 CAS 回写 outbox → SENT
 
     par account-ledger 消费组
         K->>A: payment.succeeded
-        Note over A: shard.Of(merchant_id) 路由到商户分片 s<br/>子账户 k = crc32(pay_no) % N<br/>Post(PAY, pay_no)：借 分片 s 渠道应收子账户 k A<br/>贷 商户 A−F，贷 分片 s 手续费收入子账户 k F<br/>批量模式按分区批次合并提交（SL-15）<br/>故障点 ledger.after_commit（C5）
+        Note over A: shard.Of(merchant_id) 路由到商户分片 s<br/>子账户 k = crc32(pay_no) % N<br/>Post(PAY, pay_no)：借 分片 s 渠道应收子账户 k A<br/>贷 商户 A−F，贷 分片 s 手续费收入子账户 k F（F = 0 时省略这条分录）<br/>批量模式按分区批次合并提交（SL-15）<br/>故障点 ledger.after_commit（C5）
         A->>K: 提交 offset
     and payment-notify 消费组
         K->>P: payment.succeeded
@@ -438,7 +452,7 @@ sequenceDiagram
     end
 
     Note over P: 退避 10s、10s、30s、1m、2m、5m、10m、30m，之后每小时<br/>创建满 24 小时：next_query_at 置空，交对账
-    opt SLOW 场景：查单先完成，30 秒后回调才到
+    opt SLOW 场景：查单先完成，首次回调推迟到 finished_at 后 30 秒，失败后按 CH-05 重试
         CH->>GW: POST /callback/mockpay
         GW->>P: HandleChannelNotify
         P-->>GW: DUPLICATE（同一终态，notify_count+1）
@@ -524,7 +538,7 @@ sequenceDiagram
 
 ### SL-05 退款成功链路
 
-覆盖：REF-01~03、ACC-04、ACC-06、ACC-13、CH-04、MQ-04、NTF-01~02。
+覆盖：GW-09、REF-01~03、ACC-04、ACC-06、ACC-13、CH-04、MQ-04、NTF-01~02。
 
 ```mermaid
 sequenceDiagram
@@ -645,14 +659,16 @@ sequenceDiagram
     participant A as account（消费者）
 
     loop 每 200ms（MQ-02）
-        Note over P: 事务开始：SELECT outbox PENDING 且 next_retry_at ≤ now<br/>ORDER BY id LIMIT 100 FOR UPDATE SKIP LOCKED
-        P->>K: 批量发送（acks = all，幂等生产，超时 5s）
+        Note over P: 事务 1：SELECT outbox PENDING 且 next_retry_at ≤ now<br/>ORDER BY id LIMIT 100 FOR UPDATE SKIP LOCKED<br/>选中行 next_retry_at = L（now + 30s 租约），COMMIT
+        P->>K: 事务外批量发送（acks = all，幂等生产，超时 5s），不持有行锁
+        K-->>P: 每条的确认结果
+        Note over P: 故障点 outbox.after_send（发送后、回写前）
         alt 全部确认
-            K-->>P: ack
-            Note over P: 故障点 outbox.after_send<br/>SENT，sent_at = now，提交事务
+            Note over P: 逐条 CAS：SENT，sent_at = now<br/>WHERE id = ? AND status = PENDING AND next_retry_at = L
         else 部分或全部失败
-            Note over P: 失败的记录 retry_count+1<br/>next_retry_at = now + min(2^n 秒, 5 分钟)<br/>满 20 次 → DEAD，提交事务
+            Note over P: 成功的记录同上置 SENT<br/>失败的记录逐条 CAS（条件同上）：retry_count+1<br/>next_retry_at = now + min(2^n 秒, 5 分钟)，last_error 截断 512<br/>满 20 次 → DEAD
         end
+        Note over P: CAS 影响 0 行：租约已被其他实例接管，丢弃本次结果，不报错<br/>发送后崩溃或回写失败：租约到期后被重新领取再次发送，重复由消费端幂等吸收
     end
 
     K->>A: 拉取消息（每分区一个协程，分区内顺序处理）
@@ -662,7 +678,7 @@ sequenceDiagram
         A->>K: 提交 offset
     else 可重试错误（数据库、网络、依赖不可用）
         Note over A: 原地退避 100ms 起翻倍，上限 5s<br/>不提交 offset，持续重试并告警
-    else 不可重试错误（反序列化失败、数据缺失、40004）
+    else 不可重试错误（反序列化失败、数据缺失、Post 返回 40005、40004）
         A->>K: 写入 pay.dlq（附原 topic、分区、offset、错误）
         A->>K: 提交 offset
         Note over A: pay_mq_dlq_total+1，ERROR 日志
@@ -699,11 +715,11 @@ sequenceDiagram
         P->>MD: POST notify_url（平台签名，超时 5s，不跟随重定向）
         alt 第 1–3 次
             MD-->>P: 500
-            Note over P: 保持 PENDING，30 秒后再试
+            Note over P: CAS 写 last_error（WHERE id = ? AND status = PENDING）<br/>保持 PENDING，30 秒后再试
         else 第 4 次
             Note over MD: 验证平台签名
             MD-->>P: 200 SUCCESS
-            Note over P: PENDING→SUCCESS，attempt_count = 4
+            Note over P: CAS PENDING→SUCCESS，attempt_count = 4<br/>影响 0 行：已被其他实例推进为终态，丢弃本次结果
         end
     end
     Note over P: 首次立即发送，之后固定间隔 NOTIFY_RETRY_INTERVAL（30s）<br/>共 NOTIFY_MAX_ATTEMPTS（5）次仍失败 → DEAD，pay_notify_attempts_total{result=dead}+1
@@ -725,11 +741,11 @@ sequenceDiagram
 
     T->>RC: RunBatch(mockpay, D)，D 为账期 bill_date
     Note over T: 定时任务在 D 的次日 RECON_RUN_AT（默认 10:00）发起（REC-01 规则 1）
-    Note over RC: 按 uk_channel_bill_date 创建或取得批次，CAS 抢占（CF-26）
+    Note over RC: 按 uk_channel_bill_date 创建或取得批次，CAS 抢占（CF-26）<br/>INIT、DOWNLOADED 的 updated_at 或 CHECKING 的 started_at 超过 30 分钟时接管
     RC->>CH: GET /mockpay/v1/bills?date=D（超时 30s，失败重试 3 次）
     alt BILL_NOT_READY
         CH-->>RC: BILL_NOT_READY
-        Note over RC: 批次保持 INIT，30 分钟后重试
+        Note over RC: 批次保持 INIT。30 分钟后调度再次调用 RunBatch，按 INIT 超时接管重新下载<br/>当天最多重试 6 次，仍未就绪 → FAILED，记录 error_msg
     else 账单就绪
         CH-->>RC: CSV + X-Bill-Sha256 + X-Bill-Count
         Note over RC: 校验哈希与行数，严格解析，每 1000 行批量插入<br/>批次 → DOWNLOADED → CHECKING
@@ -785,7 +801,7 @@ sequenceDiagram
 
 ### SL-11 同分片转账
 
-覆盖：TRF-01、TRF-02、ACC-07、ACC-13、NTF-01~02。示例 `M100001 → M100003`，双方都在分片 1。
+覆盖：GW-09、TRF-01、TRF-02、ACC-07、ACC-13、NTF-01~02。示例 `M100001 → M100003`，双方都在分片 1。
 
 ```mermaid
 sequenceDiagram
@@ -831,7 +847,7 @@ sequenceDiagram
 
 ### SL-12 跨分片转账成功
 
-覆盖：TRF-01、TRF-03、ACC-04、ACC-06、ACC-14、OPT-04（并行分支）。示例 `M100001`（分片 1）`→ M100002`（分片 0）。
+覆盖：GW-09、TRF-01、TRF-03、ACC-04、ACC-06、ACC-14、OPT-04（并行分支）。示例 `M100001`（分片 1）`→ M100002`（分片 0）。
 
 ```mermaid
 sequenceDiagram
@@ -993,10 +1009,16 @@ sequenceDiagram
             Note over C: 本组退化为逐条处理（MQ-04）
         else 插入成功
             Note over C: 按账户聚合增量：同一商户、同一平台子账户 k 的多笔合并<br/>k = crc32(pay_no) % PLATFORM_SUB_ACCOUNTS
-            C->>DB: 按 account_id 升序 SELECT FOR UPDATE，UPDATE balance += Σ
-            Note over C: 从加锁时读到的余额按事件顺序累加 balance_after
-            C->>DB: 批量 INSERT ledger_entry，COMMIT
-            Note over C: 故障点 ledger.after_batch_commit（C12）
+            C->>DB: 按 account_id 升序 SELECT FOR UPDATE
+            alt 任一账户 status 不是 ACTIVE
+                C->>DB: ROLLBACK
+                Note over C: 本组退化为逐条处理，pay_ledger_batch_fallback_total+1<br/>该事件逐条 Post 返回 40005，按 MQ-04 进入 DLQ，其余正常入账
+            else 全部 ACTIVE
+                C->>DB: UPDATE balance += Σ（行锁已持有）
+                Note over C: 从加锁时读到的余额按事件顺序累加 balance_after
+                C->>DB: 批量 INSERT ledger_entry，COMMIT
+                Note over C: 故障点 ledger.after_batch_commit（C12）
+            end
         end
     end
     alt 所有分组提交成功
@@ -1004,7 +1026,7 @@ sequenceDiagram
     else 部分分组提交后崩溃
         Note over C,K: offset 未提交，重启后重新消费<br/>预查跳过已入账事件，每笔支付只入账一次
     end
-    Note over C: 不可重试事件（商户账户不存在）：本组回滚，退化为逐条处理<br/>坏消息按 MQ-03 进入 DLQ，其余事件正常入账，pay_ledger_batch_fallback_total+1<br/>反序列化失败的消息无法分组，处理方式见 R16
+    Note over C: 不可重试事件（商户账户不存在）：本组回滚，退化为逐条处理<br/>坏消息按 MQ-03 进入 DLQ，其余事件正常入账，pay_ledger_batch_fallback_total+1<br/>反序列化失败的消息在分组前直接进入 DLQ（OPT-02 规则 5）
 ```
 
 ## 4. 控制流图
@@ -1015,7 +1037,7 @@ sequenceDiagram
 
 #### CF-01 商户请求管线
 
-覆盖：GW-01~05、GW-08、PAY-08、REF-05、TRF-05。
+覆盖：GW-01~05、GW-08、GW-09、PAY-08、REF-05、TRF-05。
 
 ```mermaid
 flowchart TD
@@ -1041,7 +1063,7 @@ flowchart TD
     RL -->|"通过"| NC["SET gw:nonce:app_id:nonce 1 NX EX 600<br/>超时 50ms"]
     NC -->|"已存在"| E20003["20003"]:::err
     NC -->|"超时或不可用"| E10004b["503 / 10004（fail-closed）<br/>pay_nonce_unavailable_total+1"]:::err
-    NC -->|"OK"| PV{"参数校验（GW-02）<br/>merchant_id 只取验签结果"}
+    NC -->|"OK"| PV{"参数校验（GW-02 支付与余额、GW-09 退款与转账）<br/>merchant_id 只取验签结果"}
     PV -->|"不合法"| E10001["10001"]:::err
     PV -->|"合法"| RPC["调用 payment，连接 100ms<br/>普通 1s，Pay / ClosePayment / CreateRefund 5s，CreateTransfer 3s<br/>网关不重试写请求"]
     RPC --> PS{"平台签名响应成功"}
@@ -1337,17 +1359,20 @@ flowchart TD
         A1["CAS channel_txn PROCESSING→result（规则同 CF-06）"]
         A1 -->|"影响 1 行"| A2["CAS refund_order PROCESSING→result"]
         A2 -->|"SUCCESS"| A3["写 succeeded_at（渠道完成时间）<br/>outbox.Add(refund.succeeded)"]
-        A2 -->|"FAILED"| A4["fail_code = CHANNEL_FAILED / CHANNEL_REJECTED<br/>refunded_amount −R（WHERE refunded_amount ≥ R）<br/>outbox.Add(refund.failed)"]
+        A2 -->|"FAILED"| A4["fail_code = CHANNEL_FAILED / CHANNEL_REJECTED<br/>UPDATE payment_order SET refunded_amount = refunded_amount − R<br/>WHERE pay_no = ? AND refunded_amount ≥ R"]
+        A4 -->|"影响 1 行"| A5["outbox.Add(refund.failed)"]
     end
     A1 -->|"影响 0 行"| DUP["重复、冲突处理同 CF-06"]
     K -->|"INIT（冻结失败或超时）"| B1
     subgraph TXB["事务：INIT 失败"]
-        B1["CAS refund_order INIT→FAILED，写 fail_code"] --> B2["释放 refunded_amount −R"]
-        B2 --> B3["outbox.Add(refund.failed)"]
+        B1["CAS refund_order INIT→FAILED，写 fail_code"] --> B2["释放 refunded_amount −R<br/>WHERE pay_no = ? AND refunded_amount ≥ R"]
+        B2 -->|"影响 1 行"| B3["outbox.Add(refund.failed)"]
     end
     B1 -->|"影响 0 行"| DUP
+    A4 -->|"影响 0 行（refunded_amount < R）"| QI["整个事务回滚：channel_txn、refund_order 的 CAS 与 outbox 都不提交<br/>返回 10003，ERROR 日志，pay_refund_quota_inconsistent_total+1<br/>退款保持原状态，由回调重试、查单或 REF-04 再次调用"]:::err
+    B2 -->|"影响 0 行（refunded_amount < R）"| QI
     A3 --> EV1["account 消费 refund.succeeded<br/>ConfirmFreeze(REFUND, refund_no, merchant_id, channel)<br/>贷本分片渠道应收子账户 k（CF-16）"]:::ok
-    A4 --> EV2["account 消费 refund.failed<br/>ReleaseFreeze(REFUND, refund_no, merchant_id, R)<br/>冻结不存在时空回滚（CF-15）"]:::ok
+    A5 --> EV2["account 消费 refund.failed<br/>ReleaseFreeze(REFUND, refund_no, merchant_id, R)<br/>冻结不存在时空回滚（CF-15）"]:::ok
     B3 --> EV2
     classDef ok fill:#e3f6e8,stroke:#2e7d32
     classDef err fill:#fde4e4,stroke:#c62828
@@ -1567,7 +1592,7 @@ flowchart TD
     classDef fault fill:#fff4d6,stroke:#b8860b
 ```
 
-`10001` 在 nil 判断之前。快照是 REPEATABLE READ 的 `WITH CONSISTENT SNAPSHOT`，不是 `dbx.WithTx` 的 READ COMMITTED。两个分片不是同一时刻，所以在途合计为 0 只在全量且 `expect_quiescent = true` 时检查；商户模式忽略该参数。最后一条分录是 `max(ledger_entry.id)`。`passed = false` 不是错误码。一次失败的完成调用把进程内无标签计数加 1，`/metrics` 仍是 OPS-01。
+`10001` 在 nil 判断之前。快照是 REPEATABLE READ 的 `WITH CONSISTENT SNAPSHOT`，不是 `dbx.WithTx` 的 READ COMMITTED。两个分片不是同一时刻，所以在途合计为 0 只在全量且 `expect_quiescent = true` 时检查；商户模式忽略该参数。最后一条分录是 `max(ledger_entry.id)`。`passed = false` 不是错误码。一次失败的完成调用把进程内无标签计数加 1，`/metrics` 暴露由 OPS-03 负责。
 
 #### CF-32 同分片转账 TransferLocal
 
@@ -1780,7 +1805,7 @@ flowchart TD
     classDef fault fill:#fff4d6,stroke:#b8860b
 ```
 
-各阶段耗时上报 `pay_stage_duration_seconds{chain="transfer_tcc", stage}`（OPT-01）。按设计 40004 不可能出现，由 ACC-14 验收与 C9–C11 证明。
+各阶段耗时埋点 `pay_stage_duration_seconds{chain="transfer_tcc", stage}` 由 OPT-01（M5）加入并验收，TRF-03 不实现（TRF-03 规则 7）。按设计 40004 不可能出现，由 ACC-14 验收与 C9–C11 证明。
 
 #### CF-36 转账恢复任务
 
@@ -1826,26 +1851,33 @@ flowchart TD
     W(["业务事务"]) --> ADD["outbox.Add(tx, evt)：只接受事务参数<br/>生成 event_id，信封带 trace_context<br/>msg_key：支付、退款为 pay_no，转账为 transfer_no<br/>biz_no 为事件对应单号，PENDING，next_retry_at = now"]
     ADD --> CM0(["与业务数据同事务提交"]):::ok
     S(["投递器每 200ms"]) --> Q
-    subgraph TX["投递事务（发送期间持有行锁，最长约 5 秒）"]
+    subgraph TX1["事务 1：领取并写租约"]
         Q["SELECT outbox WHERE status = PENDING AND next_retry_at ≤ now<br/>ORDER BY id LIMIT 100 FOR UPDATE SKIP LOCKED"]
-        Q --> SEND["批量同步发送，acks = all，幂等生产<br/>等待全部确认，超时 5s"]
-        SEND --> F["故障点 outbox.after_send（C4）"]:::fault
-        F --> RES{"每条结果"}
-        RES -->|"成功"| SENT["status = SENT，sent_at = now"]:::ok
-        RES -->|"失败"| RT["retry_count+1，next_retry_at = now + min(2^retry_count 秒, 5 分钟)<br/>last_error 截断到 512 字符"]
-        RT --> D{"retry_count 达到 20"}
-        D -->|"是"| DEAD["status = DEAD"]:::err
-        D -->|"否"| P["保持 PENDING"]
-        SENT --> C["COMMIT"]
-        DEAD --> C
-        P --> C
+        Q --> LS["UPDATE outbox SET next_retry_at = L WHERE id IN (...)<br/>L = now + 30s，截到毫秒"]
+        LS --> C1["COMMIT，释放行锁"]
     end
+    C1 --> SEND["事务外批量同步发送，acks = all，幂等生产<br/>等待全部确认，超时 5s"]
+    SEND --> F["故障点 outbox.after_send（C4）<br/>发送后、回写前"]:::fault
+    F --> RES{"每条结果，逐条 CAS 回写<br/>WHERE id = ? AND status = PENDING AND next_retry_at = L"}
+    RES -->|"成功"| SENT["status = SENT，sent_at = now"]
+    RES -->|"失败"| RT["retry_count+1，next_retry_at = now + min(2^retry_count 秒, 5 分钟)<br/>last_error 截断到 512 字符"]
+    RT --> D{"retry_count 达到 20"}
+    D -->|"是"| DEAD["同一条 UPDATE 再写 status = DEAD"]
+    D -->|"否"| P["保持 PENDING"]
+    SENT --> CAS{"影响行数"}
+    DEAD --> CAS
+    P --> CAS
+    CAS -->|"1"| DONE(["回写生效：SENT / DEAD / 退避后的 PENDING"]):::ok
+    CAS -->|"0"| LOST(["租约已过期并被其他实例重新领取<br/>丢弃本次结果，不报错"]):::ok
+    F -.->|"崩溃"| EXP["行仍是 PENDING，next_retry_at = L<br/>租约到期后被重新领取并再次发送<br/>重复由消费端幂等吸收"]:::err
+    CAS -.->|"回写报错"| EXP
+    EXP -.-> Q
     classDef ok fill:#e3f6e8,stroke:#2e7d32
     classDef err fill:#fde4e4,stroke:#c62828
     classDef fault fill:#fff4d6,stroke:#b8860b
 ```
 
-Kafka 确认后、COMMIT 前崩溃会重复发送，由消费端幂等吸收。每 10 秒更新 `pay_outbox_pending`、`pay_outbox_dead`。
+发送期间不持有行锁。租约 30 秒大于发送超时 5 秒与事务上限 3 秒之和，正常情况下回写在租约内完成，其他实例领不到同一行，不注入故障时每条事件只发送一次。表结构不变，租约放在 `next_retry_at`。每 10 秒更新 `pay_outbox_pending`、`pay_outbox_dead`。
 
 #### CF-19 account 事件消费
 
@@ -1860,7 +1892,7 @@ flowchart TD
     DS -->|"否"| DLQ
     DS -->|"是"| RT["shard.Of(merchant_id) 路由到分片 s<br/>子账户 k = crc32(biz_no) % PLATFORM_SUB_ACCOUNTS"]
     RT --> ET{"event_type"}
-    ET -->|"payment.succeeded"| PY["分片 s 事务：Post(PAY, pay_no)（CF-13）<br/>借 渠道应收子账户 k A，贷 商户 A−F，贷 手续费收入子账户 k F"]
+    ET -->|"payment.succeeded"| PY["分片 s 事务：Post(PAY, pay_no)（CF-13）<br/>借 渠道应收子账户 k A，贷 商户 A−F，贷 手续费收入子账户 k F<br/>F = 0 时省略手续费分录，凭证只有 2 条分录"]
     ET -->|"refund.succeeded"| RS["ConfirmFreeze(REFUND, refund_no, merchant_id, channel)（CF-16）"]
     ET -->|"refund.failed"| RF["ReleaseFreeze(REFUND, refund_no, merchant_id, amount)（CF-15）"]
     PY --> RES{"结果"}
@@ -1870,7 +1902,7 @@ flowchart TD
     F --> CO(["提交 offset"]):::ok
     RES -->|"可重试：数据库、网络、依赖不可用"| BO["原地退避 100ms 起翻倍、上限 5s<br/>不提交 offset，持续重试并告警"]
     BO --> ET
-    RES -->|"不可重试：商户账户不存在、40004"| DLQ["写入 pay.dlq（附原 topic、分区、offset、错误）<br/>pay_mq_dlq_total+1，ERROR 日志<br/>refund.succeeded 的 40004 属于严重不一致"]:::err
+    RES -->|"不可重试：商户账户不存在、Post 返回 40005（账户非 ACTIVE）、40004"| DLQ["写入 pay.dlq（附原 topic、分区、offset、错误）<br/>pay_mq_dlq_total+1，ERROR 日志<br/>refund.succeeded 的 40004 属于严重不一致<br/>40005 在账户恢复 ACTIVE 后由 MQ-05 重放修复"]:::err
     DLQ --> CO2(["提交 offset，继续后续消息"]):::ok
     S -.- N["account 不消费转账事件：转账记账由协调者同步驱动"]
     classDef ok fill:#e3f6e8,stroke:#2e7d32
@@ -1912,15 +1944,17 @@ DLQ 消息不自动消费；`pay_mq_dlq_total` 大于 0 时告警，人工排查
 flowchart TD
     S(["一次拉取的记录（单个分区）"]) --> PK["取 ≤ LEDGER_BATCH_SIZE（100）条 payment.succeeded"]
     PK --> GP["按 shard.Of(merchant_id) 分组"]
-    GP -.- N["反序列化失败的消息无法分组，处理方式见 R16"]
+    GP -.- N["反序列化失败的消息取不到 merchant_id，在分组前直接按 MQ-03 进入 DLQ（OPT-02 规则 5）"]
     GP --> LP{"还有未处理的分片组"}
     LP -->|"是"| PQ
     subgraph TX["分片 s 事务"]
         PQ["SELECT biz_no FROM ledger_txn WHERE biz_type = PAY AND biz_no IN (...)<br/>已入账的跳过"]
         PQ --> BI["批量 INSERT ledger_txn（剩余事件）"]
         BI -->|"成功"| AG["按账户聚合增量：同一商户、同一平台子账户 k 的多笔合并<br/>k = crc32(biz_no) % PLATFORM_SUB_ACCOUNTS"]
-        AG --> LK["按 account_id 升序 SELECT ... FOR UPDATE<br/>UPDATE account SET balance = balance + Σ, version + 1"]
-        LK --> BA["从加锁时读到的余额按事件顺序累加 balance_after"]
+        AG --> LK["按 account_id 升序 SELECT ... FOR UPDATE"]
+        LK -->|"都存在"| AS{"所有账户 status = ACTIVE"}
+        AS -->|"是"| UP["UPDATE account SET balance = balance + Σ, version + 1<br/>行锁已持有，状态不会再变"]
+        UP --> BA["从加锁时读到的余额按事件顺序累加 balance_after"]
         BA --> BE["批量 INSERT ledger_entry"]
         BE --> CM["COMMIT"]
     end
@@ -1928,8 +1962,10 @@ flowchart TD
     F --> LP
     BI -->|"1062（并发消费者或重放抢先入账）"| FB1["ROLLBACK，本组退化为逐条处理（CF-19）"]
     LK -->|"商户账户不存在"| FB2["ROLLBACK，本组退化为逐条处理<br/>坏消息按 MQ-03 进入 DLQ，其余正常入账<br/>pay_ledger_batch_fallback_total+1"]:::err
+    AS -->|"否"| FB3["ROLLBACK，本组退化为逐条处理，pay_ledger_batch_fallback_total+1<br/>该事件逐条 Post 返回 40005，不可重试，进入 DLQ（CF-19）<br/>其余事件正常入账"]:::err
     FB1 --> LP
     FB2 --> LP
+    FB3 --> LP
     LP -->|"否"| REST["批内其他事件按原顺序逐条处理（CF-19）"]
     REST --> CO(["所有分组成功后提交本批 offset"]):::ok
     classDef ok fill:#e3f6e8,stroke:#2e7d32
@@ -1962,16 +1998,22 @@ flowchart TD
         Q["抢占到期的 PENDING，FOR UPDATE SKIP LOCKED"] --> UP["attempt_count+1<br/>next_attempt_at = now + NOTIFY_RETRY_INTERVAL（30s）"]
     end
     UP --> WL{"事务外并发 ≤ 20<br/>再次校验 notify_url 主机在白名单内"}
-    WL -->|"否"| DEAD1["不发送，置 DEAD，last_error 记录原因<br/>pay_notify_attempts_total result=dead +1，告警"]:::err
+    WL -->|"否"| DEAD1["不发送，CAS PENDING→DEAD，last_error 记录原因<br/>pay_notify_attempts_total result=dead +1，告警"]:::err
     WL -->|"是"| SGN{"平台签名成功"}
     SGN -->|"否（如商户密钥为空）"| SF["10003：本次不发送，ERROR 日志（不含密钥）<br/>last_error = internal error"]:::err
     SGN -->|"是"| SEND["POST notify_url，平台签名，超时 5s<br/>不跟随重定向，响应体最多读 1KB"]
     SEND --> R{"HTTP 200 且 body 去除首尾空白后为 SUCCESS"}
-    R -->|"是"| SUC(["SUCCESS"]):::ok
+    R -->|"是"| SUC["CAS PENDING→SUCCESS"]
     R -->|"否"| MX{"attempt_count 达到 NOTIFY_MAX_ATTEMPTS（5）"}
     SF --> MX
-    MX -->|"是"| DEAD2["DEAD，pay_notify_attempts_total result=dead +1"]:::err
-    MX -->|"否"| KP["保持 PENDING，30 秒后再试"]
+    MX -->|"是"| DEAD2["CAS PENDING→DEAD，写 last_error<br/>pay_notify_attempts_total result=dead +1"]:::err
+    MX -->|"否"| KP["CAS 写 last_error，保持 PENDING，30 秒后再试"]
+    SUC -->|"影响 1 行"| SUC1(["SUCCESS"]):::ok
+    SUC -->|"影响 0 行"| LOST(["记录已被其他实例推进为终态<br/>丢弃本次结果，不报错，不再更新（NTF-02 规则 7）"]):::ok
+    DEAD1 -->|"影响 0 行"| LOST
+    DEAD2 -->|"影响 0 行"| LOST
+    KP -->|"影响 0 行"| LOST
+    T -.- CN["回写都带 WHERE id = ? AND status = PENDING（源状态只有 PENDING）"]
     classDef ok fill:#e3f6e8,stroke:#2e7d32
     classDef err fill:#fde4e4,stroke:#c62828
     classDef fault fill:#fff4d6,stroke:#b8860b
@@ -2117,7 +2159,7 @@ flowchart TD
 flowchart TD
     S(["交易进入终态"]) --> SC{"scenario"}
     SC -->|"DROP_NOTIFY"| NN(["不回调"]):::ok
-    SC -->|"SLOW"| DL["30 秒后再回调"]
+    SC -->|"SLOW"| DL["首次回调推迟到 finished_at 后 30 秒（注入时钟）<br/>之后与普通发送相同，失败按 CH-05 重试"]
     DL --> SEND
     SC -->|"DUP_NOTIFY"| DUP(["并发回调 5 次，之后每秒 1 次再发 5 次<br/>不论平台响应"]):::ok
     SC -->|"其他"| SEND["POST notify_url（渠道签名，每次独立 notify_id）<br/>notify_sent_count+1"]
@@ -2133,7 +2175,7 @@ flowchart TD
     classDef fault fill:#fff4d6,stroke:#b8860b
 ```
 
-CH-05 实现了图中「其他」的普通发送，以及 DROP_NOTIFY 不回调。会发普通回调的场景是 NORMAL、FAIL、ACCEPT_TIMEOUT、BILL_MISSING、BILL_AMOUNT_DIFF、CLOSE_RACE，以及未登记的场景值，且状态为 SUCCESS 或 FAILED。DUP_NOTIFY 已按「并发 5 次，之后每秒 1 次再 5 次，不论响应」实现（CH-06）：不因 SUCCESS 停止，不走图中「其他」的 5 次与 5s、15s、30s、60s。SLOW 的 30 秒延迟仍未实现，现在不发。图的节点保持原句。覆盖矩阵继续指向 CF-24。当前环境没有 `mmdc`，未渲染 SVG，也不新增 SVG。
+CH-05 实现了图中「其他」的普通发送，以及 DROP_NOTIFY 不回调。会发普通回调的场景是 NORMAL、FAIL、ACCEPT_TIMEOUT、BILL_MISSING、BILL_AMOUNT_DIFF、CLOSE_RACE，以及未登记的场景值，且状态为 SUCCESS 或 FAILED。DUP_NOTIFY 已按「并发 5 次，之后每秒 1 次再 5 次，不论响应」实现（CH-06）：不因 SUCCESS 停止，不走图中「其他」的 5 次与 5s、15s、30s、60s。SLOW 的规则（CH-06 规则 6）是只推迟首次回调，首次失败后按 CH-05 第 3、4 条重试，图中 SLOW 节点已按此改写；该规则属于 CH-06 的 M4 切片，仍未实现，现在不发。覆盖矩阵继续指向 CF-24。当前环境没有 `mmdc`，未渲染 SVG，也不新增 SVG。
 
 #### CF-25 账单下载与注入
 
@@ -2167,12 +2209,18 @@ flowchart TD
     S(["RunBatch(channel, bill_date, force)<br/>定时：每天 RECON_RUN_AT（默认 10:00），bill_date 取前一天<br/>或 CLI / 管理接口指定"]) --> GB["按 uk_channel_bill_date 创建或读取批次"]
     GB --> ST{"批次状态"}
     ST -->|"DONE 且未 force"| RET(["返回已有结果"]):::ok
-    ST -->|"已存在的 INIT / DOWNLOADED / 未超时的 CHECKING"| CUR(["返回当前批次，不重复执行"]):::ok
+    ST -->|"未超时的 INIT / DOWNLOADED / CHECKING"| CUR(["返回当前批次，不重复执行"]):::ok
     ST -->|"新建"| DL
     ST -->|"FAILED，或 DONE 且 force"| RR["删除本批 recon_channel_bill 和 PENDING 差错<br/>保留 RESOLVED、IGNORED 差错<br/>CAS 重置为 INIT"]
-    ST -->|"CHECKING 且 started_at 超过 30 分钟"| TK["视为卡死，CAS 接管"]
+    ST -->|"CHECKING 且 started_at 超过 30 分钟"| TK["视为卡死，CAS 接管<br/>条件带原状态与原 started_at"]
+    ST -->|"INIT 且 updated_at 超过 30 分钟"| TKI["视为卡死，CAS 接管<br/>条件带原状态与原 updated_at"]
+    ST -->|"DOWNLOADED 且 updated_at 超过 30 分钟"| TKD["视为卡死，CAS 接管<br/>条件带原状态与原 updated_at"]
+    TKI --> DL
+    TKD --> CK
     RR --> DL["下载账单：超时 30s，失败重试 3 次，间隔 10s"]
-    DL -->|"BILL_NOT_READY"| NR(["保持 INIT，30 分钟后重试"]):::ok
+    DL -->|"BILL_NOT_READY"| NRC{"当天已重试 6 次"}
+    NRC -->|"否"| NR(["保持 INIT<br/>30 分钟后调度再次调用 RunBatch，按 INIT 超时接管重试"]):::ok
+    NRC -->|"是"| FD3["FAILED，记录 error_msg"]:::err
     DL -->|"重试耗尽"| FD["FAILED，记录 error_msg"]:::err
     DL -->|"成功"| VF{"X-Bill-Sha256、X-Bill-Count 一致<br/>严格解析：表头、整数金额、时间格式"}
     VF -->|"否"| FD2["FAILED，错误信息带行号"]:::err
@@ -2185,6 +2233,7 @@ flowchart TD
     AUTO --> FIN["CAS → DONE"]
     FIN --> RPT(["报告（REC-08）：账期、渠道、双方笔数与金额、匹配数、差错数<br/>按 recon_diff 实时聚合的各类差错数与自动处理数，前 100 条差错<br/>指标 pay_recon_diffs_total、pay_recon_pending_diffs"]):::ok
     CK -.- EX2["任一步异常 → FAILED，记录 error_msg"]:::err
+    ST -.- NT["超时接管只在 RunBatch 被触发时判断，不另设扫描<br/>接管失败（CAS 影响 0 行）返回当前批次<br/>BILL_NOT_READY 的重试计数与待执行重试只在进程内保存<br/>进程重启后丢失，等下一次 CLI 或管理接口调用接管（REC-01 规则 6）"]
     classDef ok fill:#e3f6e8,stroke:#2e7d32
     classDef err fill:#fde4e4,stroke:#c62828
     classDef fault fill:#fff4d6,stroke:#b8860b
@@ -2258,9 +2307,9 @@ flowchart TD
 flowchart TD
     S(["本批 PENDING 差错"]) --> DT{"diff_type"}
     DT -->|"STATUS_MISMATCH，本地 PROCESSING"| SY1["SyncChannelTxn(biz_no)（CF-09），handle_action = REQUERY"]
-    SY1 -->|"推进成功"| RS["RESOLVED，handler = system"]:::ok
+    SY1 -->|"推进成功"| RS["CAS PENDING→RESOLVED，handler = system<br/>WHERE id = ? AND status = PENDING"]:::ok
     DT -->|"CHANNEL_MISSING"| SY2["SyncChannelTxn 查单，handle_action = REQUERY"]
-    SY2 -->|"渠道确认 SUCCESS"| IG["IGNORED，说明“渠道账单遗漏，查单确认成功”"]:::ok
+    SY2 -->|"渠道确认 SUCCESS"| IG["CAS PENDING→IGNORED，说明“渠道账单遗漏，查单确认成功”<br/>WHERE id = ? AND status = PENDING"]:::ok
     DT -->|"LEDGER_MISSING"| RP["ReplayEvent(biz_no, event_type)（CF-20）<br/>handle_action = REPLAY，保持 PENDING 等待复核"]
     DT -->|"LOCAL_MISSING、AMOUNT_MISMATCH、<br/>STATUS_MISMATCH（本地终态）、TRANSFER_MISMATCH"| KP["无自动处理，保持 PENDING<br/>ERROR 日志，写入对账报告"]:::err
     SY1 -->|"失败"| FL["保持 PENDING，下次批次再试"]
@@ -2270,6 +2319,9 @@ flowchart TD
     Q --> V{"对应账户分片凭证存在且金额一致"}
     V -->|"是"| RS2["CAS PENDING→RESOLVED，handler = system<br/>说明“重放后复核通过”"]:::ok
     V -->|"否"| FL2["保持 PENDING"]
+    RS -->|"影响 0 行"| RR0["重新读取：已是 RESOLVED / IGNORED<br/>或已被批次重跑删除，结束"]
+    IG -->|"影响 0 行"| RR0
+    RS2 -->|"影响 0 行"| RR0
     classDef ok fill:#e3f6e8,stroke:#2e7d32
     classDef err fill:#fde4e4,stroke:#c62828
     classDef fault fill:#fff4d6,stroke:#b8860b
@@ -2303,11 +2355,13 @@ flowchart TD
 
 ### 4.10 故障点汇总
 
+故障点由 BASE-15（`pkg/fault`）提供，下表前 9 行与 BASE-15 规则 5 的登记表一致；“演练”列是 QA-01 故障演练的场景编号，进程级故障不经过 `pkg/fault`。
+
 | 故障点 | 位置 | 演练 | 图 |
 |---|---|---|---|
 | `pay.after_tx1` | Pay 事务 1 提交后、调用渠道前 | C2 | SL-01、SL-02、CF-05 |
 | `callback.after_commit` | 回调事务提交后、返回响应前 | C3 | SL-01、CF-02、CF-06 |
-| `outbox.after_send` | Kafka 确认后、outbox 事务提交前 | C4 | SL-01、SL-07、CF-18 |
+| `outbox.after_send` | Kafka 确认后、CAS 回写前（领取事务已提交） | C4 | SL-01、SL-07、CF-18 |
 | `ledger.after_commit` | 逐条入账提交后、offset 提交前 | C5 | SL-01、SL-07、CF-19 |
 | `ledger.after_batch_commit` | 批量入账某分片组提交后、offset 提交前 | C12 | SL-15、CF-37 |
 | `refund.after_freeze` | 冻结成功后、置为 PROCESSING 前 | C6 | SL-05、CF-10 |
@@ -2365,3 +2419,4 @@ R1–R14 来自 v1.x 绘图，已落入需求文档 v2.2；R15、R16 来自 v2.0
 | 2026-10-26 | v2.14 | CH-05：CF-24 图下注明「其他」和 DROP_NOTIFY 不回调已实现；SLOW 与 DUP_NOTIFY 的特殊发送仍未实现，这两种场景现在不发普通回调。图不改。覆盖矩阵仍指向 CF-24。当前环境没有 mmdc，未渲染 SVG。不改资金流向 |
 | 2026-10-27 | v2.15 | CH-06：CF-24 图下改为 DUP_NOTIFY 已按「并发 5 次，之后每秒 1 次再 5 次，不论响应」实现；SLOW 仍未实现，现在不发。图的节点不改。覆盖矩阵仍指向 CF-24。当前环境没有 mmdc，未渲染 SVG，也不新增 SVG。不改资金流向 |
 | 2026-10-27 | v2.16 | 文档审查，只改与需求不一致的文字，不改规则与资金流向：SL-01 渠道完成延迟 200–2000ms 改为 200–1999ms（CH-01 规则 4）；CF-05 结果未知分支补“其他非 200（含 400、401）”（PAY-03 规则 6）；SL-14 C13 删去 LOCAL 不存在的 CONFIRMING、CANCELLING，改为 TCC 的 CONFIRMING、CANCELLING 与 LOCAL 的 TRYING 保持原状态；CF-34 的 `10001 / 10006` 由“需求未定义”改为 ERROR 日志后保持 TRYING（TRF-02 规则 4），CF-35 改为归入 TRY_TIMEOUT 并输出 ERROR 日志（TRF-03 规则 3）；§5 R15、R16 去掉“建议”字样，状态分别写 TRF-02 规则 4、TRF-03 规则 3 与 OPT-02 规则 5，§5 引言和 v2.0 记录注明 R15、R16 已确认；SL-09 的 `RunBatch(mockpay, D)` 注明 D 为账期、定时任务在次日 RECON_RUN_AT 发起，CF-26 起点同样改为 bill_date 取前一天（REC-01 规则 1）；文件头对 03 的引用 v2.0 改为 v2.14。用 mermaid-cli 12.0.0 渲染全部 64 张图通过，未保存 SVG |
+| 2026-10-27 | v2.17 | 文档审查第 2 阶段，按用户确认的规则修图（需求 v3.0 b12eddb 及其后补充）。A1 outbox：SM-05、SL-01、SL-07、CF-18、§4.10 改为“事务 1 领取并把 `next_retry_at` 设为租约到期 L = now + 30s 后提交 → 事务外批量发送（acks = all、幂等、5s）→ 故障点 `outbox.after_send` → 逐条按 `WHERE id = ? AND status = PENDING AND next_retry_at = L` CAS 回写，0 行丢弃”，删去“发送期间持有行锁”，补崩溃或回写报错后租约到期被重新领取。A4：SL-01、CF-19 注明 F = 0 时省略手续费分录；CF-21、SL-08 的 merchant_notify 回写改为 `WHERE id = ? AND status = PENDING` 的 CAS，0 行丢弃本次结果（NTF-02 规则 7）；CF-29 的 RESOLVED、IGNORED 改为 CAS 并补 0 行重读出口；CF-37、SL-15 补账户非 ACTIVE 时回滚、退化逐条、该事件 40005 进 DLQ；CF-19、SL-07 把 Post 返回 40005 列为不可重试，进 DLQ，可由 MQ-05 重放（MQ-04）；CF-11 两条释放 `refunded_amount` 都带 `refunded_amount ≥ R`，影响 0 行时整个事务回滚、返回 10003、ERROR 日志、`pay_refund_quota_inconsistent_total+1`（REF-03）；SM-07、SL-09、CF-26 补 INIT、DOWNLOADED 按 `updated_at` 超过 30 分钟在 RunBatch 触发时接管（不另设扫描），BILL_NOT_READY 30 分钟后由调度再次调用 RunBatch 重试、当天最多 6 次后 FAILED；CF-24、SL-02 的 SLOW 改为只推迟首次回调，失败后按 CH-05 重试（CH-06 规则 6）。编号：§1 覆盖矩阵 GW-02 改为支付与余额路由，新增 GW-09、BASE-15、QA-01 行，说明中加入 QA-05、QA-02 基线、OPT-01 新名；§0.2、§4.10 的故障点归属改为 BASE-15；SL-05、SL-11、SL-12、CF-01 覆盖加 GW-09。其他：CF-17 图下 `/metrics` 归 OPS-03；CF-35 图下分阶段耗时埋点由 OPT-01 加入（TRF-03 规则 7）；SL-15、CF-37 的“见 R16”改为 OPT-02 规则 5；文件头对 03 的引用改为 v2.17，删去“05、database 尚未同步 v3.0”。用 mermaid-cli 12.0.0 渲染全部 64 张图通过，未保存 SVG |
