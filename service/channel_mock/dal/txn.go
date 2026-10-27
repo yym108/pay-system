@@ -239,6 +239,32 @@ WHERE id = ? AND notify_sent_count = ?`, id, expected)
 	return applied, nil
 }
 
+// AddDupNotifySent 在单独的短事务里把 notify_sent_count 加一。
+// 条件是当前值小于 limit，不是等于某个期望值：同一波并发发送不能共用同一个期望计数。
+// 返回 true 表示本次占到名额且事务已提交，调用方再发 HTTP。
+// 返回 false 表示已经达到 limit，什么也没改。不改 status，也不写其他列。
+func (d *DB) AddDupNotifySent(ctx context.Context, id uint64, limit int) (bool, error) {
+	applied := false
+	err := dbx.WithTx(ctx, d.db, func(tx *sqlx.Tx) error {
+		res, err := tx.ExecContext(ctx, `
+UPDATE mock_txn SET notify_sent_count = notify_sent_count + 1
+WHERE id = ? AND notify_sent_count < ?`, id, limit)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		applied = n == 1
+		return nil
+	})
+	if err != nil {
+		return false, fmt.Errorf("add mock_txn dup notify_sent_count: %w", err)
+	}
+	return applied, nil
+}
+
 // ListProcessing 按 id 升序返回 id > afterID 的该类型 PROCESSING 行，最多 limit 行。
 // 表上没有 status 索引，这里走主键范围扫描；只在进程启动时调用。
 func (d *DB) ListProcessing(ctx context.Context, txnType string, afterID uint64, limit int) ([]Txn, error) {

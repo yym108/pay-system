@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/yym108/pay-system/pkg/clock"
 	"github.com/yym108/pay-system/pkg/sign"
 	"github.com/yym108/pay-system/service/channel_mock/dal"
@@ -22,8 +24,12 @@ import (
 const (
 	// notifyIDPrefix 是渠道回调发送号（约定 §2.2）。不落库，只出现在 body。
 	notifyIDPrefix = "CN"
-	// notifyMaxSends 含第一次，第 5 次失败后不再排。
+	// notifyMaxSends 含第一次，第 5 次失败后不再排。DUP_NOTIFY 不用这个上限。
 	notifyMaxSends = 5
+	// dupWaveSize 是 DUP_NOTIFY 第一波的并发次数，也是之后按秒再发的次数。
+	dupWaveSize = 5
+	// dupMaxSends 是 DUP_NOTIFY 的发送上限。对方一直回 SUCCESS 也发满，不走普通退避。
+	dupMaxSends = 10
 	// notifyAck 是平台确认送达的全部字节。大小写、引号、尾部换行都不算。
 	notifyAck = "SUCCESS"
 	// notifyMaxBody 是响应体读取上限。超出视为未送达。
@@ -48,6 +54,9 @@ var notifyBackoff = [...]time.Duration{
 type NotifyStore interface {
 	// AddNotifySent 在短事务里按期望计数加一。true 表示占到了这次发送，调用方在事务外再 POST。
 	AddNotifySent(ctx context.Context, id uint64, expected int) (bool, error)
+	// AddDupNotifySent 在短事务里按上限加一。5 次并发不能共用同一个期望值，所以条件是小于 limit，不是相等。
+	// true 表示占到名额；false 表示已经达到 limit，不再 POST。
+	AddDupNotifySent(ctx context.Context, id uint64, limit int) (bool, error)
 	// GetByID 在条件更新影响 0 行时确认当前状态和计数。不存在返回 ok = false。
 	GetByID(ctx context.Context, id uint64) (dal.Txn, bool, error)
 }
@@ -91,19 +100,29 @@ type Notifier struct {
 
 	mu     sync.Mutex
 	chains map[uint64]struct{}
+
+	dupMu    sync.Mutex
+	dupTrack map[uint64]*dupProgress
+}
+
+// dupProgress 只记第一波已经 POST 返回的次数。满 5 次才排后 5 次，只排一次。
+type dupProgress struct {
+	posted int
+	tail   bool
 }
 
 // NewNotifier 组装回调发送器。key 会被复制，调用方之后改切片不影响签名。
 // 空密钥在每次尝试时拒绝，不在这里自旋。
 func NewNotifier(store NotifyStore, ids IDGenerator, clk clock.Clock, sched Scheduler, key []byte) *Notifier {
 	return &Notifier{
-		store:  store,
-		ids:    ids,
-		clk:    clk,
-		sched:  sched,
-		key:    bytes.Clone(key),
-		client: &http.Client{Timeout: notifyHTTPTimeout, CheckRedirect: refuseRedirect},
-		chains: map[uint64]struct{}{},
+		store:    store,
+		ids:      ids,
+		clk:      clk,
+		sched:    sched,
+		key:      bytes.Clone(key),
+		client:   &http.Client{Timeout: notifyHTTPTimeout, CheckRedirect: refuseRedirect},
+		chains:   map[uint64]struct{}{},
+		dupTrack: map[uint64]*dupProgress{},
 	}
 }
 
@@ -125,22 +144,119 @@ func (n *Notifier) Handle(ctx context.Context, row dal.Txn) {
 	}
 	n.chains[row.ID] = struct{}{}
 	n.mu.Unlock()
+	if scenario.Scenario(row.Scenario) == scenario.DupNotify {
+		n.sched.Schedule(n.clk.Now(), func() { n.dupWave(ctx, row) })
+		return
+	}
 	n.again(ctx, row, row.NotifySentCount, 0)
 }
 
-// shouldNotify 决定要不要入队。DROP_NOTIFY、DUP_NOTIFY、SLOW 留在 CH-06，这里不发也不加计数。
+// shouldNotify 决定要不要入队。DROP_NOTIFY 与 SLOW 不发也不加计数。
+// DUP_NOTIFY 入队后按 10 次发送，不走普通的 5 次退避。
 func shouldNotify(row dal.Txn) bool {
 	if row.Status != dal.StatusSuccess && row.Status != dal.StatusFailed {
 		return false
 	}
-	if row.NotifyURL == "" || row.FinishedAt.IsZero() || row.NotifySentCount >= notifyMaxSends {
+	if row.NotifyURL == "" || row.FinishedAt.IsZero() {
 		return false
 	}
 	switch scenario.Scenario(row.Scenario) {
-	case scenario.DropNotify, scenario.DupNotify, scenario.Slow:
+	case scenario.DropNotify, scenario.Slow:
 		return false
+	case scenario.DupNotify:
+		return row.NotifySentCount < dupMaxSends
 	default:
-		return true
+		return row.NotifySentCount < notifyMaxSends
+	}
+}
+
+// dupWave 在一个调度任务里并发发出第一波 5 次。后 5 次要等这 5 次 POST 都返回。
+func (n *Notifier) dupWave(ctx context.Context, row dal.Txn) {
+	var g errgroup.Group
+	for range dupWaveSize {
+		g.Go(func() error {
+			defer func() {
+				if p := recover(); p != nil {
+					slog.ErrorContext(ctx, "channel notify dup panicked",
+						slog.String("channel_txn_no", row.ChannelTxnNo),
+						slog.String("panic", fmt.Sprint(p)))
+					n.scheduleDupRetry(ctx, row, true)
+				}
+			}()
+			n.dupSend(ctx, row, true)
+			return nil
+		})
+	}
+	_ = g.Wait()
+}
+
+// dupSend 先发号签名，再占名额，最后在事务外 POST。wave 为真时这次计入第一波。
+// POST 的结果不决定要不要继续：失败也不走 5s/15s/30s/60s。
+func (n *Notifier) dupSend(ctx context.Context, row dal.Txn, wave bool) {
+	raw, ts, sig, err := n.prepare(ctx, row)
+	if err != nil {
+		msg := "channel notify prepare failed"
+		var prep *notifyPrepError
+		if errors.As(err, &prep) && prep.msg != "" {
+			msg = prep.msg
+		}
+		n.logErr(ctx, msg, row, err)
+		n.scheduleDupRetry(ctx, row, wave)
+		return
+	}
+	applied, err := n.store.AddDupNotifySent(ctx, row.ID, dupMaxSends)
+	if err != nil {
+		n.logErr(ctx, "channel notify count update failed", row, err)
+		n.scheduleDupRetry(ctx, row, wave)
+		return
+	}
+	if !applied {
+		return
+	}
+	err = n.post(ctx, row.NotifyURL, ts, sig, raw)
+	if wave {
+		n.noteWavePost(ctx, row)
+	}
+	if err != nil {
+		n.logErr(ctx, "channel notify not delivered", row, err)
+		return
+	}
+	slog.InfoContext(ctx, "channel notify delivered",
+		slog.String("channel_txn_no", row.ChannelTxnNo))
+}
+
+func (n *Notifier) scheduleDupRetry(ctx context.Context, row dal.Txn, wave bool) {
+	due := n.clk.Now().Add(notifyPrepRetry)
+	n.sched.Schedule(due, func() { n.dupSend(ctx, row, wave) })
+}
+
+// noteWavePost 在第一波的一次 POST 返回后调用。满 5 次才把后 5 次排到 now+1s…now+5s。
+func (n *Notifier) noteWavePost(ctx context.Context, row dal.Txn) {
+	n.dupMu.Lock()
+	tr := n.dupTrack[row.ID]
+	if tr == nil {
+		tr = &dupProgress{}
+		n.dupTrack[row.ID] = tr
+	}
+	if tr.tail {
+		n.dupMu.Unlock()
+		return
+	}
+	tr.posted++
+	if tr.posted < dupWaveSize {
+		n.dupMu.Unlock()
+		return
+	}
+	tr.tail = true
+	n.dupMu.Unlock()
+	n.scheduleDupTail(ctx, row)
+}
+
+func (n *Notifier) scheduleDupTail(ctx context.Context, row dal.Txn) {
+	now := n.clk.Now()
+	for i := 1; i <= dupWaveSize; i++ {
+		delay := time.Duration(i) * time.Second
+		n.sched.Schedule(now.Add(delay), func() { n.dupSend(ctx, row, false) })
 	}
 }
 

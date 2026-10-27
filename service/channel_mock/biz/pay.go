@@ -1,4 +1,4 @@
-// Package biz 是模拟渠道的业务逻辑：支付受理与自动完成（CH-01）、查单（CH-02）、关单（CH-03）、渠道回调（CH-05）。
+// Package biz 是模拟渠道的业务逻辑：支付受理与自动完成（CH-01）、查单（CH-02）、关单（CH-03）、渠道回调（CH-05）、M3 故障场景（CH-06）。
 //
 // 幂等靠 uk_type_req_no：先 INSERT，冲突（1062）再读已有行，不做先查后插。
 // 状态推进只用 CAS（WHERE id = ? AND status = 'PROCESSING'），事务内不调用外部系统；

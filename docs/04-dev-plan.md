@@ -62,7 +62,7 @@
 - [x] CH-02 渠道查单
 - [x] CH-03 渠道关单
 - [x] CH-05 回调
-- [ ] CH-06 的 FAIL、DROP_NOTIFY、DUP_NOTIFY、NEVER_FINISH
+- [x] CH-06 的 FAIL、DROP_NOTIFY、DUP_NOTIFY、NEVER_FINISH
 - [ ] PAY-01 商户与密钥（含配置缓存开关）→ PAY-02 创建支付单 → PAY-03 发起支付
 - [x] PAY-10 商户费率变更与订单手续费核对
 - [ ] MQ-01 outbox 写入 → PAY-04 支付结果推进 → PAY-06 商户关单、PAY-08 查询

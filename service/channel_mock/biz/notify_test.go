@@ -64,9 +64,11 @@ type notifyBox struct {
 	missStatus string
 	missCount  int
 	missSet    bool
+	dupFull    bool
 	addErr     error
 	getErr     error
 	adds       int
+	dupAdds    int
 	inAdd      atomic.Bool
 }
 
@@ -92,6 +94,25 @@ func (b *notifyBox) AddNotifySent(ctx context.Context, id uint64, expected int) 
 		if b.missSet {
 			b.row.NotifySentCount = b.missCount
 		}
+		return false, nil
+	}
+	b.row.NotifySentCount++
+	return true, nil
+}
+
+func (b *notifyBox) AddDupNotifySent(ctx context.Context, id uint64, limit int) (bool, error) {
+	b.inAdd.Store(true)
+	defer b.inAdd.Store(false)
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.dupAdds++
+	if b.addErr != nil {
+		return false, b.addErr
+	}
+	if !b.has || b.row.ID != id || b.dupFull || b.row.NotifySentCount >= limit {
 		return false, nil
 	}
 	b.row.NotifySentCount++
@@ -388,7 +409,8 @@ func TestNotifyFailBodyIsFailed(t *testing.T) {
 	}
 }
 
-// CH-05：DROP_NOTIFY、DUP_NOTIFY、SLOW、空 notify_url、finished_at 为零、非终态都不发，计数不变。
+// CH-05：DROP_NOTIFY、SLOW、空 notify_url、finished_at 为零、非终态都不发，计数不变。
+// DUP_NOTIFY 的 10 次发送是 CH-06，不在这里当成不发送。
 func TestNotifySkipsWithoutSending(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -399,7 +421,6 @@ func TestNotifySkipsWithoutSending(t *testing.T) {
 		count    int
 	}{
 		{name: "drop", status: dal.StatusSuccess, scenario: scenario.DropNotify.String(), url: "http://keep", finished: notifyWhen},
-		{name: "dup", status: dal.StatusSuccess, scenario: scenario.DupNotify.String(), url: "http://keep", finished: notifyWhen},
 		{name: "slow", status: dal.StatusSuccess, scenario: scenario.Slow.String(), url: "http://keep", finished: notifyWhen},
 		{name: "empty url", status: dal.StatusSuccess, scenario: scenario.Normal.String(), url: "", finished: notifyWhen},
 		{name: "zero finished", status: dal.StatusSuccess, scenario: scenario.Normal.String(), url: "http://keep", finished: time.Time{}},
@@ -834,4 +855,213 @@ func notifyOKServer(t *testing.T, cap *notifyCap) (*atomic.Int32, *httptest.Serv
 	}))
 	t.Cleanup(srv.Close)
 	return &hits, srv
+}
+
+// flightGate 把已到达的请求挡住，直到 limit 个都在处理函数里，再一起放行。
+// 计时器只在没凑齐时让测试失败，不用 Sleep 等待成功。
+type flightGate struct {
+	limit   int
+	max     atomic.Int32
+	cur     atomic.Int32
+	release chan struct{}
+	once    sync.Once
+}
+
+func newFlightGate(limit int) *flightGate {
+	return &flightGate{limit: limit, release: make(chan struct{})}
+}
+
+func (g *flightGate) arrive(t *testing.T) {
+	t.Helper()
+	n := g.cur.Add(1)
+	for {
+		old := g.max.Load()
+		if n <= old || g.max.CompareAndSwap(old, n) {
+			break
+		}
+	}
+	if int(n) == g.limit {
+		g.once.Do(func() { close(g.release) })
+	}
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	select {
+	case <-g.release:
+	case <-timer.C:
+		t.Errorf("in flight = %d, want %d", g.cur.Load(), g.limit)
+	}
+}
+
+func dupSample() dal.Txn {
+	row := notifySample(dal.StatusSuccess, scenario.DupNotify.String())
+	row.Amount = 10003
+	return row
+}
+
+func wantDupTail(t *testing.T, sched *manualSched, now time.Time) {
+	t.Helper()
+	got := sched.dues()
+	if len(got) != 5 {
+		t.Fatalf("dues = %v", got)
+	}
+	for i := 1; i <= 5; i++ {
+		want := now.Add(time.Duration(i) * time.Second)
+		if !got[i-1].Equal(want) {
+			t.Fatalf("due %d = %s, want %s", i, got[i-1], want)
+		}
+	}
+}
+
+// CH-06 DUP_NOTIFY：第一波 5 路同时在途；平台一直 SUCCESS 仍是 10 次，notify_id 各不相同且 VerifyChannel 通过。
+// 第一波结束计数是 5，时钟不推进没有第 6 次；推进 5 秒后正好 10 次。不改状态、finished_at、bill_date。
+func TestDupNotifyOverlapsThenTenOnSuccess(t *testing.T) {
+	gate := newFlightGate(5)
+	row := dupSample()
+	status, finished, bill := row.Status, row.FinishedAt, row.BillDate
+	rig := newNotifyRig(t, row, func(w http.ResponseWriter, _ *http.Request, _ []byte, n int) {
+		if n <= 5 {
+			gate.arrive(t)
+		}
+		writeBytes(t, w, []byte("SUCCESS"))
+	})
+	ctx := context.Background()
+	rig.n.Handle(ctx, rig.box.row)
+	rig.n.Handle(ctx, rig.box.row)
+	if rig.sched.len() != 1 || len(rig.cap.list()) != 0 {
+		t.Fatalf("scheduled=%d hits=%d", rig.sched.len(), len(rig.cap.list()))
+	}
+	runOne(t, rig.clk, rig.sched)
+	if gate.max.Load() != 5 {
+		t.Fatalf("max in flight = %d", gate.max.Load())
+	}
+	if rig.box.count() != 5 || len(rig.cap.list()) != 5 || rig.box.adds != 0 || rig.box.dupAdds != 5 {
+		t.Fatalf("count=%d hits=%d adds=%d dupAdds=%d", rig.box.count(), len(rig.cap.list()), rig.box.adds, rig.box.dupAdds)
+	}
+	if ran := rig.sched.RunDue(rig.clk.Now()); ran != 0 || len(rig.cap.list()) != 5 {
+		t.Fatalf("sixth without clock ran=%d hits=%d", ran, len(rig.cap.list()))
+	}
+	wantDupTail(t, rig.sched, rig.clk.Now())
+	rig.clk.Advance(5 * time.Second)
+	if ran := rig.sched.RunDue(rig.clk.Now()); ran != 5 {
+		t.Fatalf("tail ran %d", ran)
+	}
+	if rig.box.count() != 10 || len(rig.cap.list()) != 10 || rig.sched.len() != 0 || rig.box.dupAdds != 10 {
+		t.Fatalf("count=%d hits=%d scheduled=%d dupAdds=%d", rig.box.count(), len(rig.cap.list()), rig.sched.len(), rig.box.dupAdds)
+	}
+	rig.clk.Advance(time.Minute)
+	if ran := rig.sched.RunDue(rig.clk.Now()); ran != 0 || rig.box.count() != 10 {
+		t.Fatalf("extra ran=%d count=%d", ran, rig.box.count())
+	}
+	verifyHits(t, []byte(notifyKey), rig.cap.list())
+	for _, h := range rig.cap.list() {
+		if !strings.Contains(string(h.body), `"status":"SUCCESS"`) || !strings.Contains(string(h.body), `"amount":10003`) {
+			t.Fatalf("body = %s", h.body)
+		}
+	}
+	if rig.box.row.Status != status || !rig.box.row.FinishedAt.Equal(finished) || rig.box.row.BillDate != bill {
+		t.Fatalf("row changed: %+v", rig.box.row)
+	}
+}
+
+// CH-06 DUP_NOTIFY：平台一直 500 也是 10 次，不走 5s/15s/30s/60s。
+func TestDupNotifyTenOnHTTP500(t *testing.T) {
+	gate := newFlightGate(5)
+	rig := newNotifyRig(t, dupSample(), func(w http.ResponseWriter, _ *http.Request, _ []byte, n int) {
+		if n <= 5 {
+			gate.arrive(t)
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+		writeBytes(t, w, []byte("NO"))
+	})
+	rig.n.Handle(context.Background(), rig.box.row)
+	runOne(t, rig.clk, rig.sched)
+	if gate.max.Load() != 5 || rig.box.count() != 5 || len(rig.cap.list()) != 5 {
+		t.Fatalf("max=%d count=%d hits=%d", gate.max.Load(), rig.box.count(), len(rig.cap.list()))
+	}
+	wantDupTail(t, rig.sched, rig.clk.Now())
+	if ran := rig.sched.RunDue(rig.clk.Now()); ran != 0 {
+		t.Fatalf("sixth without clock ran %d", ran)
+	}
+	rig.clk.Advance(5 * time.Second)
+	if ran := rig.sched.RunDue(rig.clk.Now()); ran != 5 {
+		t.Fatalf("tail ran %d", ran)
+	}
+	if rig.box.count() != 10 || len(rig.cap.list()) != 10 || rig.sched.len() != 0 {
+		t.Fatalf("count=%d hits=%d scheduled=%d", rig.box.count(), len(rig.cap.list()), rig.sched.len())
+	}
+	verifyHits(t, []byte(notifyKey), rig.cap.list())
+	rig.clk.Advance(time.Minute)
+	if ran := rig.sched.RunDue(rig.clk.Now()); ran != 0 || rig.box.count() != 10 {
+		t.Fatalf("extra ran=%d count=%d", ran, rig.box.count())
+	}
+}
+
+// CH-06 DUP_NOTIFY：空密钥不加计数，不发 HTTP，1 秒后再补这一次，不在调用栈上自旋。
+func TestDupNotifyEmptyKeyDoesNotCount(t *testing.T) {
+	buf := captureLog(t)
+	row := dupSample()
+	row.NotifyURL = closedNotifyURL(t)
+	box := &notifyBox{row: row, has: true}
+	clk := &clock.Fake{}
+	clk.Set(baseTime)
+	sched := &manualSched{}
+	n := NewNotifier(box, clockIDs(t, clk), clk, sched, nil)
+	n.Handle(context.Background(), row)
+	if sched.len() != 1 {
+		t.Fatalf("scheduled = %d", sched.len())
+	}
+	runOne(t, clk, sched)
+	if box.count() != 0 || box.adds != 0 || box.dupAdds != 0 || sched.len() != 5 {
+		t.Fatalf("count=%d adds=%d dupAdds=%d scheduled=%d", box.count(), box.adds, box.dupAdds, sched.len())
+	}
+	for _, due := range sched.dues() {
+		if !due.Equal(clk.Now().Add(time.Second)) {
+			t.Fatalf("due = %s", due)
+		}
+	}
+	if ran := sched.RunDue(clk.Now()); ran != 0 || box.count() != 0 {
+		t.Fatalf("spun ran=%d count=%d", ran, box.count())
+	}
+	out := buf.String()
+	if !strings.Contains(out, "sign: empty key") || !strings.Contains(out, `"level":"ERROR"`) {
+		t.Fatalf("log = %s", out)
+	}
+	if strings.Contains(out, leakedKey) || strings.Contains(out, notifyKey) || strings.Contains(out, "X-Mock-Signature") {
+		t.Fatalf("log leaked: %s", out)
+	}
+}
+
+// CH-06 DUP_NOTIFY：更新报错不 POST、不加计数，1 秒后只补这一次。已经到上限则不再发。
+func TestDupNotifyClaimFailureDoesNotSend(t *testing.T) {
+	t.Run("update error", func(t *testing.T) {
+		rig := newNotifyRig(t, dupSample(), func(http.ResponseWriter, *http.Request, []byte, int) {
+			t.Error("sent HTTP")
+		})
+		rig.box.addErr = errors.New("db down")
+		rig.n.Handle(context.Background(), rig.box.row)
+		runOne(t, rig.clk, rig.sched)
+		if rig.box.count() != 0 || len(rig.cap.list()) != 0 || rig.box.dupAdds != 5 {
+			t.Fatalf("count=%d hits=%d dupAdds=%d", rig.box.count(), len(rig.cap.list()), rig.box.dupAdds)
+		}
+		dues := rig.sched.dues()
+		if len(dues) != 5 {
+			t.Fatalf("dues = %v", dues)
+		}
+		for _, due := range dues {
+			if !due.Equal(rig.clk.Now().Add(time.Second)) {
+				t.Fatalf("due = %s", due)
+			}
+		}
+	})
+	t.Run("already full", func(t *testing.T) {
+		rig := newNotifyRig(t, dupSample(), func(http.ResponseWriter, *http.Request, []byte, int) {
+			t.Error("sent HTTP")
+		})
+		rig.box.dupFull = true
+		rig.n.Handle(context.Background(), rig.box.row)
+		runOne(t, rig.clk, rig.sched)
+		if rig.box.count() != 0 || len(rig.cap.list()) != 0 || rig.sched.len() != 0 || rig.box.dupAdds != 5 {
+			t.Fatalf("count=%d hits=%d scheduled=%d dupAdds=%d", rig.box.count(), len(rig.cap.list()), rig.sched.len(), rig.box.dupAdds)
+		}
+	})
 }

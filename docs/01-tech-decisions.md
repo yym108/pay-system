@@ -68,6 +68,8 @@ BASE-12（2026-10-15）：`make gen` 钉死为 `go run github.com/cloudwego/kite
 
 ACC-13（2026-10-15）：`pkg/shard` 调用 `Span.SetAttributes` 时 import `go.opentelemetry.io/otel/attribute`。这个包属于已锁定的模块 `go.opentelemetry.io/otel v1.47.0`。`go mod tidy` 只把该模块从间接依赖改成直接依赖，版本不变。没有加入 `otel/sdk` 或 exporter，也没有升级 `otel/trace`。不 import `go.opentelemetry.io/otel` 根包。
 
+CH-06（2026-10-27）：DUP_NOTIFY 的第一波用 `golang.org/x/sync/errgroup`。`go mod tidy` 只把已在模块图里的 `golang.org/x/sync v0.22.0` 从间接依赖改成直接依赖，版本不变。版本表里预留的 v0.23.0 没有抬上去，和 BASE-12 留下的间接版本一致。没有新增别的模块。
+
 ### 2.2 容器镜像（均已确认提供 arm64 与 amd64）
 
 | 组件 | 镜像 |

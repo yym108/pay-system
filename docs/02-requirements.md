@@ -1,6 +1,6 @@
 # pay-system 需求规格说明书
 
-> 版本：v3.0　最后修改：2026-10-26
+> 版本：v3.0　最后修改：2026-10-27
 > 状态：v3.0 重新聚焦支付、退款、转账三条资金链路（变更见 §8.2），2026-10-13 已确认为开发基线；开发按 §3 功能点总表逐项推进
 > 上游：`PROJECT_GOALS.md`（目标与约束）、`docs/01-tech-decisions.md`（技术选型与版本）
 > 关联：`docs/03-conventions.md`（编号、错误码、命名等全局约定）、`docs/05-api.md`（接口文档）、`docs/database.md`（表结构）、`docs/04-dev-plan.md`（周计划）、`docs/06-flows.md`（流程图）
@@ -369,7 +369,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | CH-03 | 渠道关单 | P0 | M3 | CH-01 | DONE |
 | CH-04 | 渠道退款受理与查询 | P0 | M4 | CH-01 | TODO |
 | CH-05 | 渠道异步回调 | P0 | M3 | CH-01 | DONE |
-| CH-06 | 确定性故障场景 | P0 | M3–M4 | CH-01~05 | TODO |
+| CH-06 | 确定性故障场景 | P0 | M3–M4 | CH-01、CH-02、CH-03、CH-05 | DOING |
 | CH-07 | 全局故障配置（压测延迟） | P0 | M6 | CH-06 | TODO |
 | CH-08 | 账单下载 | P0 | M6 | CH-01、CH-04 | TODO |
 | CH-09 | 账单注入 | P0 | M6 | CH-08 | TODO |
@@ -1265,10 +1265,10 @@ channel_mock 代表外部支付机构，拥有独立 schema `pay_channel_mock`�
 
 规则：
 
-1. 交易进入 SUCCESS 或 FAILED 后，向受理时的 `notify_url` 发渠道签名的 HTTP 回调（body 见 `docs/05-api.md` §9.7）。CF-24 里只有「其他」走普通发送。本功能点发送的场景是 NORMAL、FAIL、ACCEPT_TIMEOUT、BILL_MISSING、BILL_AMOUNT_DIFF、CLOSE_RACE，以及未登记的场景值；状态必须是 SUCCESS 或 FAILED。FAIL 的 body `status` 是 FAILED，这是普通终态回调。DROP_NOTIFY 不回调。DUP_NOTIFY（并发 5 次再每秒 5 次）和 SLOW（延迟 30 秒）的特殊发送仍是 CH-06：本功能点不实现，也不给这两种场景套普通重试，不发、不加计数。`status` 不是 SUCCESS 或 FAILED、`notify_url` 为空、`finished_at` 为零值时不发、不加计数。NEVER_FINISH 本来就不调用完成钩子。不取消已有自动完成定时器，不改查单和关单的返回。以上是文字澄清，不改六个状态的资金含义。
+1. 交易进入 SUCCESS 或 FAILED 后，向受理时的 `notify_url` 发渠道签名的 HTTP 回调（body 见 `docs/05-api.md` §9.7）。CF-24 里只有「其他」走普通发送。本功能点发送的场景是 NORMAL、FAIL、ACCEPT_TIMEOUT、BILL_MISSING、BILL_AMOUNT_DIFF、CLOSE_RACE，以及未登记的场景值；状态必须是 SUCCESS 或 FAILED。FAIL 的 body `status` 是 FAILED，这是普通终态回调。DROP_NOTIFY 不回调。SLOW（延迟 30 秒）仍不发、不加计数，也不套普通重试；30 秒延迟留在 CH-06 的 M4，本功能点不实现。DUP_NOTIFY 由 CH-06 发送：第一波并发 5 次，之后按注入时钟每秒 1 次再发 5 次，共 10 次，不论平台响应；不走本功能点最多 5 次和 5s/15s/30s/60s 的退避。`status` 不是 SUCCESS 或 FAILED、`notify_url` 为空、`finished_at` 为零值时不发、不加计数。NEVER_FINISH 本来就不调用完成钩子。不取消已有自动完成定时器，不改查单和关单的返回。以上是文字澄清，不改六个状态的资金含义。
 2. 完成钩子 `OnFinished` 在 CAS 提交之后调用。事务内不发 HTTP，`dbx.WithTx` 的回调里也不发。`Service.Pay`、`Close`、`finish` 不直接发 HTTP；只在 channel-mock 进程入口、`New` 之后把 `OnFinished` 接到通知器。钩子在调度 goroutine 里执行，不能长时间阻塞：`Handle` 只按注入时钟把第一次发送排进 `Scheduler`，然后立刻返回。第一次发送和重试都由 `Scheduler` 执行。CLOSE_RACE 调用同一个 `OnFinished`，同样只入队。
 3. 平台回 HTTP 200 且 body 字节恰好是 `SUCCESS` 才算送达。大小写、引号、尾部换行都不算。否则按已经发出的次数等待：发出 1 次仍失败等 5s，2 次等 15s，3 次等 30s，4 次等 60s。连第一次最多 5 次，第 5 次失败后停止，不再排第 6 次。间隔用注入时钟的 `Scheduler`。不使用 `time.Sleep`，`biz` 和 `job` 不使用 `time.Now`。
-4. 每次确定要发出 HTTP 之前，用单独的短事务做条件更新：`UPDATE mock_txn SET notify_sent_count = notify_sent_count + 1 WHERE id = ? AND notify_sent_count = ?`。期望值是这次发送前读到的计数。影响 1 行才在事务外发 HTTP。影响 0 行就再读：已经 ≥ 5，或状态不再是 SUCCESS / FAILED，则停止，不覆盖状态。更新报错则不发 HTTP，1 秒后按原计数重试，不把这次算进 5 次。
+4. 每次确定要发出 HTTP 之前，用单独的短事务做条件更新：`UPDATE mock_txn SET notify_sent_count = notify_sent_count + 1 WHERE id = ? AND notify_sent_count = ?`。期望值是这次发送前读到的计数。影响 1 行才在事务外发 HTTP。影响 0 行就再读：已经 ≥ 5，或状态不再是 SUCCESS / FAILED，则停止，不覆盖状态。更新报错则不发 HTTP，1 秒后按原计数重试，不把这次算进 5 次。DUP_NOTIFY 不用这条按期望值相等的更新，它用 `notify_sent_count < 10`，见 CH-06。
 5. HTTP 使用标准库 `Client`。单次超时 5 秒（上下文超时）。不跟随重定向，3xx 不是送达。响应体最多读 1024 字节，超出或读失败都算未送达。超时、连接失败、非 200、body 不符都算这一次已经发送（计数已加）。
 6. body 用 `encoding/json` 对固定字段顺序的结构体编码，紧凑、无 HTML 转义，字段不要 `omitempty`。顺序固定为 `notify_id`、`txn_type`、`req_no`、`channel_txn_no`、`amount`、`status`、`finished_at`。`amount` 是 JSON 数字（int64 分）。`finished_at` 与查单相同：东八区 `FixedZone` `+08:00`，先 `Truncate(time.Millisecond)`，布局 `2006-01-02T15:04:05.000Z07:00`。签名用已有 `pkg/sign.SignChannel`，canonical = `X-Mock-Timestamp` + 换行 + 原始 body。请求头 `X-Mock-Timestamp`、`X-Mock-Signature`。时间戳用注入时钟的 Unix 秒，不用 `time.Now`。接口 §3.7 的 V4 仍是签名算法的短示例，不改那条向量，回调 body 也不是那三个字段。
 7. `notify_id` 用 idgen，前缀 `CN`（约定 §2.2：渠道回调发送号，不落库，只出现在 body）。总长仍是前缀 + 19 位。不新增错误码。发号失败或时钟回拨：这次不算发送，不加计数，ERROR 日志不含密钥，1 秒后再排同一次。空密钥（`sign.ErrEmptyKey`）同样不算发送，不加计数，ERROR 日志不含密钥和签名，1 秒后再试，不在调用栈上自旋。
@@ -1281,7 +1281,9 @@ channel_mock 代表外部支付机构，拥有独立 schema `pay_channel_mock`�
 
 #### CH-06 确定性故障场景
 
-`P0 · M3–M4 · 依赖：CH-01~05`
+`P0 · M3–M4 · 依赖：CH-01、CH-02、CH-03、CH-05 · 表：mock_txn`
+
+依赖不含 CH-04：这四个支付场景不调用退款。CH-04 仍负责退款受理，不在本切片。这是文字澄清，对齐下面已有的「M3 完成 01、02、03、08，其余在 M4」。
 
 规则：按支付金额（分）的末两位触发：
 
@@ -1298,11 +1300,25 @@ channel_mock 代表外部支付机构，拥有独立 schema `pay_channel_mock`�
 | 09 | CLOSE_RACE | 收到关单请求时变为成功 | PAY-06 竞争 |
 | 其他 | NORMAL | 正常成功 | 主流程 |
 
-M3 完成 01、02、03、08，其余在 M4 完成（06、07 的账单部分在 CH-08 中实现）。
+M3 完成 01、02、03、08，其余在 M4 完成（06、07 的账单部分在 CH-08 中实现）。本切片只做 M3 这四个。04 SLOW、05 ACCEPT_TIMEOUT、06 BILL_MISSING、07 BILL_AMOUNT_DIFF、09 CLOSE_RACE 不在本切片：不实现 SLOW 的 30 秒延迟、ACCEPT_TIMEOUT 的受理阻塞、账单差额，也不重做 CLOSE_RACE（关单抢成功已由 CH-03 实现）。账单下载是 CH-08。本切片的「账单内容」只断言行上的 `bill_date`（有或 NULL），不产生 CSV。
+
+1. FAIL：自动完成变为 FAILED，不写 `bill_date`，并走 CH-05 的普通回调。body 的 `status` 是 FAILED。不另写一套重试。平台回 HTTP 200 且 body 字节恰好是 `SUCCESS` 时 `notify_sent_count = 1`，不再发第 2 次。
+2. DROP_NOTIFY：自动完成变为 SUCCESS，`bill_date` 为 `finished_at` 的东八区日期。不发回调，HTTP 0 次，`notify_sent_count` 保持 0。
+3. NEVER_FINISH：受理时不调度，保持 PROCESSING，不调用完成钩子，不回调。把时钟和调度向前推进后仍是 PROCESSING，没有完成任务，HTTP 0 次，`bill_date` 为空。可被关单：关成 CLOSED，`finished_at` 仍为空，仍然 0 次 HTTP。
+4. DUP_NOTIFY：交易进入 SUCCESS 后由通知器按下述发送。不改 `status`、`finished_at`、`bill_date`。
+   - `Handle` 仍只入队，不在钩子里发 HTTP。同一 `id` 已有发送链则直接返回（进程内标记，规则同 CH-05）。
+   - 第一波在一个调度任务里用 `golang.org/x/sync/errgroup` 同时发起 5 次。
+   - 每一次发送：先发号和签名（前缀仍是 `CN`，`pkg/sign.SignChannel`）。失败则这次不占计数，1 秒后再补这一次，不在调用栈上自旋。成功后用单独短事务占名额，再在事务外 POST。
+   - 占名额的 SQL 与普通回调不同，因为 5 次并发不能共用同一个期望计数：`UPDATE mock_txn SET notify_sent_count = notify_sent_count + 1 WHERE id = ? AND notify_sent_count < 10`。影响 1 行才 POST。影响 0 行说明已经到 10，不再发。更新报错则不 POST，1 秒后只补这一次。普通回调的 `WHERE notify_sent_count = ?` 且最多 5 次不改。
+   - 第一波 5 次都已 POST 返回之后（不论 200、500、连接失败、body 是不是 `SUCCESS`），用注入时钟把后 5 次排在 now+1s、now+2s、now+3s、now+4s、now+5s。这 5 次同样先占名额再 POST，不看平台响应，不走 5s/15s/30s/60s。满 10 次停止。对方一直回 `SUCCESS` 也要发满 10 次。
+   - HTTP 超时 5 秒、不跟随重定向、最多读 1024 字节，与 CH-05 相同。日志不含密钥、签名、带口令的 URL。
+   - `biz` 禁止 `time.Now`。延迟只用注入的 `clock.Clock` 和已有 `Scheduler`。
+5. SLOW 仍然不发、不加计数。本切片不实现 30 秒延迟。
 
 验收：
 
-- [ ] 每个场景至少一个集成测试，断言渠道侧行为（回调次数、状态、账单内容）。
+- [x] M3：FAIL、DROP_NOTIFY、DUP_NOTIFY、NEVER_FINISH 各至少一个集成测试。FAIL 为 FAILED、`bill_date` 为空、平台回 SUCCESS 时 `notify_sent_count = 1` 且没有第 2 次、body 的 `status` 为 FAILED。DROP_NOTIFY 为 SUCCESS、`bill_date` 为 `finished_at` 的东八区日期、HTTP 0 次、`notify_sent_count = 0`。DUP_NOTIFY 第一波 5 次同时在途，之后每秒 1 次再 5 次，共 10 次，不因 SUCCESS 停止。NEVER_FINISH 推进时钟和调度后仍是 PROCESSING、没有完成任务、HTTP 0 次、`bill_date` 为空；再关单得到 CLOSED，`finished_at` 仍空，仍然 0 次 HTTP。账单只断言 `bill_date`。
+- [ ] M4：SLOW、ACCEPT_TIMEOUT、BILL_MISSING、BILL_AMOUNT_DIFF、CLOSE_RACE。SLOW 的 30 秒延迟、ACCEPT_TIMEOUT 的受理阻塞、BILL_MISSING / BILL_AMOUNT_DIFF 的账单差额尚未实现。CLOSE_RACE 不在本切片重做。
 
 #### CH-07 全局故障配置
 
@@ -2868,3 +2884,4 @@ ACC-10 在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（一
 | 2026-10-26 | v3.0 | CH-02 口径澄清：查单按 `(txn_type, req_no)` 只读当前行，不更新、不调度、不调用完成钩子、不发回调，也不按 DROP_NOTIFY、SLOW 等场景藏状态或推迟返回。无行时 `result` 为 `NOT_FOUND`，不插入，body 不带 status、amount、channel_txn_no、finished_at。找到时返回 status、amount（含 0）、channel_txn_no；finished_at 仅当列非 NULL，格式为约定 §4 的 RFC 3339 毫秒、东八区 `+08:00`，PROCESSING 因该列为空而省略。PAY 与 REFUND 不串单。平台错误码 `10002` 与渠道 `result = NOT_FOUND` 不是一回事。同步接口文档 2.1.2 §9.3。不改资金流向、表结构与错误码 |
 | 2026-10-26 | v3.0 | CH-03 口径澄清：只关 `(PAY, req_no)`，同号 REFUND 不参与。PROCESSING 且不是 CLOSE_RACE 时 CAS 置 CLOSED，不写 `finished_at`、`bill_date`，不调钩子。CLOSE_RACE 时 CAS 置 SUCCESS，写 `finished_at` 与 `bill_date`（与自动完成相同），提交后调用一次完成钩子，返回 `ALREADY_PAID`。SUCCESS / CLOSED / FAILED 不改行。未知 `req_no` 插入 `amount = 0` 的 CLOSED 防悬挂行。1062 与结果不确定的写入再读后按当前状态回答。不新增错误码，不改表结构，不发 HTTP 回调 |
 | 2026-10-26 | v3.0 | CH-05 口径澄清：只对 SUCCESS / FAILED，且场景为 NORMAL、FAIL、ACCEPT_TIMEOUT、BILL_MISSING、BILL_AMOUNT_DIFF、CLOSE_RACE 或未登记值，发普通回调。FAIL 的 body `status` 为 FAILED，不是把 CH-06 做完。DROP_NOTIFY 不回调。DUP_NOTIFY 与 SLOW 的特殊发送仍是 CH-06，现在不发、不加计数，也不套普通重试。空 `notify_url`、`finished_at` 为零、非 SUCCESS / FAILED 不发。不取消已有自动完成定时器，不改查单和关单的返回。送达仅当 HTTP 200 且 body 字节恰好是 `SUCCESS`。连第一次最多 5 次，间隔按已发出次数为 5s、15s、30s、60s。计数在单独短事务里条件加一，HTTP 在事务外。单次超时 5 秒，不跟随重定向，响应体最多 1024 字节。`notify_id` 前缀 `CN`，不落库。同一 id 的发送链只在进程内标记；进程退出后未发出的重试丢失，`Recover` 不扫描已终态的行，查单仍是补偿。不改六个状态的资金含义，不新增错误码，不加迁移 |
+| 2026-10-27 | v3.0 | CH-06 文字澄清：总表依赖由 CH-01~05 改为 CH-01、CH-02、CH-03、CH-05，对齐已有的「M3 完成 01、02、03、08，其余在 M4」。CH-04 仍负责退款受理，不在本切片。§3 改为 DOING，不标 DONE。验收拆成已勾的 M3（FAIL、DROP_NOTIFY、DUP_NOTIFY、NEVER_FINISH）和未勾的 M4（SLOW、ACCEPT_TIMEOUT、BILL_MISSING、BILL_AMOUNT_DIFF、CLOSE_RACE）。DUP_NOTIFY 按 10 次发送：一个调度任务里并发 5 次，POST 都返回后按注入时钟再于 now+1s 至 now+5s 各发 1 次，不论平台响应；占名额用 `notify_sent_count < 10`。普通回调仍是 `notify_sent_count = ?` 且最多 5 次。SLOW 仍不发。本切片只断言 `bill_date`，不实现 CSV。CH-05 规则改为 DUP 由 CH-06 发送、SLOW 仍不发。不新增错误码，不加迁移 |
