@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 3.1.0 |
+| 文档版本 | 3.1.1 |
 | API 版本 | v1（路径前缀 `/v1`） |
 | 最后修改 | 2026-10-27 |
 | 状态 | 设计基线，实现须与本文一致 |
@@ -57,6 +57,7 @@
 | 3.0.0 | 2026-10-27 | 用户确认（A2、A7、A1）。内部 RPC 不兼容变更：`PaymentService.Pay` 的返回类型由 `PaymentOrder` 改为 `PayResponse{biz_code, payment_order}`，`ClosePayment` 改为 `ClosePaymentResponse{biz_code, payment_order}`，使 `Pay` 的 `30006`、`ClosePayment` 的 `30003` 能连同订单返回；§10 与约定 §5.3 第 5 条的携带对象例外补上这两处。PAY-03 落地，返回类型变更在无调用方时进行：两个方法目前一律返回 `10003`，没有调用方，IDL 在 PAY-03 实现时修改并 `make gen`。商户 API 不变，路径仍为 `/v1`，HTTP 响应与 §4.2、§4.3 的 `data` 规则不变。行为变更：`CheckBalance` 服务端处理上限改为商户模式 2 秒、全量模式 120 秒（原为统一 2 秒），代码随 ACC-11 修改。文字：§11.5 写明投递器领取租约、事务外发送、按租约 CAS 回写带来的重复投递；§8.4 的 `/metrics` 归属改为 OPS-03。不新增错误码 | §1、§4.2、§4.3、§8.4、§10、§10.1、§10.2、§11.5 | PAY-03、PAY-06、ACC-10、ACC-11、MQ-02、OPS-03 |
 | 3.0.1 | 2026-10-27 | 文字对齐需求 2026-10-27 的功能点拆分：商户 API 网关路由拆为 GW-02（支付单与余额，§4.1–§4.4、§4.7）与 GW-09（退款与转账，§4.5、§4.6、§4.8、§4.9），§1 接口清单说明与 §4 各接口标头写明归属，§1 中 §4.1–§4.9 各行的“最后修改”改为 2026-10-27；2.0.0 行中的 GW-02 是当时的归属，不改写。§10.2 写明 `PayResponse`、`ClosePaymentResponse` 的订单字段 `2: PaymentOrder payment_order` 为必填，与 `CreateRefundResponse` 一致（用户确认）。不改契约，不新增字段，不改错误码 | §1、§4.1–§4.9、§10.2 | GW-02、GW-09、PAY-03 |
 | 3.1.0 | 2026-10-27 | 随需求 2026-10-27 的对账规则补充（REC-01、REC-03、REC-06、REC-08）。新增字段：`RunBatch` 响应与 `POST /admin/recon/run` 的 `data` 新增 `manual_total`、`manual_diffs`（“等待人工处理”的差错，不限批次，按 `bill_date` 升序前 100 条）；`idl/recon.thrift` 在 REC-08 实现时追加 optional 字段，向后兼容。§8.2 批次规则按 REC-01 改写：满 30 分钟（≥）接管，INIT、DOWNLOADED 按 `updated_at`、CHECKING 按 `started_at` 计时；INIT 从下载、DOWNLOADED 直接比对、CHECKING 重新比对；重跑与接管只删尚未自动处理的 PENDING 差错，同键跳过；`BILL_NOT_READY` 最多重试 6 次后 FAILED，计数持久化。§8.5 `ReconBatch` 注明不输出 `retry_count`；`ReconDiff` 的 `channel_status`（严重不一致标记）、`handle_action`（失败时也写、跨批次重试）补说明。不改已有字段，不新增错误码 | §8.2、§8.5、§10.3 | REC-01、REC-03、REC-06、REC-08 |
+| 3.1.1 | 2026-10-27 | 文字对齐需求 REC-01 第 2 条、REC-08（用户决定）：§8.2 批次规则写明 `force` 只对 DONE 生效：FAILED 带不带 `force` 都重跑，DONE 且 `force = true` 重跑；INIT、DOWNLOADED、CHECKING 未满 30 分钟时带 `force = true` 也返回当前批次；满 30 分钟按接管处理，带不带 `force` 都不重跑。请求字段 `force` 的说明同步。`manual_diffs` 排序写明 `bill_date` 升序、同一 `bill_date` 内 `id` 升序。不新增字段，不改错误码 | §8.2 | REC-01、REC-08 |
 
 ## 1. 接口总览
 
@@ -601,7 +602,7 @@ signature = base64(HMAC-SHA256(channel_key, canonical))
 |---|---|---|---|
 | `channel` | string | 是 | `mockpay` |
 | `bill_date` | string | 是 | 账期 `YYYY-MM-DD`，不能晚于今天 |
-| `force` | bool | 否 | 已完成的批次是否重跑，默认 `false` |
+| `force` | bool | 否 | 已完成（DONE）的批次是否重跑，默认 `false`；只对 DONE 生效，其他状态下忽略（见下方批次规则） |
 
 响应 `data`：
 
@@ -610,7 +611,7 @@ signature = base64(HMAC-SHA256(channel_key, canonical))
 | `batch` | object | `ReconBatch`（§8.5） |
 | `diffs` | array | 本批次的 `ReconDiff`，最多 100 条；总数见 `batch.diff_count` |
 | `manual_total` | int | “等待人工处理”的差错总数（REC-08），不限批次 |
-| `manual_diffs` | array | “等待人工处理”的 `ReconDiff`，按 `bill_date` 升序的前 100 条，可以是空数组 |
+| `manual_diffs` | array | “等待人工处理”的 `ReconDiff`，按 `bill_date` 升序、同一 `bill_date` 内按 `id` 升序排列后的前 100 条，可以是空数组 |
 
 “等待人工处理”是自动处理已停止、只能等人工的差错，不限批次，在生成响应时按 `recon_diff` 实时查询：`status = PENDING`、`handle_action` 非空且 `bill_date` 早于 D−8（已过自动重试窗口，REC-06），以及已判定为严重不一致的 `CHANNEL_MISSING`（`channel_status` 非空）。D 为本次运行时的东八区日期。`handle_action` 为空的 PENDING 差错（如 `LOCAL_MISSING`）不在其中，它们出现在所属批次的 `diffs` 里。
 
@@ -619,9 +620,9 @@ signature = base64(HMAC-SHA256(channel_key, canonical))
 批次规则（REC-01）：
 
 - 已 DONE 且未指定 `force` → 直接返回已有结果。
-- FAILED 或 `force = true` → 重跑：删除本批次的账单行和尚未自动处理的差错（PENDING 且 `handle_action` 为空），保留已自动处理的差错和 RESOLVED、IGNORED 差错；批次重置为 INIT、`BILL_NOT_READY` 重试计数清零，从下载开始。重新比对得到与保留差错同键的结果时跳过，不覆盖已有差错。
-- INIT、DOWNLOADED、CHECKING 且未满 30 分钟 → 返回当前批次，不重复执行。
-- INIT、DOWNLOADED、CHECKING 且满 30 分钟（当前时间 − 计时列 ≥ 30 分钟）→ 视为卡死，由本次调用接管，同一时刻只有一个接管者。计时列：INIT、DOWNLOADED 用 `updated_at`，CHECKING 用 `started_at`。接管后：INIT 从下载开始；DOWNLOADED 不重新下载，直接比对；CHECKING 先删除尚未自动处理的差错，再重新比对。被接管的旧运行不会覆盖新运行的结果。
+- FAILED（带不带 `force` 一样），或 DONE 且 `force = true` → 重跑：删除本批次的账单行和尚未自动处理的差错（PENDING 且 `handle_action` 为空），保留已自动处理的差错和 RESOLVED、IGNORED 差错；批次重置为 INIT、`BILL_NOT_READY` 重试计数清零，从下载开始。重新比对得到与保留差错同键的结果时跳过，不覆盖已有差错。
+- INIT、DOWNLOADED、CHECKING 且未满 30 分钟 → 返回当前批次，不重复执行；带 `force = true` 也一样，不会与正在执行的运行并发重跑。
+- INIT、DOWNLOADED、CHECKING 且满 30 分钟（当前时间 − 计时列 ≥ 30 分钟）→ 视为卡死，由本次调用接管，同一时刻只有一个接管者；带不带 `force` 一样，按接管处理，不重跑。计时列：INIT、DOWNLOADED 用 `updated_at`，CHECKING 用 `started_at`。接管后：INIT 从下载开始；DOWNLOADED 不重新下载，直接比对；CHECKING 先删除尚未自动处理的差错，再重新比对。被接管的旧运行不会覆盖新运行的结果。
 - 超时只在 RunBatch 被调用时判定（每日定时、`BILL_NOT_READY` 的延迟重试、CLI、本接口），没有后台扫描。每日定时触发还会对前 7 个账期（D−8 到 D−2）中未完成的批次逐个调用 RunBatch。
 - 渠道返回 `BILL_NOT_READY`：批次保持 INIT，30 分钟后自动重试；首次下载之后最多重试 6 次（账单请求共 7 次），第 6 次重试仍未就绪时批次置为 FAILED，`batch.error_msg = BILL_NOT_READY`。重试计数保存在库里，recon 重启不丢。
 
