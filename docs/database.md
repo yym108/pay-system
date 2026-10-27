@@ -742,7 +742,7 @@
 ### 4.13 `recon_batch` — 对账批次
 
 - **Purpose:** 每渠道每账期一个批次及汇总结果。
-- **Lifecycle:** INIT → DOWNLOADED → CHECKING → DONE；任一步 → FAILED；FAILED、DONE（force）可重跑。
+- **Lifecycle:** INIT → DOWNLOADED → CHECKING → DONE；任一步 → FAILED；FAILED、DONE（force）可重跑。卡死接管（REC-01 第 5 条）：CHECKING 按 `started_at`、INIT 与 DOWNLOADED 按 `updated_at` 超过 30 分钟视为卡死；只在 RunBatch 被调用时判定（每日定时、CLI、管理接口），没有独立的后台扫描。渠道返回 `BILL_NOT_READY`（REC-01 第 6 条）：批次保持 INIT，recon 进程在 30 分钟后对该批次再调用一次 RunBatch，此时按 `updated_at` 超时接管并重新下载；同一批次当天（东八区日期）最多重试 6 次，第 6 次重试仍未就绪时 CAS 置 FAILED，`error_msg` 记 `BILL_NOT_READY`。重试计数和待执行的重试只在进程内保存，不落表；进程重启后丢失，批次停在 INIT，等下一次 CLI 或管理接口调用按超时接管，计数从 0 开始。
 - **Sensitivity:** 内部。
 - **Authoritative source:** `migrations/recon/000001_init.up.sql`。
 - **Write owners/read consumers:** recon 写；管理接口读。
@@ -765,10 +765,10 @@
 | `matched_count` | INT | 否 | 0 | — | 匹配笔数 | 内部 |
 | `diff_count` | INT | 否 | 0 | — | 差错笔数 | 内部 |
 | `error_msg` | VARCHAR(512) | 是 | NULL | — | FAILED 原因 | 内部 |
-| `started_at` | DATETIME(3) | 是 | NULL | — | 进入 CHECKING 的时间，超过 30 分钟视为卡死（REC-01） | 内部 |
+| `started_at` | DATETIME(3) | 是 | NULL | — | 进入 CHECKING 的时间。只用于 CHECKING 的卡死判定：超过 30 分钟视为卡死，接管 CAS 带 `status = 'CHECKING' AND started_at = <原值>`（REC-01 第 5 条）。INIT、DOWNLOADED 不看此列 | 内部 |
 | `finished_at` | DATETIME(3) | 是 | NULL | — | | 内部 |
 | `created_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | — | | 审计 |
-| `updated_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) ON UPDATE | — | | 审计 |
+| `updated_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) ON UPDATE | — | 兼作 INIT、DOWNLOADED 的卡死判定时间（REC-01 第 5 条，不改表）：处于这两个状态且超过 30 分钟视为卡死。接管 CAS 带原状态与原 `updated_at`（`WHERE id = ? AND status = ? AND updated_at = <原值>`），同时把 `updated_at` 改为当前时间，影响 1 行才执行，所以同一时刻只有一个接管者。改写本表的每条 UPDATE 都显式写 `updated_at = now`（注入时钟，截到毫秒），不依赖 ON UPDATE 的数据库时间；状态不变的接管（INIT → INIT）也靠这一写法让行真正变化 | 审计 |
 
 #### Keys, Indexes, and Constraints
 
@@ -913,7 +913,7 @@
 | `status` | VARCHAR(16) | 否 | — | `ck_mock_status` | 只用 CAS 推进：`WHERE id = ? AND status = 'PROCESSING'`（无 version 列） | 测试 |
 | `scenario` | VARCHAR(32) | 否 | `'NORMAL'` | — | 由金额末两位决定的故障场景（CH-06） | 测试 |
 | `notify_url` | VARCHAR(512) | 否 | `''` | — | | 测试 |
-| `notify_sent_count` | INT | 否 | 0 | — | 已发送回调次数。发出 HTTP 前条件加一，不改 `status`。普通回调按当前值相等（`notify_sent_count = ?`，最多 5 次，CH-05）。DUP_NOTIFY 按 `notify_sent_count < 10` 加一（最多 10 次，CH-06），因为同一波 5 次并发不能共用同一个期望值。发号失败、空密钥、更新失败，以及 DROP_NOTIFY / SLOW 不加 | 测试 |
+| `notify_sent_count` | INT | 否 | 0 | — | 已发送回调次数。发出 HTTP 前条件加一，不改 `status`。普通回调按当前值相等（`notify_sent_count = ?`，最多 5 次，CH-05）。DUP_NOTIFY 按 `notify_sent_count < 10` 加一（最多 10 次，CH-06），因为同一波 5 次并发不能共用同一个期望值。发号失败、空密钥、更新失败，以及 DROP_NOTIFY 不加。SLOW：现状（CH-06 M3 切片第 5 条）不发、不加；M4 切片第 6 条实现后，只把首次回调推迟到 `finished_at` 后 30 秒，之后与普通回调相同，按 `notify_sent_count = ?` 加一，连首次最多 5 次 | 测试 |
 | `finished_at` | DATETIME(3) | 是 | NULL | — | 自动完成或 CLOSE_RACE 关单的实际时间，应用截到毫秒后写入（CH-01、CH-03）。普通关单不写，保持 NULL | 测试 |
 | `bill_date` | DATE | 是 | NULL | `idx_bill_date` | 计入账单的日期，= `finished_at` 的东八区日期；只在 SUCCESS 时写（自动完成或 CLOSE_RACE 关单），BILL_MISSING、FAILED 与普通 CLOSED 为 NULL | 测试 |
 | `created_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | — | 受理或关单防悬挂行由 channel_mock 按自己的时钟显式写入（截到毫秒），不用列默认值。自动完成的到期时刻 = `created_at` + delay | 测试 |
@@ -963,6 +963,7 @@
 | 2026-10-27 | 无（仅文档） | `mock_txn.notify_sent_count`（写路径说明） | CH-06：DUP_NOTIFY 用 `notify_sent_count < 10` 加一，与普通回调的期望值相等条件并存。无迁移 | 未执行迁移 |
 | 2026-10-27 | 无（仅文档） | `recon_channel_bill`（审计约定）、`transfer_branch.version`、`mock_txn`（防悬挂行说明）、分片表总述、`recon_diff`（兼容说明） | 文档审查后的文字修正：`recon_channel_bill` 移出只追加表，写明只更新 `match_status`、故意不带 `updated_at`；补 `transfer_branch.version` 插入为 0、回写 `txn_no` 或 CAS 改状态时加 1；防悬挂行的 `scenario`、`notify_url` 改为代码显式写入与列默认相同的值；删除 `pay_account_1` 由 `CREATE TABLE ... LIKE` 复制的设计稿说法，改为两个分片执行同一迁移；`recon_diff` 改为“通过新迁移修改”；指需求文档的章节号补“需求”；补齐 15 处 Authoritative source 的右反引号。无 DDL，不改迁移 | 未执行迁移（无 SQL 变更） |
 | 2026-10-27 | 无（仅文档） | `outbox.next_retry_at`、`idx_status_next_retry_at`（说明） | 用户确认（A1）：投递器改为领取（`FOR UPDATE SKIP LOCKED`，把 `next_retry_at` 设为租约到期 now + 30s）→ 提交 → 事务外发送 → 按 `id`、`status = 'PENDING'`、`next_retry_at = <租约值>` CAS 回写。`next_retry_at` 兼作投递租约，重放回 PENDING 时设为 now。不改表结构、不改索引、不新增状态 | 未执行迁移（无 SQL 变更） |
+| 2026-10-27 | 无（仅文档） | `recon_batch.updated_at`、`recon_batch.started_at`、`recon_batch`（Lifecycle）、`mock_txn.notify_sent_count`（说明） | 用户决定（需求 §8.1 Q6，REC-01 第 5、6 条）：INIT、DOWNLOADED 的卡死判定用 `updated_at` 超过 30 分钟，CHECKING 仍用 `started_at`；只在 RunBatch 被调用时判定；接管 CAS 带原状态与原时间戳，每条 UPDATE 显式写 `updated_at`。`BILL_NOT_READY` 每 30 分钟重试、当天最多 6 次后置 FAILED，计数只在进程内。`notify_sent_count` 区分 SLOW 的现状（不发、不加）与 CH-06 第 6 条（只推迟首次回调，之后按普通回调计数）。不改表结构、不改索引 | 未执行迁移（无 SQL 变更） |
 
 ## 6. Open Questions
 

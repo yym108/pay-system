@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 3.0.0 |
+| 文档版本 | 3.0.1 |
 | API 版本 | v1（路径前缀 `/v1`） |
 | 最后修改 | 2026-10-27 |
 | 状态 | 设计基线，实现须与本文一致 |
@@ -55,6 +55,7 @@
 | 2.1.7 | 2026-10-27 | 文字更正：2.1.6 写的“库列排序规则不区分大小写”有误。`merchant` 表列跟随库默认 `utf8mb4_bin`（区分大小写，但 PAD SPACE 忽略尾部空格）；集成测试临时库为 `utf8mb4_0900_ai_ci`（不区分大小写与重音）。两种规则下 SQL 都可能匹配到字节不同的值，所以服务端读回后逐字节比较；首尾空格不同同样返回 `20004`。不改契约：不新增字段、不改错误码数字、不改 IDL | §10.2 | PAY-01 |
 | 2.1.8 | 2026-10-27 | 文档审查后的文字修正，不改契约：§0.2 变更记录统一为版本升序。§3.7 注明 V3 只验证签名算法，body 不含 `request_id`。§8.5 写明 `error_msg`、`handler`、`handle_note` 的库列 NULL 映射为空串、字段仍输出。§9.4 防悬挂行的 `scenario`、`notify_url` 改为显式写入与列默认相同的值。§10.1 总述把 `Reverse` 列入传分片号的例外，事务只在一个分片上开启限定为写操作，并写明 `CheckBalance` 全量、`GetAccount` 查 PLATFORM 只读两个分片；TransferInTry / Confirm / Cancel 业务错误补 `10001`；Try / Cancel 的 `txn_no` 注明是进程内返回值，RPC 响应只有 `status`；ConfirmFreeze 的 32 码点注明来自 `account.owner_id` 列宽，平台渠道编码最多 16 位；补 `Reverse` 在 ACC-08 完成前一律返回 `10003`、不写行。§10.2 CreateRefund、CreateTransfer 的响应改为 IDL 中的 `CreateRefundResponse`、`CreateTransferResponse`；GetMerchantCredential 请求为 nil 返回 `10001`。不新增字段、不改错误码数字、不改 IDL | §0.2、§3.7、§8.5、§9.4、§10.1、§10.2 | ACC-02、ACC-06、ACC-08、ACC-10、ACC-14、CH-03、PAY-01、REC-01、REF-01、TRF-01 |
 | 3.0.0 | 2026-10-27 | 用户确认（A2、A7、A1）。内部 RPC 不兼容变更：`PaymentService.Pay` 的返回类型由 `PaymentOrder` 改为 `PayResponse{biz_code, payment_order}`，`ClosePayment` 改为 `ClosePaymentResponse{biz_code, payment_order}`，使 `Pay` 的 `30006`、`ClosePayment` 的 `30003` 能连同订单返回；§10 与约定 §5.3 第 5 条的携带对象例外补上这两处。PAY-03 落地，返回类型变更在无调用方时进行：两个方法目前一律返回 `10003`，没有调用方，IDL 在 PAY-03 实现时修改并 `make gen`。商户 API 不变，路径仍为 `/v1`，HTTP 响应与 §4.2、§4.3 的 `data` 规则不变。行为变更：`CheckBalance` 服务端处理上限改为商户模式 2 秒、全量模式 120 秒（原为统一 2 秒），代码随 ACC-11 修改。文字：§11.5 写明投递器领取租约、事务外发送、按租约 CAS 回写带来的重复投递；§8.4 的 `/metrics` 归属改为 OPS-03。不新增错误码 | §1、§4.2、§4.3、§8.4、§10、§10.1、§10.2、§11.5 | PAY-03、PAY-06、ACC-10、ACC-11、MQ-02、OPS-03 |
+| 3.0.1 | 2026-10-27 | 文字对齐需求 2026-10-27 的功能点拆分：商户 API 网关路由拆为 GW-02（支付单与余额，§4.1–§4.4、§4.7）与 GW-09（退款与转账，§4.5、§4.6、§4.8、§4.9），§1 接口清单说明与 §4 各接口标头写明归属，§1 中 §4.1–§4.9 各行的“最后修改”改为 2026-10-27；2.0.0 行中的 GW-02 是当时的归属，不改写。§10.2 写明 `PayResponse`、`ClosePaymentResponse` 的订单字段 `2: PaymentOrder payment_order` 为必填，与 `CreateRefundResponse` 一致（用户确认）。不改契约，不新增字段，不改错误码 | §1、§4.1–§4.9、§10.2 | GW-02、GW-09、PAY-03 |
 
 ## 1. 接口总览
 
@@ -68,19 +69,19 @@
 | 内部 RPC | account :8882、payment :8881、recon :8883 | 无（内网） | gateway、payment、recon |
 | 事件 | Kafka | — | account（支付、退款事件）、payment（全部事件，用于商户通知） |
 
-接口清单（“RPC”列即网关路由与 RPC 的映射，GW-02）：
+接口清单（“RPC”列即网关路由与 RPC 的映射。商户 API 的网关路由：支付单与余额 §4.1–§4.4、§4.7 属 GW-02，退款与转账 §4.5、§4.6、§4.8、§4.9 属 GW-09）：
 
 | 接口 | 章节 | RPC | 功能点 | 引入版本 | 最后修改 |
 |---|---|---|---|---|---|
-| `POST /v1/payments` 创建支付单 | §4.1 | `PaymentService.CreatePayment` | PAY-02 | 1.0.0 | 2026-10-12 |
+| `POST /v1/payments` 创建支付单 | §4.1 | `PaymentService.CreatePayment` | PAY-02 | 1.0.0 | 2026-10-27 |
 | `POST /v1/payments/{pay_no}/pay` 发起支付 | §4.2 | `PaymentService.Pay` | PAY-03 | 1.0.0 | 2026-10-27 |
 | `POST /v1/payments/{pay_no}/close` 关闭支付单 | §4.3 | `PaymentService.ClosePayment` | PAY-06 | 1.0.0 | 2026-10-27 |
-| `GET /v1/payments/{pay_no}`、`GET /v1/payments?out_trade_no=` 查询支付单 | §4.4 | `PaymentService.QueryPayment` | PAY-08 | 1.0.0 | 2026-10-12 |
-| `POST /v1/refunds` 创建退款 | §4.5 | `PaymentService.CreateRefund` | REF-01、REF-02 | 1.0.0 | 2026-10-12 |
-| `GET /v1/refunds/{refund_no}`、`GET /v1/refunds?out_refund_no=` 查询退款 | §4.6 | `PaymentService.QueryRefund` | REF-05 | 1.0.0 | 2026-10-12 |
-| `GET /v1/balance` 查询余额 | §4.7 | `AccountService.GetAccount` | ACC-02 | 1.0.0 | 2026-10-12 |
-| `POST /v1/transfers` 创建转账 | §4.8 | `PaymentService.CreateTransfer` | TRF-01~03 | 2.0.0 | 2026-10-12 |
-| `GET /v1/transfers/{transfer_no}`、`GET /v1/transfers?out_transfer_no=` 查询转账 | §4.9 | `PaymentService.QueryTransfer` | TRF-05 | 2.0.0 | 2026-10-12 |
+| `GET /v1/payments/{pay_no}`、`GET /v1/payments?out_trade_no=` 查询支付单 | §4.4 | `PaymentService.QueryPayment` | PAY-08 | 1.0.0 | 2026-10-27 |
+| `POST /v1/refunds` 创建退款 | §4.5 | `PaymentService.CreateRefund` | REF-01、REF-02 | 1.0.0 | 2026-10-27 |
+| `GET /v1/refunds/{refund_no}`、`GET /v1/refunds?out_refund_no=` 查询退款 | §4.6 | `PaymentService.QueryRefund` | REF-05 | 1.0.0 | 2026-10-27 |
+| `GET /v1/balance` 查询余额 | §4.7 | `AccountService.GetAccount` | ACC-02 | 1.0.0 | 2026-10-27 |
+| `POST /v1/transfers` 创建转账 | §4.8 | `PaymentService.CreateTransfer` | TRF-01~03 | 2.0.0 | 2026-10-27 |
+| `GET /v1/transfers/{transfer_no}`、`GET /v1/transfers?out_transfer_no=` 查询转账 | §4.9 | `PaymentService.QueryTransfer` | TRF-05 | 2.0.0 | 2026-10-27 |
 | 商户异步通知 | §6 | — | NTF-01、NTF-02 | 1.0.0 | 2026-10-12 |
 | `POST /callback/mockpay` 渠道回调入口 | §7 | `PaymentService.HandleChannelNotify` | GW-06 | 1.0.0 | 2026-10-23 |
 | `POST /admin/recon/run` 执行对账 | §8.2 | `ReconService.RunBatch` | REC-01、REC-08 | 1.0.0 | 2026-10-27 |
@@ -245,7 +246,7 @@ signature = base64(HMAC-SHA256(channel_key, canonical))
 
 ### 4.1 创建支付单
 
-`POST /v1/payments` · PAY-02
+`POST /v1/payments` · PAY-02 · 网关路由 GW-02
 
 请求：
 
@@ -281,7 +282,7 @@ signature = base64(HMAC-SHA256(channel_key, canonical))
 
 ### 4.2 发起支付
 
-`POST /v1/payments/{pay_no}/pay` · PAY-03
+`POST /v1/payments/{pay_no}/pay` · PAY-03 · 网关路由 GW-02
 
 请求：
 
@@ -305,7 +306,7 @@ signature = base64(HMAC-SHA256(channel_key, canonical))
 
 ### 4.3 关闭支付单
 
-`POST /v1/payments/{pay_no}/close` · PAY-06
+`POST /v1/payments/{pay_no}/close` · PAY-06 · 网关路由 GW-02
 
 请求：无 body。
 
@@ -323,7 +324,7 @@ signature = base64(HMAC-SHA256(channel_key, canonical))
 
 ### 4.4 查询支付单
 
-`GET /v1/payments/{pay_no}` 或 `GET /v1/payments?out_trade_no=<商户订单号>` · PAY-08
+`GET /v1/payments/{pay_no}` 或 `GET /v1/payments?out_trade_no=<商户订单号>` · PAY-08 · 网关路由 GW-02
 
 只能查询当前商户的订单。查询串方式必须且只能提供 `out_trade_no`。
 
@@ -333,7 +334,7 @@ signature = base64(HMAC-SHA256(channel_key, canonical))
 
 ### 4.5 创建退款
 
-`POST /v1/refunds` · REF-01、REF-02
+`POST /v1/refunds` · REF-01、REF-02 · 网关路由 GW-09
 
 请求：
 
@@ -370,7 +371,7 @@ signature = base64(HMAC-SHA256(channel_key, canonical))
 
 ### 4.6 查询退款
 
-`GET /v1/refunds/{refund_no}` 或 `GET /v1/refunds?out_refund_no=<商户退款单号>` · REF-05
+`GET /v1/refunds/{refund_no}` 或 `GET /v1/refunds?out_refund_no=<商户退款单号>` · REF-05 · 网关路由 GW-09
 
 响应 `data`：`RefundOrder`。
 
@@ -378,7 +379,7 @@ signature = base64(HMAC-SHA256(channel_key, canonical))
 
 ### 4.7 查询余额
 
-`GET /v1/balance` · ACC-02
+`GET /v1/balance` · ACC-02 · 网关路由 GW-02
 
 网关调用 `AccountService.GetAccount(MERCHANT, merchant_id, MERCHANT_SETTLE)`，`merchant_id` 取自验签结果；account 路由到商户所属分片读取，不加锁。
 
@@ -398,7 +399,7 @@ signature = base64(HMAC-SHA256(channel_key, canonical))
 
 ### 4.8 创建转账
 
-`POST /v1/transfers` · TRF-01、TRF-02、TRF-03
+`POST /v1/transfers` · TRF-01、TRF-02、TRF-03 · 网关路由 GW-09
 
 付款方为当前商户（`merchant_id` 只取自验签结果，请求中的同名字段忽略）。转账不收手续费。
 
@@ -465,7 +466,7 @@ signature = base64(HMAC-SHA256(channel_key, canonical))
 
 ### 4.9 查询转账
 
-`GET /v1/transfers/{transfer_no}` 或 `GET /v1/transfers?out_transfer_no=<商户转账单号>` · TRF-05
+`GET /v1/transfers/{transfer_no}` 或 `GET /v1/transfers?out_transfer_no=<商户转账单号>` · TRF-05 · 网关路由 GW-09
 
 只有付款商户可以查询；收款商户和其他商户查询返回 `30001`（不泄露存在性）。查询串方式必须且只能提供 `out_transfer_no`。
 
@@ -935,7 +936,7 @@ account RPC 以商户号（或 owner）为入参，由 account 按商户号路�
 
 `GetMerchantCredential`（PAY-01）：请求为 nil 返回 `10001`。`app_id` 按字节精确匹配，为空、不存在或只是大小写、首尾空格不同都返回 `20004`（`X-App-Id` 不在签名串里，放宽匹配会让同一请求换个写法绕过按 `app_id` 记的 nonce）。`merchant` 表列跟随库默认 `utf8mb4_bin`，区分大小写，但 PAD SPACE 会忽略尾部空格；集成测试临时库为 `utf8mb4_0900_ai_ci`，不区分大小写与重音。两种规则下 SQL 都可能匹配到字节不同的值，所以服务端读回 `app_id` 再逐字节比较。DISABLED 商户照常返回，由网关返回 `20004`。密文解不开是平台内部故障，返回 `10003`。payment 不缓存凭证，网关侧缓存属于 GW-08。PaymentService 其余方法在各自功能点实现前一律返回 `10003`，不是这些方法将来的错误码语义。服务端处理超时 2 秒；要调渠道的方法由各自功能点按需求 §5.4.1 重新确定。
 
-`Pay`、`ClosePayment` 的返回类型：当前 IDL 两者直接返回 `PaymentOrder`，无法同时带回 `biz_code` 与订单。PAY-03 实现时在 `idl/payment.thrift` 新增 `PayResponse`、`ClosePaymentResponse`（字段与 `CreateRefundResponse` 同样排列：`1: base.BizCode biz_code`、`2` 为订单），并把两个方法的返回类型改为这两个包装。这是返回类型变更，只在两方法都还没有调用方、handler 一律返回 `10003` 时进行；之后按“只增不删”。成功时 `biz_code = 0`。
+`Pay`、`ClosePayment` 的返回类型：当前 IDL 两者直接返回 `PaymentOrder`，无法同时带回 `biz_code` 与订单。PAY-03 实现时在 `idl/payment.thrift` 新增 `PayResponse`、`ClosePaymentResponse`（`1: base.BizCode biz_code`、`2: PaymentOrder payment_order`。订单字段是必填，不加 `optional`，与 `CreateRefundResponse` 的 `2: RefundOrder refund_order` 一致：这两个包装只在成功和带回订单的错误时返回，订单总有值），并把两个方法的返回类型改为这两个包装。这是返回类型变更，只在两方法都还没有调用方、handler 一律返回 `10003` 时进行；之后按“只增不删”。成功时 `biz_code = 0`。
 
 `CreateTransfer` 的响应码规则同 §4.8：本次请求执行到 FAILED 且 `fail_code = INSUFFICIENT_BALANCE` → `biz_code = 40002` 并携带转账单；其他 FAILED、SUCCESS、处理中状态与幂等命中 → 成功返回。
 
