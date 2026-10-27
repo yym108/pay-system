@@ -1,7 +1,7 @@
 # pay-system 流程图（状态机、泳道图、控制流图）
 
-> 版本：v2.15　最后修改：2026-10-27　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐。2026-10-21 按 ACC-14 口径改正 CF-33，CF-33 已对齐。2026-10-21 按 ACC-10 口径改正 CF-17，CF-17 已对齐。2026-10-23 按 BASE-13 规则 8 补 CF-01、CF-02、CF-21 的签名配置故障出口。2026-10-23 按 CH-01 口径改正 CF-22。2026-10-26 CF-23 注明防悬挂 CLOSED 记录 amount = 0。2026-10-26 渠道查单单独画 CF-38，CH-02 的控制流改指 CF-38；SL-02 仍留给以后的补偿。2026-10-26 按 CH-03 口径补全 CF-23 的验签、参数、CAS 与再读出口，六个业务结果不变。2026-10-26 按 CH-05 在 CF-24 图下注明「其他」和 DROP_NOTIFY 不回调已实现；SLOW 与 DUP_NOTIFY 的特殊发送仍未实现，这两种场景现在不发普通回调。图本身不改。2026-10-27 按 CH-06 将 CF-24 图下改为 DUP_NOTIFY 已按「并发 5 次，之后每秒 1 次再 5 次，不论响应」实现；SLOW 仍未实现，现在不发。图本身不改
-> 依据：`docs/02-requirements.md` v3.0、`docs/03-conventions.md` v2.0、`docs/01-tech-decisions.md` D17–D21；`docs/05-api.md`、`docs/database.md` 尚未同步 v3.0，冲突处以需求文档为准
+> 版本：v2.16　最后修改：2026-10-27　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐。2026-10-21 按 ACC-14 口径改正 CF-33，CF-33 已对齐。2026-10-21 按 ACC-10 口径改正 CF-17，CF-17 已对齐。2026-10-23 按 BASE-13 规则 8 补 CF-01、CF-02、CF-21 的签名配置故障出口。2026-10-23 按 CH-01 口径改正 CF-22。2026-10-26 CF-23 注明防悬挂 CLOSED 记录 amount = 0。2026-10-26 渠道查单单独画 CF-38，CH-02 的控制流改指 CF-38；SL-02 仍留给以后的补偿。2026-10-26 按 CH-03 口径补全 CF-23 的验签、参数、CAS 与再读出口，六个业务结果不变。2026-10-26 按 CH-05 在 CF-24 图下注明「其他」和 DROP_NOTIFY 不回调已实现；SLOW 与 DUP_NOTIFY 的特殊发送仍未实现，这两种场景现在不发普通回调。图本身不改。2026-10-27 按 CH-06 将 CF-24 图下改为 DUP_NOTIFY 已按「并发 5 次，之后每秒 1 次再 5 次，不论响应」实现；SLOW 仍未实现，现在不发。图本身不改。2026-10-27 文档审查修正与需求不一致的文字：SL-01 延迟范围、CF-05 未知结果分支、SL-14 C13、CF-34 与 CF-35 的 10001 / 10006、§5 R15 与 R16 状态、SL-09 与 CF-26 的定时触发写法、对 03 的版本引用；不改规则
+> 依据：`docs/02-requirements.md` v3.0、`docs/03-conventions.md` v2.14、`docs/01-tech-decisions.md` D17–D21；`docs/05-api.md`、`docs/database.md` 尚未同步 v3.0，冲突处以需求文档为准
 > 用途：以图的形式确认全部功能性设计。图是需求的视图，规则冲突时以需求文档为准；需求变更后同步修改对应的图。
 
 ## 0. 阅读说明
@@ -373,7 +373,7 @@ sequenceDiagram
     P-->>GW: PaymentOrder(PAYING)
     GW-->>M: PAYING
 
-    Note over CH: 200–2000ms 后置为 SUCCESS<br/>写 finished_at、bill_date
+    Note over CH: 200–1999ms 后置为 SUCCESS<br/>写 finished_at、bill_date
     CH->>GW: POST /callback/mockpay（渠道签名）
     Note over GW: 验渠道签名与时间窗口，不查 nonce（CF-02）
     GW->>P: HandleChannelNotify(PAY, ...)
@@ -723,7 +723,8 @@ sequenceDiagram
     participant AD as pay_account_0 / 1（只读）
     participant P as payment
 
-    T->>RC: RunBatch(mockpay, D)（每天 10:00 对 D−1）
+    T->>RC: RunBatch(mockpay, D)，D 为账期 bill_date
+    Note over T: 定时任务在 D 的次日 RECON_RUN_AT（默认 10:00）发起（REC-01 规则 1）
     Note over RC: 按 uk_channel_bill_date 创建或取得批次，CAS 抢占（CF-26）
     RC->>CH: GET /mockpay/v1/bills?date=D（超时 30s，失败重试 3 次）
     alt BILL_NOT_READY
@@ -965,7 +966,7 @@ sequenceDiagram
     end
 
     opt C13：转账压测中 kill account，20 秒后启动
-        Note over P,A0: 进行中的分支调用超时：TCC 的 TRYING 转为 CANCELLING，<br/>LOCAL 的 TRYING、CONFIRMING、CANCELLING 保持原状态
+        Note over P,A0: 进行中的分支调用超时：TCC 的 TRYING 转为 CANCELLING，<br/>TCC 的 CONFIRMING、CANCELLING 与 LOCAL 的 TRYING 保持原状态
         Note over RT,A0: TRF-04 按退避持续重试，永不放弃，retry_count ≥ 10 计入 pay_transfer_stuck<br/>account 恢复后全部转账终态，在途合计 0，CheckBalance 通过
     end
 ```
@@ -1154,7 +1155,7 @@ flowchart TD
     BF --> PAYING(["返回 PAYING"]):::ok
     CALL -->|"REJECTED"| REJ["ApplyPayResult(FAILED, CHANNEL_REJECTED)（CF-06）<br/>fail_msg 记录渠道 reason"]
     REJ --> E30006["30006 + FAILED 订单"]:::err
-    CALL -->|"超时 / 网络错误 / 5xx"| UNK["结果未知，不改状态<br/>由回调或查单得到最终结果（SL-03）"]
+    CALL -->|"超时 / 网络错误 / 5xx / 其他非 200（含 400、401）"| UNK["结果未知，不改状态<br/>由回调或查单得到最终结果（SL-03）"]
     UNK --> PAYING
     classDef ok fill:#e3f6e8,stroke:#2e7d32
     classDef err fill:#fde4e4,stroke:#c62828
@@ -1733,7 +1734,8 @@ flowchart TD
         F1["CAS TRYING→FAILED，写 fail_code、finished_at"] --> F2["outbox.Add(transfer.failed)"]
     end
     TL -->|"超时 / 10003 / 10004"| KEEP(["保持 TRYING，返回 TRYING<br/>由 TRF-04 重新调用"]):::ok
-    TL -->|"10001 / 10006"| R15["需求未定义（R15 建议：保持 TRYING，ERROR 日志）"]:::err
+    TL -->|"10001 / 10006"| MIS["协调者与 account 数据不一致，ERROR 日志<br/>不置 FAILED，由 pay_transfer_stuck 暴露（TRF-02 规则 4）"]
+    MIS --> KEEP
     S1 -->|"影响 0 行"| RR(["重新读取，按当前状态返回"]):::ok
     F1 -->|"影响 0 行"| RR
     S2 --> RSP{"本次执行结束时的转账单"}
@@ -1756,7 +1758,7 @@ flowchart TD
     TRY --> F1["故障点 transfer.after_try（C9）"]:::fault
     F1 --> D{"两个 Try 都成功"}
     D -->|"是"| C1["CAS TRYING→CONFIRMING"]
-    D -->|"否"| FC["fail_code 按失败分支映射，都失败时取付款方：<br/>40002 → INSUFFICIENT_BALANCE<br/>40001 / 40005 → ACCOUNT_INVALID<br/>超时、10003、10004、40004 → TRY_TIMEOUT<br/>10001、10006 未定义，见 R15"]
+    D -->|"否"| FC["fail_code 按失败分支映射，都失败时取付款方：<br/>40002 → INSUFFICIENT_BALANCE<br/>40001 / 40005 → ACCOUNT_INVALID<br/>超时、10003、10004、40004 → TRY_TIMEOUT<br/>不应出现的 10001、10006 → TRY_TIMEOUT，另输出 ERROR 日志（TRF-03 规则 3）"]
     FC --> C2["CAS TRYING→CANCELLING，写 fail_code"]
     C1 -->|"影响 0 行"| RR{"重新读取（决策已被 TRF-04 做出）"}
     C2 -->|"影响 0 行"| RR
@@ -2162,7 +2164,7 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    S(["RunBatch(channel, bill_date, force)<br/>每天 10:00 对 D−1 / CLI / 管理接口"]) --> GB["按 uk_channel_bill_date 创建或读取批次"]
+    S(["RunBatch(channel, bill_date, force)<br/>定时：每天 RECON_RUN_AT（默认 10:00），bill_date 取前一天<br/>或 CLI / 管理接口指定"]) --> GB["按 uk_channel_bill_date 创建或读取批次"]
     GB --> ST{"批次状态"}
     ST -->|"DONE 且未 force"| RET(["返回已有结果"]):::ok
     ST -->|"已存在的 INIT / DOWNLOADED / 未超时的 CHECKING"| CUR(["返回当前批次，不重复执行"]):::ok
@@ -2319,7 +2321,7 @@ flowchart TD
 
 ## 5. 绘图中发现的问题
 
-R1–R14 来自 v1.x 绘图，已落入需求文档 v2.2；R15 起来自 v2.0 绘图。“待确认”的条目在图中已按建议标注，确认后改需求文档再改图。
+R1–R14 来自 v1.x 绘图，已落入需求文档 v2.2；R15、R16 来自 v2.0 绘图，已写入需求文档 v3.0。之后新发现的问题先标“待确认”并在图中按建议标注，确认后改需求文档再改图。
 
 | 编号 | 问题 | 结论 / 建议 | 状态 |
 |---|---|---|---|
@@ -2337,8 +2339,8 @@ R1–R14 来自 v1.x 绘图，已落入需求文档 v2.2；R15 起来自 v2.0 �
 | R12 | 通知发送时白名单校验失败 | 直接置为 DEAD（NTF-02 第 5 条） | 已确认 |
 | R13 | GW-03 凭证回源失败 | 503 / `10004`，不缓存失败结果 | 已确认 |
 | R14 | 边界补充：请求体超限、透支账户冻结、ReplayEvent 遇 PENDING、批次重跑起点 | 413 / `10001`；`10001`；返回成功不修改；从 INIT 开始（GW-01、ACC-04、MQ-05、REC-01） | 已确认 |
-| R15 | TRF-02 第 4、5 条与 TRF-03 第 3 条没有覆盖分支调用返回 `10001`（参数错误）和 `10006`（幂等冲突）。两者都说明协调者与 account 数据不一致，重试不会自愈 | 建议：LOCAL 按 `10003` 处理，保持 TRYING 并输出 ERROR 日志，由 `pay_transfer_stuck` 暴露给人工排查（不能直接置 FAILED，`10006` 时 account 可能已有 SUCCESS 分支）；TCC 的 Try 归入 `TRY_TIMEOUT` 取消。CF-34、CF-35 已按此标注 | 已确认，写入需求 v3.0（TRF-02、TRF-03 / OPT-02） |
-| R16 | OPT-02 第 5 条把“反序列化失败”列为本组回滚并退化的原因，但无法反序列化的消息取不到 `merchant_id`，无法归入任何分片组 | 建议：分组前识别，坏消息直接按 MQ-03 进入 DLQ，不影响任何分组；只有“商户账户不存在”触发本组回滚退化。SL-15、CF-37 已按此标注 | 已确认，写入需求 v3.0（TRF-02、TRF-03 / OPT-02） |
+| R15 | TRF-02 第 4、5 条与 TRF-03 第 3 条没有覆盖分支调用返回 `10001`（参数错误）和 `10006`（幂等冲突）。两者都说明协调者与 account 数据不一致，重试不会自愈 | LOCAL 按 `10003` 处理，保持 TRYING 并输出 ERROR 日志，由 `pay_transfer_stuck` 暴露给人工排查（不能直接置 FAILED，`10006` 时 account 可能已有 SUCCESS 分支）；TCC 的 Try 归入 `TRY_TIMEOUT` 取消。CF-34、CF-35 已按此画 | 已确认，写入需求 v3.0（TRF-02 规则 4、TRF-03 规则 3） |
+| R16 | OPT-02 第 5 条把“反序列化失败”列为本组回滚并退化的原因，但无法反序列化的消息取不到 `merchant_id`，无法归入任何分片组 | 分组前识别，坏消息直接按 MQ-03 进入 DLQ，不影响任何分组；只有“商户账户不存在”触发本组回滚退化。SL-15、CF-37 已按此标注 | 已确认，写入需求 v3.0（OPT-02 规则 5） |
 
 ## 6. 变更记录
 
@@ -2346,7 +2348,7 @@ R1–R14 来自 v1.x 绘图，已落入需求文档 v2.2；R15 起来自 v2.0 �
 |---|---|---|
 | 2026-10-12 | v1.0 | 初版：SM-01~09、SL-01~10、CF-01~31，记录绘图中发现的问题 R1–R14 |
 | 2026-10-12 | v1.1 | R1–R14 落入需求文档 v2.2 后同步更新相关图 |
-| 2026-10-12 | v2.0 | 对齐需求文档 v3.0。新增：SM-10 转账单、SM-11 转账分支、SL-11~15（同分片转账、跨分片成功、跨分片取消、崩溃恢复、批量记账）、CF-32~37（TransferLocal、收款方分支、创建转账单、TCC 协调、恢复任务、批量记账）。修改：覆盖矩阵；SM-04、SM-06、SM-07、SM-08；SL-01、SL-05~10（分片路由、子账户、冻结以商户号为入参、固定间隔通知、管理接口精简）；CF-01（进程内商户限流、去掉全局限流与降级）、CF-03、CF-09~11、CF-13~17（Post 进程内、ACC-10 分片与在途守恒）、CF-19~21、CF-26~29（差错只有 PENDING / RESOLVED / IGNORED、REPLAY、TRANSFER_MISMATCH）、§4.10。砍掉：CF-30（REC-07）、CF-27 中的跨日处理（REC-04）。§5 增加状态列，R10 部分、R11 整体被 v3.0 取代；新增 R15、R16（待确认） |
+| 2026-10-12 | v2.0 | 对齐需求文档 v3.0。新增：SM-10 转账单、SM-11 转账分支、SL-11~15（同分片转账、跨分片成功、跨分片取消、崩溃恢复、批量记账）、CF-32~37（TransferLocal、收款方分支、创建转账单、TCC 协调、恢复任务、批量记账）。修改：覆盖矩阵；SM-04、SM-06、SM-07、SM-08；SL-01、SL-05~10（分片路由、子账户、冻结以商户号为入参、固定间隔通知、管理接口精简）；CF-01（进程内商户限流、去掉全局限流与降级）、CF-03、CF-09~11、CF-13~17（Post 进程内、ACC-10 分片与在途守恒）、CF-19~21、CF-26~29（差错只有 PENDING / RESOLVED / IGNORED、REPLAY、TRANSFER_MISMATCH）、§4.10。砍掉：CF-30（REC-07）、CF-27 中的跨日处理（REC-04）。§5 增加状态列，R10 部分、R11 整体被 v3.0 取代；新增 R15、R16（当时待确认，2026-10-13 随需求 v3.0 确认为基线时写入 TRF-02、TRF-03、OPT-02） |
 | 2026-10-15 | v2.1 | ACC-03：CF-13 改为本连接缺账户（含另一分片）返回 40003，不再画 40001；1062 在同一事务读取已有凭证，Post 不回滚；`txn_no` 在行锁之前生成；`REVERSAL` 在校验阶段拒绝，不进入记账。不改资金流向 |
 | 2026-10-15 | v2.2 | ACC-03：CF-13 的 1062 补上同一事务按 `(biz_type, biz_no)` SELECT 不到时返回 10003、由调用方回滚的出口。不改资金流向 |
 | 2026-10-19 | v2.3 | ACC-04：CF-14 补上参数 10001、事务内先判断账户与透支、`version + 1`、更新 0 行且重读仍够冻结时 10003、1062 读不到行时 10003。RELEASED 一律 40004。不改资金流向 |
@@ -2362,3 +2364,4 @@ R1–R14 来自 v1.x 绘图，已落入需求文档 v2.2；R15 起来自 v2.0 �
 | 2026-10-26 | v2.13 | CH-03：CF-23 补上验签失败 401、空密钥 500、参数非法 400、读库或写库失败 500、CAS 得 0 行后再读并按新状态回答、普通关单不写 finished_at。六个业务结果不变。覆盖矩阵仍指向 CF-23。当前环境没有 mmdc，未渲染 SVG。不改资金流向 |
 | 2026-10-26 | v2.14 | CH-05：CF-24 图下注明「其他」和 DROP_NOTIFY 不回调已实现；SLOW 与 DUP_NOTIFY 的特殊发送仍未实现，这两种场景现在不发普通回调。图不改。覆盖矩阵仍指向 CF-24。当前环境没有 mmdc，未渲染 SVG。不改资金流向 |
 | 2026-10-27 | v2.15 | CH-06：CF-24 图下改为 DUP_NOTIFY 已按「并发 5 次，之后每秒 1 次再 5 次，不论响应」实现；SLOW 仍未实现，现在不发。图的节点不改。覆盖矩阵仍指向 CF-24。当前环境没有 mmdc，未渲染 SVG，也不新增 SVG。不改资金流向 |
+| 2026-10-27 | v2.16 | 文档审查，只改与需求不一致的文字，不改规则与资金流向：SL-01 渠道完成延迟 200–2000ms 改为 200–1999ms（CH-01 规则 4）；CF-05 结果未知分支补“其他非 200（含 400、401）”（PAY-03 规则 6）；SL-14 C13 删去 LOCAL 不存在的 CONFIRMING、CANCELLING，改为 TCC 的 CONFIRMING、CANCELLING 与 LOCAL 的 TRYING 保持原状态；CF-34 的 `10001 / 10006` 由“需求未定义”改为 ERROR 日志后保持 TRYING（TRF-02 规则 4），CF-35 改为归入 TRY_TIMEOUT 并输出 ERROR 日志（TRF-03 规则 3）；§5 R15、R16 去掉“建议”字样，状态分别写 TRF-02 规则 4、TRF-03 规则 3 与 OPT-02 规则 5，§5 引言和 v2.0 记录注明 R15、R16 已确认；SL-09 的 `RunBatch(mockpay, D)` 注明 D 为账期、定时任务在次日 RECON_RUN_AT 发起，CF-26 起点同样改为 bill_date 取前一天（REC-01 规则 1）；文件头对 03 的引用 v2.0 改为 v2.14。用 mermaid-cli 12.0.0 渲染全部 64 张图通过，未保存 SVG |
