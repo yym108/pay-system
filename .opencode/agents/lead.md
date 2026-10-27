@@ -36,6 +36,13 @@ permissions:
   - action: shell
     resource: "git push*"
     effect: ask
+  # shell 中直接引用 deploy/.env 的命令一律拒绝；deploy/.env.example 不受影响
+  - action: shell
+    resource: "*deploy/.env"
+    effect: deny
+  - action: shell
+    resource: "*deploy/.env *"
+    effect: deny
   - action: read
     resource: "deploy/.env"
     effect: deny
@@ -77,11 +84,12 @@ permissions:
    - 技能 §7 的验证命令（按项目当前阶段可用的那些），记录真实结果；
    - 抽查验收对照表中的测试函数确实存在并覆盖对应条目。
    任一项不通过，把具体失败信息发回同一个 `coder` 会话修复，再核验。同一问题修复两次仍失败时停下，向用户说明根因分析。
-6. 审查：资金链路和性能类功能点（ACC、PAY、REF、TRF、MQ、OPT）必须启动 `reviewer` 审查本分支相对 `main` 的改动；其他功能点按改动风险决定。审查问题交给同一个 `coder` 会话修复，修复后重新核验，必要时再审一轮。
+6. 审查：资金链路和性能类功能点（ACC、PAY、REF、TRF、MQ、OPT）必须启动 `reviewer` 审查本分支相对 `main` 的改动；其他功能点按改动风险决定。审查问题交给同一个 `coder` 会话修复，修复后重新核验；第一轮有高或中严重度问题时再审一轮，最多两轮。第二轮仍有高或中严重度问题时停下，向用户汇报问题与根因，不提交。
 7. 汇报：向用户简短汇报（完成内容、验收对照、核验结果、审查发现与处理、风险）。不要询问是否提交。
 8. 提交：汇报后立即按技能 §10 提交。只暂存本功能点相关文件，提交信息 `[<功能点>] <祈使句摘要>`。提交后 `git status` 不得再留下这一部分的未跟踪或未提交文件。有误时另起提交修改，或用 `git revert` 回退。
-9. 报告：用同一个 `coder` 会话写报告（技能 §11 和 `report-template.md`），把提交 hash 告诉它。资金链路和性能类功能点启动 `report-checker` 做可读性自检，反馈交给 `coder` 修改，直到没有新的看不懂项。然后立即暂存报告与 `docs/reports/README.md`，提交 `[<功能点>] add report`，不要等用户确认。
-10. 推送：只在用户要求时推送，推送功能分支并带 `-u`，不直接推送 `main`。用户要求开 PR 时用 `gh pr create`。
+9. 报告：用同一个 `coder` 会话写报告（技能 §11 和 `report-template.md`），把提交 hash 告诉它。资金链路和性能类功能点启动 `report-checker` 做可读性自检，反馈交给 `coder` 修改，直到没有新的看不懂项，最多两轮；第二轮后仍有的看不懂项写进汇报。然后立即暂存报告与 `docs/reports/README.md`，提交 `[<功能点>] add report`，不要等用户确认。
+10. 合并：报告提交后切回 `main`，执行 `git merge --ff-only <功能分支>` 把分支合回本地 `main`。无法快进（`main` 已有分支外的新提交）时停下询问，不做普通合并或变基。合并后不删除功能分支。
+11. 推送：只在用户要求时推送，推送功能分支并带 `-u`，不直接推送 `main`。用户要求开 PR 时用 `gh pr create`。
 
 ## 约束
 

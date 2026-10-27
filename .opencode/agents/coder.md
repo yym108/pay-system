@@ -35,7 +35,50 @@ permissions:
     resource: "git stash*"
     effect: deny
   - action: shell
+    resource: "git add*"
+    effect: deny
+  - action: shell
+    resource: "git restore*"
+    effect: deny
+  - action: shell
+    resource: "git revert*"
+    effect: deny
+  - action: shell
+    resource: "git cherry-pick*"
+    effect: deny
+  - action: shell
+    resource: "git rm*"
+    effect: deny
+  - action: shell
+    resource: "git mv*"
+    effect: deny
+  - action: shell
+    resource: "git branch*"
+    effect: deny
+  - action: shell
+    resource: "git tag*"
+    effect: deny
+  - action: shell
+    resource: "git am*"
+    effect: deny
+  - action: shell
+    resource: "git worktree*"
+    effect: deny
+  - action: shell
+    resource: "git update-ref*"
+    effect: deny
+  - action: shell
+    resource: "git config*"
+    effect: deny
+  - action: shell
     resource: "gh *"
+    effect: deny
+  # shell 中直接引用 deploy/.env 的命令（cat、grep、source 等）一律拒绝；deploy/.env.example 不受影响
+  - action: shell
+    resource: "*deploy/.env"
+    effect: deny
+  - action: shell
+    resource: "*deploy/.env *"
     effect: deny
   - action: read
     resource: "deploy/.env"
