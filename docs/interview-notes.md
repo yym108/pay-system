@@ -8,6 +8,13 @@
 - 商户响应按接口 §3.3 验签；管理接口 §8 写明不签名，没有 `X-Signature` 不算失败。`code ≠ 0` 仍把 JSON 写到 stdout，退出码为 1。
 - 客户端总超时不另造：按需求 §5.4.1 网关调用超时，默认 1 秒，`pay` / `close` / `refund` 5 秒，`transfer` 3 秒，`admin recon-run` 与 `admin check` 120 秒。
 
+## GW-01 网关骨架
+
+- compose 的 apps profile 仍是占位，应用容器不在 `make up` 里启动，占位进程保持退出码 1。这次没有改 compose。
+- 网关进程听 `:8080`（商户 API、渠道回调）和 `:8090`（管理接口），不写成 `127.0.0.1`。`:6060` 这次不听，探针仍是 OPS-01。
+- 时间窗口、验签、限流、nonce 四个中间件只把自己的名字放进链并调用 Next。不访问 Redis，不验签，不限流。
+- 客户端 `WithRPCTimeout` 是 1 秒。更长的超时只在真正调用时用 `RPCTimeout(method)` 配合 Kitex 的 per-call option。本功能点没有这种调用。
+
 ## PAY-01 商户与密钥
 
 - `merchant` 表列跟随库默认 `utf8mb4_bin`：区分大小写，但 PAD SPACE 比较时忽略尾部空格，compose 上实测 `WHERE app_id = 'app_m100001 '` 也能查到 `app_m100001`。集成测试临时库是 `utf8mb4_0900_ai_ci`，不区分大小写和重音，`'APP_M100001'` 也能查到。两种规则下 SQL 都会匹配字节不同的值。`X-App-Id` 不在签名串里，若 nonce 防重按请求带来的 app_id 记键，换个写法同一个签名就能重放。查询后在应用里逐字节比较读回的 app_id、merchant_id，不一致按不存在返回 `20004`。去掉这次比较，集成测试 `TestPAY01UnknownAppID` 立刻失败（测试库下靠大小写触发）；尾部空格目前只在 compose 手测过。

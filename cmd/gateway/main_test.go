@@ -2,13 +2,20 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"testing"
 )
 
+func canceledContext() context.Context {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	return ctx
+}
+
 func TestGatewayRunRejectsMissingAdminToken(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := run([]string{
+	code := run(canceledContext(), []string{
 		"WORKER_ID=1",
 		"CHANNEL_MOCKPAY_KEY=mockpay-plain-key",
 	}, &stdout, &stderr)
@@ -32,7 +39,7 @@ func TestGatewayFaultPointsCheckedBeforeStart(t *testing.T) {
 		"CHANNEL_MOCKPAY_KEY=mockpay-plain-key",
 	}
 	var stdout, stderr bytes.Buffer
-	code := run(append(append([]string{}, base...), "FAULT_POINTS=pay.after_tx"), &stdout, &stderr)
+	code := run(canceledContext(), append(append([]string{}, base...), "FAULT_POINTS=pay.after_tx"), &stdout, &stderr)
 	if code == 0 {
 		t.Fatal("exit code = 0, want non-zero")
 	}
@@ -46,7 +53,7 @@ func TestGatewayFaultPointsCheckedBeforeStart(t *testing.T) {
 
 	stdout.Reset()
 	stderr.Reset()
-	code = run(base, &stdout, &stderr)
+	code = run(canceledContext(), base, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("empty FAULT_POINTS: code=%d stderr=%s", code, stderr.String())
 	}
@@ -54,7 +61,7 @@ func TestGatewayFaultPointsCheckedBeforeStart(t *testing.T) {
 
 func TestGatewayRunRedacts(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := run([]string{
+	code := run(canceledContext(), []string{
 		"WORKER_ID=1",
 		"ADMIN_TOKEN=0123456789abcdef0123456789abcdef",
 		"CHANNEL_MOCKPAY_KEY=mockpay-plain-key",

@@ -402,7 +402,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | MQ-06 | outbox 清理 | P1 | M8 | MQ-02 | TODO |
 | NTF-01 | 通知记录生成 | P0 | M5 | MQ-03 | TODO |
 | NTF-02 | 通知发送与固定间隔重试 | P0 | M5 | NTF-01、BASE-13、TL-02 | TODO |
-| GW-01 | 网关骨架与统一响应 | P0 | M3 | BASE-12、BASE-13、TL-01 | TODO |
+| GW-01 | 网关骨架与统一响应 | P0 | M3 | BASE-12、BASE-13、TL-01 | DONE |
 | GW-02 | 商户 API 路由（支付与余额） | P0 | M3 | GW-01、GW-03、PAY-02/03/06/08、ACC-02、ACC-11 | TODO |
 | GW-03 | 商户验签 | P0 | M3 | GW-01、PAY-01 | TODO |
 | GW-04 | 时间窗口与 nonce 防重放 | P0 | M5 | GW-03、GW-06、OPS-01 | TODO |
@@ -2152,15 +2152,15 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 
 1. 两个 Hertz 实例：8080（商户 API、渠道回调）、8090（管理接口），请求体上限 64KB，超过返回 413 / `10001`（不签名）。
 2. 商户路由中间件顺序：Recovery → RequestID → Trace → AccessLog → 时间窗口（GW-04）→ 验签（GW-03）→ 商户限流（GW-05）→ nonce（GW-04）→ handler。限流放在 nonce 之前，超限请求不消耗 Redis 调用；被限流的请求不占用 nonce，商户可用同一 nonce 重试。
-3. 统一响应：`{"code": 0, "msg": "ok", "request_id": "...", "data": {...}}`；响应头 `X-Request-Id`；验签通过的请求，响应带平台签名头 `X-Timestamp`、`X-Nonce`、`X-Signature`；验签前失败的响应不签名。平台签名失败（BASE-13 规则 8）时改为返回 500 / `10003`，该响应不签名，打 ERROR 日志（不含密钥）；商户按 `10003` 原参数重试，由幂等键保证不重复处理。
-4. 错误码按 `docs/03-conventions.md` §5.2 映射 HTTP 状态；`10003` 只返回通用消息和 request_id。
+3. 统一响应：`{"code": 0, "msg": "ok", "request_id": "...", "data": {...}}`；响应头 `X-Request-Id`；验签通过的请求，响应带平台签名头 `X-Timestamp`、`X-Nonce`、`X-Signature`；验签前失败的响应不签名。平台签名失败（BASE-13 规则 8）时改为返回 500 / `10003`，该响应不签名，打 ERROR 日志（不含密钥）；商户按 `10003` 原参数重试，由幂等键保证不重复处理。`X-Request-Id` 与 body 的 `request_id` 由服务端生成 32 位小写十六进制，忽略客户端传入的同名头。
+4. 错误码按 `docs/03-conventions.md` §5.2 映射 HTTP 状态；`10003` 只返回通用消息和 request_id。未知路径返回 404 / `10002`（`msg` 为 `not found`，`data` 为 `{}`），不签名。
 5. Kitex 客户端：连接超时 100ms，调用超时 1 秒；`Pay`、`ClosePayment`、`CreateRefund` 含渠道调用，调用超时 5 秒；`CreateTransfer` 调用超时 3 秒（与 §5.4.1 一致）；网关不重试写请求。
 
 验收：
 
-- [ ] handler panic 返回 500 / `10003`，进程不退出。
-- [ ] 超过 64KB 的请求被拒绝。
-- [ ] 成功响应可用 paycli 验证签名。
+- [x] handler panic 返回 500 / `10003`，进程不退出。
+- [x] 超过 64KB 的请求被拒绝。
+- [x] 成功响应可用 paycli 验证签名。
 
 #### GW-02 商户 API 路由（支付与余额）
 
@@ -3161,3 +3161,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-01 | v3.0 | OPS-01：`pkg/server` 在管理端口提供 `/healthz` 与 `/readyz`。数据库必检，检查可注册；Redis、Kafka 只留注册口，本次不连接，也不因此失败。SIGTERM 后 `/readyz` 立即 503，停止新请求，在途等待上限默认 10 秒且可注入，再刷新已注册生产者（本次为空）并关闭连接。account 沿用两个分片各自 1 秒的 Ping。端口固定为 gateway 6060、payment 6061、account 6062、recon 6063、channel-mock 6064；本次进程内监听的是 account、payment、channel-mock。compose 六个应用服务 `stop_grace_period: 15s`，不把 profile `apps` 并入 `make up`，A1 仍不关闭。不新增错误码，不改表，不改商户接口 |
 | 2026-11-01 | v3.0 | OPS-05：`net/http/pprof` 只注册在管理端口的私有 mux 上，不交给业务端口。channel-mock 业务端口访问 `/debug/pprof/` 为 404；payment、account 的业务端口是 Kitex，不另挂 HTTP。管理端口可采集 30 秒 CPU profile。`WriteTimeout` 改为 45 秒，`ReadHeaderTimeout` 仍是 1 秒。进程仍听 `:606x`，宿主机发布仍是 `127.0.0.1`。`/metrics` 仍不提供。不新增错误码，不改表，不改商户接口 |
 | 2026-11-01 | v3.0 | TL-01：paycli 用环境变量或参数调用商户接口和管理接口。商户请求经 `pkg/sign` 签名，响应按 §3.3 验签；管理响应不签名。验收用 httptest 假服务端，不连真网关。经网关的完整流程仍是 GW-09。新增可选配置 `PAYCLI_GATEWAY_URL`、`PAYCLI_APP_ID`、`PAYCLI_APP_SECRET`、`PAYCLI_ADMIN_TOKEN`，加载时允许为空。BASE-09 中“paycli 结构体为空”的说法由本功能点取代。不新增错误码，不改表，不改服务端契约 |
+| 2026-11-01 | v3.0 | GW-01：两个 Hertz 实例听 `:8080`（商户 API 与渠道回调）和 `:8090`（管理接口），不写成 `127.0.0.1`，这次不听 `:6060`，不改 compose。请求体超过 65536 字节返回 HTTP 413 / `10001`，不签名；恰好 65536 字节放行。handler panic 返回 500 / `10003`，进程不退出。`request_id` 由服务端生成 32 位小写十六进制，忽略客户端 `X-Request-Id`。未知路径返回 404 / `10002`，不签名。时间窗口、验签、限流、nonce 只占位。生产 Register 没有 `/v1/balance`；paycli 验签只走测试里临时加上的路由。Kitex 客户端连接 100ms，默认调用 1 秒；`Pay`、`ClosePayment`、`CreateRefund` 5 秒，`CreateTransfer` 3 秒，`RunBatch`、`CheckBalance` 120 秒，由 `RPCTimeout` 在调用时使用，客户端默认仍是 1 秒，GW-01 没有 HTTP 路由调用它们。地址写死 `payment:8881`、`account:8882`、`recon:8883`，不重试。不新增错误码，不改 IDL，不改表。 |
