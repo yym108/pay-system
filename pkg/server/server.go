@@ -1,4 +1,4 @@
-// Package server 在管理端口提供存活与就绪检查，并按固定顺序排空进程。
+// Package server 在管理端口提供存活与就绪检查、pprof，并按固定顺序排空进程。
 // Redis 与 Kafka 的检查由以后的功能点注册。没有注册时，/readyz 不因此失败。
 package server
 
@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"sync"
@@ -23,6 +24,8 @@ const (
 	DefaultDrainTimeout = 10 * time.Second
 	// CheckTimeout 是单项依赖检查的上限。account 的两个分片串行 Ping，注册时单独放宽。
 	CheckTimeout = time.Second
+	// profileWriteTimeout 是管理端口写出响应的上限，让 30 秒 CPU profile 能写完。
+	profileWriteTimeout = 45 * time.Second
 
 	// 管理端口与需求 §2.2 一致。进程监听所有接口，宿主机只把这些端口绑到 127.0.0.1。
 	// 绑到 127.0.0.1 时，以后容器端口发布连的是容器网卡，探活会失败。
@@ -178,7 +181,7 @@ func (s *Server) Run(ctx context.Context) error {
 	httpSrv := &http.Server{
 		Handler:           s.handler(),
 		ReadHeaderTimeout: time.Second,
-		WriteTimeout:      3 * time.Second,
+		WriteTimeout:      profileWriteTimeout,
 	}
 	adminDone := make(chan struct{})
 	var adminErr error
@@ -327,6 +330,12 @@ func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.healthz)
 	mux.HandleFunc("GET /readyz", s.readyz)
+	// net/http/pprof 的 init 把相同路径注册到 DefaultServeMux。真正对外的是这个 mux。
+	mux.HandleFunc("/debug/pprof/", pprof.Index)
+	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 	return mux
 }
 

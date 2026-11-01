@@ -423,7 +423,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | OPS-02 | 链路追踪 | P0 | M5 | GW-01、GW-02、GW-06、ACC-11、MQ-03、MQ-04 | TODO |
 | OPS-03 | 业务与运行指标 | P0 | M5 | OPS-01、GW-02、GW-06、MQ-04 | TODO |
 | OPS-04 | 监控面板与告警规则 | P1 | — | — | CUT |
-| OPS-05 | pprof 与管理端口 | P0 | M3 | OPS-01 | TODO |
+| OPS-05 | pprof 与管理端口 | P0 | M3 | OPS-01 | DONE |
 | OPT-01 | 分阶段耗时埋点 | P0 | M5 | OPS-02、OPS-03、GW-02、GW-06、GW-09、MQ-02、MQ-04、REF-02、TRF-02、TRF-03 | TODO |
 | OPT-02 | 批量记账合并提交 | P0 | M7 | MQ-04、QA-02、BASE-15 | TODO |
 | OPT-03 | 热点平台账户子账户拆分 | P0 | M7 | ACC-03、QA-02 | TODO |
@@ -2569,9 +2569,11 @@ ACC-10 只在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（
 
 规则：`net/http/pprof` 只注册在管理端口，与业务端口分离；宿主机只绑定 `127.0.0.1`。
 
+进程仍监听 `:606x`（该进程网络里的所有接口），不改为 `127.0.0.1`。宿主机端口发布仍是 compose 里已有的 `127.0.0.1`。payment（:8881）、account（:8882）的业务端口是 Kitex，不提供 HTTP `/debug/pprof/`。channel-mock 业务端口 :9080 访问该路径返回 404。`/metrics` 仍由 OPS-03 提供，本功能点不注册。管理端口 `WriteTimeout` 为 45 秒，以便写出 30 秒 CPU profile；`ReadHeaderTimeout` 仍是 1 秒。
+
 验收：
 
-- [ ] 业务端口访问 `/debug/pprof/` 返回 404；管理端口可采集 30 秒 CPU profile。
+- [x] 业务端口访问 `/debug/pprof/` 返回 404；管理端口可采集 30 秒 CPU profile。
 
 ### 4.12 性能优化（OPT）
 
@@ -3157,3 +3159,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-01 | v3.0 | PAY-06：没有新错误码。PAYING 必须先等渠道确认关闭，不能在渠道返回之前把订单改成 CLOSED。本地还没有渠道流水号时先查单，查无此单返回 10004，不插入渠道占位 |
 | 2026-11-01 | v3.0 | PAY-08：直接读 `payment_order`，不缓存，不写。他人订单与不存在都是已有的 `30001`。`pay_no` 与 `out_trade_no` 二选一不合法是已有的 `10001`。不新增错误码 |
 | 2026-11-01 | v3.0 | OPS-01：`pkg/server` 在管理端口提供 `/healthz` 与 `/readyz`。数据库必检，检查可注册；Redis、Kafka 只留注册口，本次不连接，也不因此失败。SIGTERM 后 `/readyz` 立即 503，停止新请求，在途等待上限默认 10 秒且可注入，再刷新已注册生产者（本次为空）并关闭连接。account 沿用两个分片各自 1 秒的 Ping。端口固定为 gateway 6060、payment 6061、account 6062、recon 6063、channel-mock 6064；本次进程内监听的是 account、payment、channel-mock。compose 六个应用服务 `stop_grace_period: 15s`，不把 profile `apps` 并入 `make up`，A1 仍不关闭。不新增错误码，不改表，不改商户接口 |
+| 2026-11-01 | v3.0 | OPS-05：`net/http/pprof` 只注册在管理端口的私有 mux 上，不交给业务端口。channel-mock 业务端口访问 `/debug/pprof/` 为 404；payment、account 的业务端口是 Kitex，不另挂 HTTP。管理端口可采集 30 秒 CPU profile。`WriteTimeout` 改为 45 秒，`ReadHeaderTimeout` 仍是 1 秒。进程仍听 `:606x`，宿主机发布仍是 `127.0.0.1`。`/metrics` 仍不提供。不新增错误码，不改表，不改商户接口 |

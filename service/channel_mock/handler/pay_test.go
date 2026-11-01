@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -501,6 +502,49 @@ func TestServeHandlesRequestsAndStops(t *testing.T) {
 	_ = resp.Body.Close()
 	http.DefaultClient.CloseIdleConnections()
 	if resp.StatusCode != http.StatusOK || resp.Header.Get(sign.HeaderMockSignature) == "" {
+		t.Fatalf("status = %d", resp.StatusCode)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Serve = %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("Serve did not return after cancel")
+	}
+}
+
+// OPS-05 验收：业务端口访问 /debug/pprof/ 返回 404
+func TestBusinessPortPprofNotFound(t *testing.T) {
+	addr := freePort(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- Serve(ctx, addr, New(&fakePayer{}, []byte(testKey), testClock())) }()
+
+	var resp *http.Response
+	timeout := time.After(5 * time.Second)
+	for resp == nil {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+addr+"/debug/pprof/", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp, err = http.DefaultClient.Do(req)
+		if err != nil {
+			select {
+			case <-timeout:
+				t.Fatalf("server not reachable: %v", err)
+			case <-time.After(20 * time.Millisecond):
+			}
+			continue
+		}
+		break
+	}
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	http.DefaultClient.CloseIdleConnections()
+	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status = %d", resp.StatusCode)
 	}
 

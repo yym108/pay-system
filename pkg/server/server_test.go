@@ -6,7 +6,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -225,11 +227,11 @@ func TestReadyzFollowsDatabase(t *testing.T) {
 	if status != http.StatusNotFound {
 		t.Fatalf("metrics status = %d", status)
 	}
-	status, pprof := getOnce(t, base+"/debug/pprof/")
-	if status != http.StatusNotFound {
-		t.Fatalf("pprof status = %d body = %q", status, pprof)
+	status, pprofBody := getOnce(t, base+"/debug/pprof/")
+	if status != http.StatusOK {
+		t.Fatalf("pprof status = %d body = %q", status, pprofBody)
 	}
-	if containsSecret(metrics) || containsSecret(pprof) {
+	if containsSecret(metrics) || containsSecret(pprofBody) {
 		t.Fatal("unexpected body leaked the database target")
 	}
 
@@ -243,6 +245,75 @@ func TestReadyzFollowsDatabase(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("server did not exit")
+	}
+}
+
+// OPS-05 验收：管理端口可采集 30 秒 CPU profile
+func TestAdminPortCPUProfile(t *testing.T) {
+	adminLn := listenLocal(t)
+	signals := make(chan os.Signal, 1)
+	srv := New(Config{
+		Listener:     adminLn,
+		DrainTimeout: 50 * time.Millisecond,
+		Signals:      signals,
+		DB:           func(context.Context) error { return nil },
+	})
+	runErr := make(chan error, 1)
+	go func() { runErr <- srv.Run(context.Background()) }()
+	base := "http://" + adminLn.Addr().String()
+	waitGET(t, base+"/healthz", http.StatusOK, "ok", time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, base+"/debug/pprof/profile?seconds=30", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || len(body) < 2 || body[0] != 0x1f || body[1] != 0x8b {
+		t.Fatalf("profile status = %d len = %d", resp.StatusCode, len(body))
+	}
+	http.DefaultClient.CloseIdleConnections()
+
+	signals <- syscall.SIGTERM
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatalf("Run = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not exit")
+	}
+}
+
+func TestPprofSymbolAcceptsPost(t *testing.T) {
+	srv := New(Config{DrainTimeout: time.Millisecond})
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodPost, "/debug/pprof/symbol", strings.NewReader("0+"))
+	rec := httptest.NewRecorder()
+	srv.handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d body = %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestPprofNotOnOtherMux(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/only-this", func(w http.ResponseWriter, _ *http.Request) {
+		writeText(w, http.StatusOK, "ok")
+	})
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/debug/pprof/", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d body = %q", rec.Code, rec.Body.String())
 	}
 }
 

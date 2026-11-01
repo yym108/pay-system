@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 3.2.0 |
+| 文档版本 | 3.3.0 |
 | API 版本 | v1（路径前缀 `/v1`） |
 | 最后修改 | 2026-11-01 |
 | 状态 | 设计基线，实现须与本文一致 |
@@ -66,6 +66,7 @@
 | 3.1.7 | 2026-11-01 | PAYING 且本地还没有渠道流水号时先查单。查无此单返回已有 `10004`，不调用关单，不插入渠道 amount 0 占位。查到已有行（含 PROCESSING）后再关单。已有 `channel_txn_no` 时仍直接关单。不新增错误码，不改 IDL | §4.3、§10.2 | PAY-06 |
 | 3.1.8 | 2026-11-01 | `QueryPayment` 已实现。直接读 `payment_order`，不缓存，不写。他人订单与不存在都是已有的 `30001`。`pay_no` 与 `out_trade_no` 二选一不合法是已有的 `10001`，不进业务错误列。删去 `QueryPayment` 仍返回 `10003` 的说法。其余未实现方法仍返回 `10003`。不新增错误码，不改 IDL。服务端超时仍是 2 秒，`Pay` 仍是 5 秒 | §1、§4.4、§10.2 | PAY-08 |
 | 3.2.0 | 2026-11-01 | 登记管理端口上的进程探针 `GET /healthz`、`GET /readyz`。这不是商户 API，不签名，不使用错误码。不改商户 HTTP，不改 IDL。§9.8 的渠道管理接口仍未实现 | §1、§9.8、§12 | OPS-01 |
+| 3.3.0 | 2026-11-01 | 管理端口提供 `/debug/pprof/` 及 cmdline、profile、symbol、trace。这不是商户 API。`/metrics` 仍是 404。`WriteTimeout` 改为 45 秒，以便写出 30 秒 CPU profile；`ReadHeaderTimeout` 仍是 1 秒。进程仍听 `:606x`，不改为 `127.0.0.1`。payment、account 的业务端口是 Kitex，不提供 HTTP `/debug/pprof/`。channel-mock :9080 对该路径返回 404。不改商户 HTTP，不改 IDL，不新增错误码。§9.8 的渠道管理接口仍未实现 | §1、§9.8、§12 | OPS-05 |
 
 ## 1. 接口总览
 
@@ -78,7 +79,7 @@
 | 模拟渠道 API | channel-mock :9080；管理 :6064 | 渠道签名；管理端口不鉴权（仅 127.0.0.1） | payment、recon、测试 |
 | 内部 RPC | account :8882、payment :8881、recon :8883 | 无（内网） | gateway、payment、recon |
 | 事件 | Kafka | — | account（支付、退款事件）、payment（全部事件，用于商户通知） |
-| 进程探针 | 管理端口 gateway :6060、payment :6061、account :6062、recon :6063、channel-mock :6064 | 不签名。不是商户 API | 本机探活 |
+| 进程探针 | 管理端口 gateway :6060、payment :6061、account :6062、recon :6063、channel-mock :6064 | 不签名。不是商户 API | 本机探活、pprof |
 
 接口清单（“RPC”列即网关路由与 RPC 的映射。商户 API 的网关路由：支付单与余额 §4.1–§4.4、§4.7 属 GW-02，退款与转账 §4.5、§4.6、§4.8、§4.9 属 GW-09）：
 
@@ -104,6 +105,7 @@
 | AccountService / PaymentService / ReconService | §10 | — | 见各方法 | 1.0.0 | 2026-10-27 |
 | 事件 `payment.succeeded`、`refund.succeeded`、`refund.failed`、`transfer.succeeded`、`transfer.failed` | §11 | — | MQ-01、MQ-04、NTF-01 | 1.0.0 | 2026-10-28 |
 | `GET /healthz`、`GET /readyz` 进程探针 | §12 | — | OPS-01 | 3.2.0 | 2026-11-01 |
+| `GET /debug/pprof/` 及 cmdline、profile、symbol、trace | §12 | — | OPS-05 | 3.3.0 | 2026-11-01 |
 
 ## 2. 通用约定
 
@@ -878,7 +880,7 @@ DUP_NOTIFY（CH-06）不走上一段的 5 次和 5s、15s、30s、60s。交易�
 
 ### 9.8 模拟渠道管理接口
 
-地址 `http://127.0.0.1:6064`，仅供测试与演练。同端口的 `GET /healthz`、`GET /readyz` 见 §12，不是下面两个管理接口。下面两个接口本次不实现。
+地址 `http://127.0.0.1:6064`，仅供测试与演练。同端口的 `GET /healthz`、`GET /readyz` 与 pprof 见 §12，不是下面两个管理接口。下面两个接口本次不实现，和 pprof 不是同一件事。
 
 `GET /mockpay/admin/config`、`PUT /mockpay/admin/config` · CH-07（P1）
 
@@ -1051,7 +1053,7 @@ account 不消费转账事件：转账的两个分支由 payment 同步驱动（
 
 ## 12. 进程探针
 
-这些路径在管理端口上，不是商户 API。不签名，不使用 §2 的 JSON 信封，也不使用错误码。`/metrics` 与 pprof 不属于本节。
+这些路径在管理端口上，不是商户 API。不签名，不使用 §2 的 JSON 信封，也不使用错误码。`/metrics` 仍不属于本节，访问为 404（OPS-03）。
 
 | 进程 | 管理端口 | 本次是否监听 |
 |---|---|---|
@@ -1062,13 +1064,22 @@ account 不消费转账事件：转账的两个分支由 payment 同步驱动（
 | channel-mock | 6064 | 是。与 §9.8 共用该端口；§9.8 的路径本次不提供 |
 | merchant-demo | 无 | 不提供管理端口 |
 
-进程监听 `:606x`，也就是该进程网络里的所有接口。除 8080、9080、9100 外，宿主机端口仍只绑定 `127.0.0.1`。不新增环境变量。把进程绑到 `127.0.0.1` 会让以后的容器端口发布失败：发布连的是容器网卡，不是容器里的回环地址。
+进程仍监听 `:606x`，也就是该进程网络里的所有接口，不改为 `127.0.0.1`。除 8080、9080、9100 外，宿主机端口仍只绑定 `127.0.0.1`。不新增环境变量。把进程绑到 `127.0.0.1` 会让以后的容器端口发布失败：发布连的是容器网卡，不是容器里的回环地址。
+
+管理 HTTP 的 `ReadHeaderTimeout` 是 1 秒，只限制读请求头。`WriteTimeout` 是 45 秒，是为了 30 秒 CPU profile 能写完。`/healthz` 和 `/readyz` 仍是马上返回。
 
 | 方法与路径 | 结果 | 正文 |
 |---|---|---|
 | `GET /healthz` | 进程还在服务这个端口时为 200，包括正在退出 | `ok` |
 | `GET /readyz` | 已注册的依赖全部通过时 200。数据库必检。任一项失败、正在退出，或没有数据库检查时 503 | 成功 `ok`，失败 `unavailable` |
-| 其他路径，含 `/metrics`、`/debug/pprof/` | 404 | — |
+| `GET /debug/pprof/` | 200。索引页，以及其下由索引分发的 heap、goroutine 等 | HTML，或对应 profile |
+| `GET /debug/pprof/cmdline` | 200 | 命令行，参数以 NUL 分隔 |
+| `GET /debug/pprof/profile` | 200。`seconds` 默认 30，采集这段 CPU profile | gzip（pprof 格式） |
+| `/debug/pprof/symbol` | GET 与 POST 都接受。`go tool pprof` 会 POST | 地址到符号 |
+| `GET /debug/pprof/trace` | 200 | 执行跟踪 |
+| 其他路径，含 `/metrics` | 404 | — |
+
+payment 的业务端口是 Kitex :8881，account 的业务端口是 Kitex :8882。这两个业务端口不提供 HTTP `/debug/pprof/`，也不在 RPC 端口上另挂 HTTP。channel-mock 的业务端口 :9080 对 `GET /debug/pprof/` 返回 404。pprof 只在上表这些正在监听的管理端口上。§9.8 的渠道管理路径仍未实现，和 pprof 不是同一件事。
 
 失败正文是固定的 `unavailable`，不写 DSN、地址或口令。单项检查超时 1 秒。account 的数据库检查是两个分片按顺序各 Ping 1 秒，外层等待 2 秒。gateway 的 Redis、payment 与 account 的 Kafka 可以以后注册；本次没有注册，所以不会因为它们不存在而返回 503。
 
