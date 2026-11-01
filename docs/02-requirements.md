@@ -419,7 +419,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | REC-06 | 差错自动处理 | P0 | M6 | REC-03、REC-05、PAY-09、MQ-05 | TODO |
 | REC-07 | 差错人工处理与挂账 | P0 | — | — | CUT |
 | REC-08 | 对账报告 | P0 | M6 | REC-03、REC-05 | TODO |
-| OPS-01 | 健康检查与优雅退出 | P0 | M3 | BASE-08、BASE-09 | TODO |
+| OPS-01 | 健康检查与优雅退出 | P0 | M3 | BASE-08、BASE-09 | DONE |
 | OPS-02 | 链路追踪 | P0 | M5 | GW-01、GW-02、GW-06、ACC-11、MQ-03、MQ-04 | TODO |
 | OPS-03 | 业务与运行指标 | P0 | M5 | OPS-01、GW-02、GW-06、MQ-04 | TODO |
 | OPS-04 | 监控面板与告警规则 | P1 | — | — | CUT |
@@ -2501,9 +2501,9 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 
 验收：
 
-- [ ] 收到 SIGTERM 后 `/readyz` 立即返回 503；用阻塞 1 秒的测试 handler 构造的在途请求正常完成并返回 200；新连接被拒绝；进程在 10 秒内退出。
-- [ ] 在途请求超过 10 秒未完成时，进程在 10 秒上限到达后退出，不无限等待。
-- [ ] 数据库不可用时 `/readyz` 返回 503、`/healthz` 仍为 200；数据库恢复后 `/readyz` 返回 200。
+- [x] 收到 SIGTERM 后 `/readyz` 立即返回 503；用阻塞 1 秒的测试 handler 构造的在途请求正常完成并返回 200；新连接被拒绝；进程在 10 秒内退出。
+- [x] 在途请求超过 10 秒未完成时，进程在 10 秒上限到达后退出，不无限等待。
+- [x] 数据库不可用时 `/readyz` 返回 503、`/healthz` 仍为 200；数据库恢复后 `/readyz` 返回 200。
 
 原验收“压测进行中 `docker stop` payment”需要 QA-02 的压测脚本，移到 QA-01。
 
@@ -3156,3 +3156,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-01 | v3.0 | PAY-04：`ApplyPayResult` 用结构体入参，一次事务按渠道流水 CAS、订单 CAS、仅 SUCCESS 调用已有 `outbox.Add` 的顺序推进。不新增错误码。`callback.after_commit` 仍留给 GW-06，本次不调用 `fault.Point`。文字澄清：金额比较先于同一终态和不同终态，已终态但金额不符仍是 `50002`；CLOSED 传了渠道完成时间则 `closed_at` 用该时间，没传则用本次注入时钟截到毫秒，`channel_finished_at` 保持空；SUCCESS 未传完成时间、未知 `source` 在写库前返回 `10001`。不改资金流向 |
 | 2026-11-01 | v3.0 | PAY-06：没有新错误码。PAYING 必须先等渠道确认关闭，不能在渠道返回之前把订单改成 CLOSED。本地还没有渠道流水号时先查单，查无此单返回 10004，不插入渠道占位 |
 | 2026-11-01 | v3.0 | PAY-08：直接读 `payment_order`，不缓存，不写。他人订单与不存在都是已有的 `30001`。`pay_no` 与 `out_trade_no` 二选一不合法是已有的 `10001`。不新增错误码 |
+| 2026-11-01 | v3.0 | OPS-01：`pkg/server` 在管理端口提供 `/healthz` 与 `/readyz`。数据库必检，检查可注册；Redis、Kafka 只留注册口，本次不连接，也不因此失败。SIGTERM 后 `/readyz` 立即 503，停止新请求，在途等待上限默认 10 秒且可注入，再刷新已注册生产者（本次为空）并关闭连接。account 沿用两个分片各自 1 秒的 Ping。端口固定为 gateway 6060、payment 6061、account 6062、recon 6063、channel-mock 6064；本次进程内监听的是 account、payment、channel-mock。compose 六个应用服务 `stop_grace_period: 15s`，不把 profile `apps` 并入 `make up`，A1 仍不关闭。不新增错误码，不改表，不改商户接口 |

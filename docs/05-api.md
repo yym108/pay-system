@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 3.1.8 |
+| 文档版本 | 3.2.0 |
 | API 版本 | v1（路径前缀 `/v1`） |
 | 最后修改 | 2026-11-01 |
 | 状态 | 设计基线，实现须与本文一致 |
@@ -65,6 +65,7 @@
 | 3.1.6 | 2026-11-01 | `ClosePayment` 进入 biz。请求为 nil 或 `pay_no` 为空返回 `10001`。INIT 本地 CAS 为 CLOSED；CLOSED 幂等；SUCCESS / FAILED 把已有 `30003` 放进 `biz_code` 并携带订单。PAYING 必须先等渠道关单：`OK` / `CLOSED` 经 `ApplyPayResult` 写成 CLOSED；`ALREADY_PAID` 再查单，只有查得 SUCCESS 且带 `finished_at` 才推进为 SUCCESS 并返回 `30003`；`OK` / `FAILED` 推进为 FAILED（`fail_code = CHANNEL_FAILED`）并返回 `30003`；调用失败、查单失败或未知结果返回 `10004`，订单保持 PAYING。`ApplyPayResult` 返回已有 `50002` 时走 `BizStatusError`，不带订单，不新增 errno。服务端处理超时仍为 2 秒。不改 IDL，不新增错误码，不新增环境变量 | §1、§4.3、§10.2 | PAY-06 |
 | 3.1.7 | 2026-11-01 | PAYING 且本地还没有渠道流水号时先查单。查无此单返回已有 `10004`，不调用关单，不插入渠道 amount 0 占位。查到已有行（含 PROCESSING）后再关单。已有 `channel_txn_no` 时仍直接关单。不新增错误码，不改 IDL | §4.3、§10.2 | PAY-06 |
 | 3.1.8 | 2026-11-01 | `QueryPayment` 已实现。直接读 `payment_order`，不缓存，不写。他人订单与不存在都是已有的 `30001`。`pay_no` 与 `out_trade_no` 二选一不合法是已有的 `10001`，不进业务错误列。删去 `QueryPayment` 仍返回 `10003` 的说法。其余未实现方法仍返回 `10003`。不新增错误码，不改 IDL。服务端超时仍是 2 秒，`Pay` 仍是 5 秒 | §1、§4.4、§10.2 | PAY-08 |
+| 3.2.0 | 2026-11-01 | 登记管理端口上的进程探针 `GET /healthz`、`GET /readyz`。这不是商户 API，不签名，不使用错误码。不改商户 HTTP，不改 IDL。§9.8 的渠道管理接口仍未实现 | §1、§9.8、§12 | OPS-01 |
 
 ## 1. 接口总览
 
@@ -77,6 +78,7 @@
 | 模拟渠道 API | channel-mock :9080；管理 :6064 | 渠道签名；管理端口不鉴权（仅 127.0.0.1） | payment、recon、测试 |
 | 内部 RPC | account :8882、payment :8881、recon :8883 | 无（内网） | gateway、payment、recon |
 | 事件 | Kafka | — | account（支付、退款事件）、payment（全部事件，用于商户通知） |
+| 进程探针 | 管理端口 gateway :6060、payment :6061、account :6062、recon :6063、channel-mock :6064 | 不签名。不是商户 API | 本机探活 |
 
 接口清单（“RPC”列即网关路由与 RPC 的映射。商户 API 的网关路由：支付单与余额 §4.1–§4.4、§4.7 属 GW-02，退款与转账 §4.5、§4.6、§4.8、§4.9 属 GW-09）：
 
@@ -101,6 +103,7 @@
 | 模拟渠道管理 `config` / `bill-inject` | §9.8 | — | CH-07、CH-09 | 1.0.0 | 2026-10-12 |
 | AccountService / PaymentService / ReconService | §10 | — | 见各方法 | 1.0.0 | 2026-10-27 |
 | 事件 `payment.succeeded`、`refund.succeeded`、`refund.failed`、`transfer.succeeded`、`transfer.failed` | §11 | — | MQ-01、MQ-04、NTF-01 | 1.0.0 | 2026-10-28 |
+| `GET /healthz`、`GET /readyz` 进程探针 | §12 | — | OPS-01 | 3.2.0 | 2026-11-01 |
 
 ## 2. 通用约定
 
@@ -875,7 +878,7 @@ DUP_NOTIFY（CH-06）不走上一段的 5 次和 5s、15s、30s、60s。交易�
 
 ### 9.8 模拟渠道管理接口
 
-地址 `http://127.0.0.1:6064`，仅供测试与演练。
+地址 `http://127.0.0.1:6064`，仅供测试与演练。同端口的 `GET /healthz`、`GET /readyz` 见 §12，不是下面两个管理接口。下面两个接口本次不实现。
 
 `GET /mockpay/admin/config`、`PUT /mockpay/admin/config` · CH-07（P1）
 
@@ -1045,3 +1048,28 @@ account 不消费转账事件：转账的两个分支由 payment 同步驱动（
 - 投递器先在短事务里领取事件并写入租约（`next_retry_at` = 领取时刻 + 30 秒），提交后在事务外发送，再按租约值 CAS 回写结果（MQ-02）。发送成功后、回写前崩溃，或发送超过租约被另一实例重新领取，都会重复投递，由消费端幂等吸收。
 - 消费端以业务键幂等：`ledger_txn.uk_biz`、`account_freeze.uk_biz`（均为分片内唯一）、`merchant_notify.uk_event_id`。
 - 事件结构只增字段；消费端忽略未知字段；不兼容变更时提升 `version` 并让消费端同时支持新旧版本。
+
+## 12. 进程探针
+
+这些路径在管理端口上，不是商户 API。不签名，不使用 §2 的 JSON 信封，也不使用错误码。`/metrics` 与 pprof 不属于本节。
+
+| 进程 | 管理端口 | 本次是否监听 |
+|---|---|---|
+| gateway | 6060 | 否。进程仍在打印配置后退出，端口常量留给以后的长驻入口 |
+| payment | 6061 | 是 |
+| account | 6062 | 是 |
+| recon | 6063 | 否。与 gateway 相同，本次不监听 |
+| channel-mock | 6064 | 是。与 §9.8 共用该端口；§9.8 的路径本次不提供 |
+| merchant-demo | 无 | 不提供管理端口 |
+
+进程监听 `:606x`，也就是该进程网络里的所有接口。除 8080、9080、9100 外，宿主机端口仍只绑定 `127.0.0.1`。不新增环境变量。把进程绑到 `127.0.0.1` 会让以后的容器端口发布失败：发布连的是容器网卡，不是容器里的回环地址。
+
+| 方法与路径 | 结果 | 正文 |
+|---|---|---|
+| `GET /healthz` | 进程还在服务这个端口时为 200，包括正在退出 | `ok` |
+| `GET /readyz` | 已注册的依赖全部通过时 200。数据库必检。任一项失败、正在退出，或没有数据库检查时 503 | 成功 `ok`，失败 `unavailable` |
+| 其他路径，含 `/metrics`、`/debug/pprof/` | 404 | — |
+
+失败正文是固定的 `unavailable`，不写 DSN、地址或口令。单项检查超时 1 秒。account 的数据库检查是两个分片按顺序各 Ping 1 秒，外层等待 2 秒。gateway 的 Redis、payment 与 account 的 Kafka 可以以后注册；本次没有注册，所以不会因为它们不存在而返回 503。
+
+收到 SIGTERM 或 SIGINT：`/readyz` 立刻 503，停止接收新的业务请求和新消息，等待在途请求、消息处理和任务批次，默认上限 10 秒。到点就继续，不等待尚未结束的请求。然后刷新已注册的生产者。本次没有生产者，这一步为空。最后关闭连接和管理端口。`/healthz` 在管理端口关闭前仍是 200。

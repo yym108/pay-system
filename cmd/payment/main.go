@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/yym108/pay-system/pkg/clock"
@@ -15,9 +16,14 @@ import (
 	"github.com/yym108/pay-system/pkg/idgen"
 	"github.com/yym108/pay-system/pkg/logx"
 	"github.com/yym108/pay-system/pkg/secretbox"
+	"github.com/yym108/pay-system/pkg/server"
 	"github.com/yym108/pay-system/service/payment/biz"
 	"github.com/yym108/pay-system/service/payment/handler"
 )
+
+type closeFunc func() error
+
+func (f closeFunc) Close() error { return f() }
 
 // openDBTimeout 只限制启动时打开连接池。不进入业务调用。
 const openDBTimeout = 3 * time.Second
@@ -68,7 +74,13 @@ func serve(cfg config.Payment, logOut io.Writer) error {
 	if err != nil {
 		return errOpenDB
 	}
-	defer func() { _ = db.Close() }()
+	var closeOnce sync.Once
+	closeDB := func() error {
+		var cerr error
+		closeOnce.Do(func() { cerr = db.Close() })
+		return cerr
+	}
+	defer func() { _ = closeDB() }()
 	merchants := biz.NewMerchants(db, box, clock.Real{}, cfg.MerchantConfigCacheTTL)
 	ids, err := idgen.New(cfg.WorkerID, clock.Real{})
 	if err != nil {
@@ -85,6 +97,27 @@ func serve(cfg config.Payment, logOut io.Writer) error {
 	}
 	payments.UsePay(channelClient, payments, cfg.ChannelNotifyURL)
 	payments.UseClose(channelClient)
-	// 健康检查和 SIGTERM 排空是 OPS-01。这里只阻塞到 Kitex 收到信号。
-	return handler.Run(handler.New(biz.NewApp(merchants, payments)), handler.Config{})
+	exit := make(chan error, 1)
+	admin := server.New(server.Config{
+		Addr:         server.AddrPayment,
+		DrainTimeout: server.DefaultDrainTimeout,
+	})
+	admin.RequireDB(server.PingCheck(db), 0)
+	admin.RegisterCloser(closeFunc(closeDB))
+	admin.RegisterGroup(server.FuncGroup(
+		func() error {
+			return handler.Run(handler.New(biz.NewApp(merchants, payments)), handler.Config{
+				Exit:     exit,
+				ExitWait: server.DefaultDrainTimeout,
+			})
+		},
+		func(context.Context) error {
+			select {
+			case exit <- nil:
+			default:
+			}
+			return nil
+		},
+	))
+	return admin.Run(context.Background())
 }

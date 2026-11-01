@@ -192,3 +192,11 @@
 - `docker compose --project-directory` 设为仓库根之后，bind mount 相对仓库根，不是 compose 文件目录。第一次 `make up` 因此把 Prometheus 配置挂到了不存在的路径。
 - `docker compose ps` 模板里 Health 为空时，用空格分列会把 ExitCode 错位。`kafka-init` 已经成功创建 topic，等待脚本仍把它判失败。分隔符改成 `|`。
 - 本机 Docker 29.4.0 / darwin-arm64，镜像已在本地时，`make up` 到 mysql、redis、kafka、prometheus、jaeger 全部 healthy 用时 14 秒（2026-10-13，`go test -race -tags integration -run TestBASE02Stack -v`）。
+
+## OPS-01 健康检查与优雅退出
+
+- 管理端口进程内监听 `:606x`，不要写成 `127.0.0.1:606x`。compose 把宿主机端口绑在回环地址上，发布进容器时连的是容器网卡。进程若只听容器里的回环，探活连不上。merchant-demo 没有管理端口。
+- Kitex 自己的退出等待默认 5 秒，短于排空上限。生产把 `ExitWait` 设成 10 秒，并且由 `pkg/server` 独占 SIGTERM。两处同时 `signal.Notify` 会抢信号。
+- account 两个分片是串行 Ping，各 1 秒。外层如果只给这一项 1 秒，第二个分片会被提前取消。注册时这项给 2 秒，Ping 规则本身不改。
+- gateway 和 recon 的 `run` 打印完配置就返回，现有测试也这么断言。本次不在那里阻塞监听。6060 和 6063 只有常量。Redis、Kafka 和生产者也只留注册口。
+- A1 仍开着。profile `apps` 还是占位，没有并进 `make up`。`stop_grace_period: 15s` 只写在六个应用服务上。

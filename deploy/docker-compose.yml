@@ -221,6 +221,7 @@ services:
       WORKER_ID: "1"
     restart: "no"
     entrypoint: ["/bin/sh", "-c"]
+    stop_grace_period: 15s
     command: ["echo 'gateway placeholder: OPS-01 owns /healthz; not started by make up' >&2; exit 1"]
     ports:
       - "8080:8080"
@@ -236,6 +237,7 @@ services:
       WORKER_ID: "2"
     restart: "no"
     entrypoint: ["/bin/sh", "-c"]
+    stop_grace_period: 15s
     command: ["echo 'payment placeholder: OPS-01 owns /healthz; not started by make up' >&2; exit 1"]
     ports:
       - "127.0.0.1:8881:8881"
@@ -250,6 +252,7 @@ services:
       WORKER_ID: "3"
     restart: "no"
     entrypoint: ["/bin/sh", "-c"]
+    stop_grace_period: 15s
     command: ["echo 'account placeholder: OPS-01 owns /healthz; not started by make up' >&2; exit 1"]
     ports:
       - "127.0.0.1:8882:8882"
@@ -264,6 +267,7 @@ services:
       WORKER_ID: "4"
     restart: "no"
     entrypoint: ["/bin/sh", "-c"]
+    stop_grace_period: 15s
     command: ["echo 'recon placeholder: OPS-01 owns /healthz; not started by make up' >&2; exit 1"]
     ports:
       - "127.0.0.1:8883:8883"
@@ -278,6 +282,7 @@ services:
       WORKER_ID: "5"
     restart: "no"
     entrypoint: ["/bin/sh", "-c"]
+    stop_grace_period: 15s
     command: ["echo 'channel-mock placeholder: OPS-01 owns /healthz; not started by make up' >&2; exit 1"]
     ports:
       - "9080:9080"
@@ -292,6 +297,7 @@ services:
       WORKER_ID: "6"
     restart: "no"
     entrypoint: ["/bin/sh", "-c"]
+    stop_grace_period: 15s
     command: ["echo 'merchant-demo placeholder: OPS-01 owns /healthz; not started by make up' >&2; exit 1"]
     ports:
       - "9100:9100"

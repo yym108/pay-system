@@ -2,12 +2,16 @@ package dal
 
 import (
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"time"
 
 	"github.com/jmoiron/sqlx"
 )
+
+// errUnavailable 是就绪失败的固定文本，不含 ping 错误里的地址。
+var errUnavailable = errors.New("unavailable")
 
 const readyPingTimeout = time.Second
 
@@ -31,6 +35,14 @@ func ReadyHandler(p *Pools) http.Handler {
 		}
 		writeText(w, http.StatusOK, "ok")
 	})
+}
+
+// Ready 按 ReadyHandler 的顺序 Ping 两个分片。任一失败返回固定错误，不含地址。
+func (p *Pools) Ready(ctx context.Context) error {
+	if ready(ctx, p) {
+		return nil
+	}
+	return errUnavailable
 }
 
 func ready(ctx context.Context, p *Pools) bool {

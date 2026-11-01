@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/yym108/pay-system/pkg/clock"
@@ -14,10 +15,15 @@ import (
 	"github.com/yym108/pay-system/pkg/fault"
 	"github.com/yym108/pay-system/pkg/idgen"
 	"github.com/yym108/pay-system/pkg/logx"
+	"github.com/yym108/pay-system/pkg/server"
 	"github.com/yym108/pay-system/service/account/biz"
 	"github.com/yym108/pay-system/service/account/dal"
 	"github.com/yym108/pay-system/service/account/handler"
 )
+
+type closeFunc func() error
+
+func (f closeFunc) Close() error { return f() }
 
 // openDBTimeout 只限制启动时打开两个连接池。不进入业务调用。
 const openDBTimeout = 3 * time.Second
@@ -63,12 +69,40 @@ func serve(cfg config.Account, logOut io.Writer) error {
 	if err != nil {
 		return errOpenDB
 	}
-	defer func() { _ = pools.Close() }()
+	var closeOnce sync.Once
+	closePools := func() error {
+		var cerr error
+		closeOnce.Do(func() { cerr = pools.Close() })
+		return cerr
+	}
+	defer func() { _ = closePools() }()
 	ids, err := idgen.New(cfg.WorkerID, clock.Real{})
 	if err != nil {
 		return err
 	}
 	h := handler.New(biz.New(pools, ids, cfg.PlatformSubAccounts))
-	// 健康检查和 SIGTERM 排空是 OPS-01。这里只阻塞到 Kitex 收到信号。
-	return handler.Run(h, handler.Config{})
+	exit := make(chan error, 1)
+	admin := server.New(server.Config{
+		Addr:         server.AddrAccount,
+		DrainTimeout: server.DefaultDrainTimeout,
+	})
+	// 两个分片各 Ping 1 秒，外层给 2 秒，避免第二次被单项超时提前取消。
+	admin.RequireDB(pools.Ready, 2*server.CheckTimeout)
+	admin.RegisterCloser(closeFunc(closePools))
+	admin.RegisterGroup(server.FuncGroup(
+		func() error {
+			return handler.Run(h, handler.Config{
+				Exit:     exit,
+				ExitWait: server.DefaultDrainTimeout,
+			})
+		},
+		func(context.Context) error {
+			select {
+			case exit <- nil:
+			default:
+			}
+			return nil
+		},
+	))
+	return admin.Run(context.Background())
 }

@@ -7,8 +7,8 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/signal"
-	"syscall"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/yym108/pay-system/pkg/clock"
@@ -17,10 +17,15 @@ import (
 	"github.com/yym108/pay-system/pkg/fault"
 	"github.com/yym108/pay-system/pkg/idgen"
 	"github.com/yym108/pay-system/pkg/logx"
+	"github.com/yym108/pay-system/pkg/server"
 	"github.com/yym108/pay-system/service/channel_mock/biz"
 	"github.com/yym108/pay-system/service/channel_mock/dal"
 	"github.com/yym108/pay-system/service/channel_mock/handler"
 )
+
+type closeFunc func() error
+
+func (f closeFunc) Close() error { return f() }
 
 const (
 	// listenAddr 是 docs/05-api.md §9.1 的业务端口。
@@ -72,15 +77,26 @@ func serve(cfg config.ChannelMock, logOut io.Writer) error {
 	if err != nil {
 		return errOpenDB
 	}
-	defer func() { _ = db.Close() }()
+	var closeOnce sync.Once
+	closeDB := func() error {
+		var cerr error
+		closeOnce.Do(func() { cerr = db.Close() })
+		return cerr
+	}
+	defer func() { _ = closeDB() }()
 	clk := clock.Real{}
 	ids, err := idgen.New(cfg.WorkerID, clk)
 	if err != nil {
 		return err
 	}
-	// 先停调度（等正在写库的完成任务结束）再关连接池：defer 按后进先出执行。
+	// Run 没走到排空时，仍先停调度再关库。排空已经停过调度就不再等。
 	sched := biz.NewTimerScheduler(clk)
-	defer sched.Stop()
+	var schedStopped atomic.Bool
+	defer func() {
+		if !schedStopped.Load() {
+			sched.Stop()
+		}
+	}()
 	store := dal.New(db)
 	svc := biz.New(store, ids, clk, sched, biz.Options{
 		DelayMinMS: cfg.MockDelayMinMS,
@@ -98,8 +114,44 @@ func serve(cfg config.ChannelMock, logOut io.Writer) error {
 	}
 	slog.Info("mock txn schedule recovered", slog.Int("count", n))
 
-	// 健康检查和 SIGTERM 排空是 OPS-01。这里只阻塞到收到信号。
-	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
-	return handler.Serve(ctx, listenAddr, handler.New(svc, []byte(cfg.ChannelMockpayKey), clk))
+	serveCtx, cancelServe := context.WithCancel(context.Background())
+	defer cancelServe()
+	gate := make(chan struct{})
+	var gateOnce sync.Once
+	admin := server.New(server.Config{
+		Addr:         server.AddrChannelMock,
+		DrainTimeout: server.DefaultDrainTimeout,
+	})
+	admin.RequireDB(server.PingCheck(db), 0)
+	admin.RegisterCloser(closeFunc(closeDB))
+	admin.RegisterGroup(server.FuncGroup(
+		func() error {
+			return handler.Serve(serveCtx, listenAddr, handler.New(svc, []byte(cfg.ChannelMockpayKey), clk))
+		},
+		func(context.Context) error {
+			cancelServe()
+			return nil
+		},
+	))
+	admin.RegisterGroup(server.FuncGroup(
+		func() error {
+			<-gate
+			return nil
+		},
+		func(ctx context.Context) error {
+			schedStopped.Store(true)
+			done := make(chan struct{})
+			go func() {
+				sched.Stop()
+				close(done)
+			}()
+			select {
+			case <-done:
+			case <-ctx.Done():
+			}
+			gateOnce.Do(func() { close(gate) })
+			return nil
+		},
+	))
+	return admin.Run(context.Background())
 }

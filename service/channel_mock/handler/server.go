@@ -4,14 +4,15 @@ import (
 	"context"
 	"fmt"
 	"net"
-	"time"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/network/standard"
+
+	payserver "github.com/yym108/pay-system/pkg/server"
 )
 
-// exitWait 是优雅退出时等待在途请求的上限。健康检查与 SIGTERM 排空细节属于 OPS-01。
-const exitWait = 3 * time.Second
+// exitWait 与管理端口的默认排空上限相同。连接先结束时 Hertz 会提前返回。
+const exitWait = payserver.DefaultDrainTimeout
 
 // Serve 在 addr 上启动 HTTP 服务，阻塞到 ctx 取消（优雅退出，返回 nil）或服务出错（返回错误）。
 // 信号由调用方转成 ctx 取消，这里不注册信号。

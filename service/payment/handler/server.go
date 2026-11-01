@@ -26,8 +26,8 @@ const (
 // Config 是一次监听。Timeout 小于等于 0 时，Pay 用 PayServerTimeout，其他方法用 ServerTimeout。
 // Timeout 大于 0 时全部方法用这个值，测试可以把它设得很短。
 // Listener 非空时优先于 Addr，测试用它拿随机端口。
-// Exit 非空时替代 Kitex 的默认信号，测试用来停服务。生产留空，由 Kitex 在 SIGINT/SIGTERM 上返回。
-// 这不是 OPS-01 的 /readyz 与 10 秒排空。
+// Exit 非空时替代 Kitex 的默认信号。生产由 pkg/server 送入，避免两处同时接收 SIGTERM。
+// ExitWait 大于 0 时作为 Kitex 停服务的等待上限。0 保持框架默认值，已有测试不改变。
 type Config struct {
 	Addr     string
 	Listener net.Listener
@@ -36,6 +36,7 @@ type Config struct {
 	Metrics  Metrics
 	Access   AccessFunc
 	Exit     <-chan error
+	ExitWait time.Duration
 }
 
 // Run 启动 Kitex 并阻塞到退出。h 为 nil 时返回错误，不监听。
@@ -67,6 +68,9 @@ func Run(h *Handler, cfg Config) error {
 	if cfg.Exit != nil {
 		exit := cfg.Exit
 		opts = append(opts, server.WithExitSignal(func() <-chan error { return exit }))
+	}
+	if cfg.ExitWait > 0 {
+		opts = append(opts, server.WithExitWaitTime(cfg.ExitWait))
 	}
 	svr := paymentservice.NewServer(h, opts...)
 	return svr.Run()
