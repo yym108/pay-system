@@ -47,3 +47,4 @@
 | OPS-05 | pprof 与管理端口 | 基础设施 | `40792e8` | 2026-11-01 | [OPS-05-pprof.md](OPS-05-pprof.md) |
 | TL-01 | paycli | 基础设施 | `0f18bd6` | 2026-11-01 | [TL-01-paycli.md](TL-01-paycli.md) |
 | GW-01 | 网关骨架 | 基础设施 | `97b776d` | 2026-11-01 | [GW-01-gateway-skeleton.md](GW-01-gateway-skeleton.md) |
+| GW-03 | 商户验签 | 基础设施 | `86379b2` | 2026-11-01 | [GW-03-merchant-sign.md](GW-03-merchant-sign.md) |
