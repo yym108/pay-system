@@ -15,9 +15,10 @@ import (
 )
 
 // GW-01 验收 3：成功响应可用 paycli 验证签名。
+// GW-03 起 /v1 先验签。fake lookup 的 secret 与 testSecret 相同，handler 只 WriteOK。
 func TestGW01PayCLIVerifiesPlatformSignature(t *testing.T) {
 	clk := fixedClock()
-	h := gateway.NewMerchant(gateway.WithClock(clk), gateway.WithSignSecret([]byte(testSecret)))
+	h := gateway.NewMerchant(gateway.WithClock(clk), gateway.WithMerchantLookup(gw03PaycliLookup{}))
 	ctx, cancel := context.WithCancel(context.Background())
 	ln, err := gateway.Listen(ctx, ":0")
 	if err != nil {
@@ -27,7 +28,6 @@ func TestGW01PayCLIVerifiesPlatformSignature(t *testing.T) {
 	srv := gateway.NewEngine(ln)
 	h.Register(srv)
 	srv.GET("/v1/balance", func(_ context.Context, c *app.RequestContext) {
-		gateway.MarkVerified(c)
 		gateway.WriteOK(c, map[string]int64{"available": 0})
 	})
 	errCh := make(chan error, 1)
@@ -83,6 +83,16 @@ func TestGW01PayCLIVerifiesPlatformSignature(t *testing.T) {
 	if msg.Timestamp != sign.FormatTimestamp(clk.Now()) {
 		t.Fatalf("timestamp %s", msg.Timestamp)
 	}
+}
+
+type gw03PaycliLookup struct{}
+
+func (gw03PaycliLookup) Lookup(context.Context, string) (gateway.Credential, error) {
+	return gateway.Credential{
+		MerchantID: "M100001",
+		Status:     "ACTIVE",
+		Secret:     []byte(testSecret),
+	}, nil
 }
 
 type headerCapture struct {

@@ -2,9 +2,11 @@ package gateway
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"go.opentelemetry.io/otel"
@@ -132,7 +134,9 @@ func (h *Handler) accessLog(ctx context.Context, c *app.RequestContext) {
 	)
 }
 
-// 以下四个占位只留下顺序。不访问 Redis，不验签，不限流。
+const merchantStatusActive = "ACTIVE"
+
+// 时间窗口、限流、nonce 仍只留下顺序。不访问 Redis，不限流。验签在 verifySign。
 func (h *Handler) timeWindow(ctx context.Context, c *app.RequestContext) {
 	appendName(c, nameTimeWindow)
 	c.Next(ctx)
@@ -140,7 +144,128 @@ func (h *Handler) timeWindow(ctx context.Context, c *app.RequestContext) {
 
 func (h *Handler) verifySign(ctx context.Context, c *app.RequestContext) {
 	appendName(c, nameVerifySign)
+	if h.admin || !v1Path(string(c.Request.URI().Path())) {
+		c.Next(ctx)
+		return
+	}
+	appID := string(c.GetHeader(sign.HeaderAppID))
+	ts := string(c.GetHeader(sign.HeaderTimestamp))
+	nonce := string(c.GetHeader(sign.HeaderNonce))
+	signature := string(c.GetHeader(sign.HeaderSignature))
+	if appID == "" || ts == "" || nonce == "" || signature == "" {
+		h.failVerify(ctx, c, appID, errno.ErrSignInvalid)
+		return
+	}
+	if headerHasCRLF(appID, ts, nonce, signature) {
+		h.failVerify(ctx, c, appID, errno.ErrSignInvalid)
+		return
+	}
+	if h.lookup == nil {
+		h.failVerify(ctx, c, appID, errno.ErrInternal)
+		return
+	}
+	cred, err := h.lookup.Lookup(ctx, appID)
+	if err != nil {
+		h.failVerify(ctx, c, appID, lookupErrno(err))
+		return
+	}
+	if cred.Status != merchantStatusActive {
+		h.failVerify(ctx, c, appID, errno.ErrMerchantInvalid)
+		return
+	}
+	if cred.MerchantID == "" {
+		h.failVerify(ctx, c, appID, errno.ErrInternal)
+		return
+	}
+	body, err := c.Body()
+	if err != nil {
+		h.failVerify(ctx, c, appID, errno.ErrInternal)
+		return
+	}
+	err = sign.VerifyRequest(cred.Secret, sign.Request{
+		Method:     string(c.Method()),
+		RequestURI: string(c.Request.URI().RequestURI()),
+		Timestamp:  ts,
+		Nonce:      nonce,
+		Body:       body,
+	}, signature)
+	if err != nil {
+		h.failVerify(ctx, c, appID, verifyErrno(err))
+		return
+	}
+	c.Set(merchantIDKey, cred.MerchantID)
+	c.Set(signSecretKey, append([]byte(nil), cred.Secret...))
+	MarkVerified(c)
+	h.logVerify(ctx, c, appID, errno.OK)
 	c.Next(ctx)
+}
+
+func v1Path(path string) bool {
+	return path == "/v1" || strings.HasPrefix(path, "/v1/")
+}
+
+func headerHasCRLF(vals ...string) bool {
+	for _, v := range vals {
+		if strings.Contains(v, "\r") || strings.Contains(v, "\n") {
+			return true
+		}
+	}
+	return false
+}
+
+func loggableAppID(appID string) (string, bool) {
+	if strings.Contains(appID, "\r") || strings.Contains(appID, "\n") {
+		return "", false
+	}
+	return appID, true
+}
+
+func lookupErrno(err error) *errno.Error {
+	var known *errno.Error
+	if errors.As(err, &known) && known != nil {
+		switch known.Code {
+		case errno.ErrMerchantInvalid.Code:
+			return errno.ErrMerchantInvalid
+		case errno.ErrUnavailable.Code:
+			return errno.ErrUnavailable
+		default:
+			return errno.ErrInternal
+		}
+	}
+	return errno.ErrInternal
+}
+
+func verifyErrno(err error) *errno.Error {
+	if errors.Is(err, sign.ErrSignatureMismatch) || errors.Is(err, sign.ErrMalformedSignature) || errors.Is(err, sign.ErrInvalidField) {
+		return errno.ErrSignInvalid
+	}
+	return errno.ErrInternal
+}
+
+func (h *Handler) failVerify(ctx context.Context, c *app.RequestContext, appID string, e *errno.Error) {
+	if e == nil {
+		e = errno.ErrInternal
+	}
+	h.logVerify(ctx, c, appID, e)
+	writeErrno(c, e.HTTPStatus, e, requestID(c))
+	c.Abort()
+}
+
+func (h *Handler) logVerify(ctx context.Context, c *app.RequestContext, appID string, e *errno.Error) {
+	if e == nil {
+		e = errno.ErrInternal
+	}
+	ctx = logx.WithRequestID(ctx, requestID(c))
+	code := strconv.FormatInt(int64(e.Code), 10)
+	attrs := []any{"err_code", code}
+	if id, ok := loggableAppID(appID); ok {
+		attrs = []any{"app_id", id, "err_code", code}
+	}
+	if e.Code == errno.ErrInternal.Code {
+		h.log().ErrorContext(ctx, "merchant credential unusable", attrs...)
+		return
+	}
+	h.log().InfoContext(ctx, "merchant verify finished", attrs...)
 }
 
 func (h *Handler) rateLimit(ctx context.Context, c *app.RequestContext) {
@@ -159,8 +284,12 @@ func (h *Handler) platformSign(ctx context.Context, c *app.RequestContext) {
 	if h.admin || !isVerified(c) {
 		return
 	}
+	secret := h.secret
+	if got, ok := requestSignSecret(c); ok {
+		secret = got
+	}
 	body := append([]byte(nil), c.Response.Body()...)
-	if len(h.secret) == 0 {
+	if len(secret) == 0 {
 		h.failSign(ctx, c)
 		return
 	}
@@ -170,7 +299,7 @@ func (h *Handler) platformSign(ctx context.Context, c *app.RequestContext) {
 		return
 	}
 	ts := sign.FormatTimestamp(h.clk.Now())
-	sig, err := sign.SignPlatform(h.secret, sign.PlatformMessage{
+	sig, err := sign.SignPlatform(secret, sign.PlatformMessage{
 		Timestamp: ts,
 		Nonce:     nonce,
 		Body:      body,

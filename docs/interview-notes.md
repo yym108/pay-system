@@ -15,6 +15,13 @@
 - 时间窗口、验签、限流、nonce 四个中间件只把自己的名字放进链并调用 Next。不访问 Redis，不验签，不限流。
 - 客户端 `WithRPCTimeout` 是 1 秒。更长的超时只在真正调用时用 `RPCTimeout(method)` 配合 Kitex 的 per-call option。本功能点没有这种调用。
 
+## GW-03 商户验签
+
+- 只验商户端口的 `/v1`（路径恰好是 `/v1` 或以 `/v1/` 开头）。时间窗口和 nonce 仍是 GW-04。限流仍是 GW-05。
+- 响应用本次查到的 secret 签名。GW-01 那种无 lookup 的测试路由仍用 WithSignSecret。
+- 每次调用 GetMerchantCredential，不缓存，1 秒 RPCTimeout，不重试。
+- 未签名的 `/v1/balance` 从 GW-01 的 404 改为已有的 20001。
+
 ## PAY-01 商户与密钥
 
 - `merchant` 表列跟随库默认 `utf8mb4_bin`：区分大小写，但 PAD SPACE 比较时忽略尾部空格，compose 上实测 `WHERE app_id = 'app_m100001 '` 也能查到 `app_m100001`。集成测试临时库是 `utf8mb4_0900_ai_ci`，不区分大小写和重音，`'APP_M100001'` 也能查到。两种规则下 SQL 都会匹配字节不同的值。`X-App-Id` 不在签名串里，若 nonce 防重按请求带来的 app_id 记键，换个写法同一个签名就能重放。查询后在应用里逐字节比较读回的 app_id、merchant_id，不一致按不存在返回 `20004`。去掉这次比较，集成测试 `TestPAY01UnknownAppID` 立刻失败（测试库下靠大小写触发）；尾部空格目前只在 compose 手测过。

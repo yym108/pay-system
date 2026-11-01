@@ -1,6 +1,6 @@
 # pay-system 全局约定与编号规范
 
-> 版本：v2.24　最后修改：2026-11-01
+> 版本：v2.25　最后修改：2026-11-01
 > 适用：全部代码、文档、配置。需求见 `docs/02-requirements.md`，接口见 `docs/05-api.md`，表结构见 `docs/database.md`。
 
 本文集中登记会被多个功能点共用的约定：编号体系、业务单号、金额、时间、错误码、幂等与事务规则、命名规范、配置项。新增或修改这些内容时，先改本文并在 §9 记录，再改代码。
@@ -321,7 +321,7 @@ docker-compose 给将来会跑业务进程的 6 个占位服务写死互不相�
 - 根上的 `trace_id`、`span_id`、`request_id` 按原值写入，不参与兜底扫描。span id 是 16 位十六进制，连续数字若按卡号改写，链路就对不上。调用方再传同名的 `service`、`trace_id`、`span_id`、`request_id` 时丢掉，避免盖住这四个字段。
 - `msg` 用简短英文动宾短语，如 `payment status changed`。消息文本同样做兜底扫描。
 
-业务字段名 snake_case，使用固定名称：`pay_no`、`refund_no`、`transfer_no`、`merchant_id`、`shard`、`biz_type`、`biz_no`、`from_status`、`to_status`、`source`（NOTIFY / QUERY / CLOSE / JOB / ADMIN / SYNC）、`err_code`、`elapsed_ms`。`SYNC` 只表示渠道受理的同步拒绝（PAY-03 写入，PAY-04 使用），不是新的错误码。
+业务字段名 snake_case，使用固定名称：`pay_no`、`refund_no`、`transfer_no`、`merchant_id`、`app_id`、`shard`、`biz_type`、`biz_no`、`from_status`、`to_status`、`source`（NOTIFY / QUERY / CLOSE / JOB / ADMIN / SYNC）、`err_code`、`elapsed_ms`。`SYNC` 只表示渠道受理的同步拒绝（PAY-03 写入，PAY-04 使用），不是新的错误码。
 
 脱敏按字段名，不区分大小写，名字包含下列片段即匹配。同时命中多条时，整段替换优先；否则按下表从上到下先命中的一条。长度按 Unicode 码点计。
 
@@ -443,3 +443,4 @@ BASE-09 只拼 DSN 文本，不连接数据库，也不调用驱动的 `ParseDSN
 | v2.22 | 2026-10-28 | MQ-01：§4 第 6 条写明 `pkg/outbox` 不调用 `time.Now`，时间取注入时钟。不新增错误码、前缀或配置项 |
 | v2.23 | 2026-11-01 | PAY-04：`pay_callback_conflicts_total` 的名字和 channel 标签已在需求 OPS-03 登记，不新登记错误码。计数放在进程内 `sync.Map`，键是 channel，值是 `*atomic.Uint64`，与账户核对的进程内计数同一写法。不起 HTTP `/metrics`，不引入 Prometheus 客户端 |
 | v2.24 | 2026-11-01 | TL-01：§8 登记 paycli 的 `PAYCLI_GATEWAY_URL`、`PAYCLI_APP_ID`、`PAYCLI_APP_SECRET`、`PAYCLI_ADMIN_TOKEN`。后两项为 secret。加载时允许为空，参数覆盖环境变量。不新增错误码 |
+| v2.25 | 2026-11-01 | GW-03：§7.5 登记日志字段 `app_id`。`app_id` 不是密钥，脱敏片段仍是 `secret` / `password` / `token` / `signature` / `master_key`。不新增错误码 |

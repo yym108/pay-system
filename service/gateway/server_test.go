@@ -72,9 +72,8 @@ func TestNonceUsesUnbiasedBytes(t *testing.T) {
 
 // GW-01 验收 1：handler panic 返回 500 / 10003，进程不退出。
 func TestGW01PanicReturnsInternalAndStaysUp(t *testing.T) {
-	var logs bytes.Buffer
-	logger := slog.New(slog.NewTextHandler(&logs, nil))
-	h := NewMerchant(WithLogger(logger))
+	logs := newLogBuf()
+	h := NewMerchant(WithLogger(logx.New("gateway", logs)))
 	addr := startGW(t, h, func(r *server.Hertz) {
 		r.GET("/panic", func(context.Context, *app.RequestContext) {
 			panic("boom-secret-panic")
@@ -194,21 +193,14 @@ func TestRequestIDIgnoresClientAndMatchesHeader(t *testing.T) {
 	}
 }
 
+// GW-03 验收：生产 Register 上未签名的 GET /v1/balance 返回 20001，不签名，lookup 未调用。
 func TestUnknownPath(t *testing.T) {
-	addr := startGW(t, NewMerchant(), nil)
+	look := &fakeLookup{}
+	addr := startGW(t, NewMerchant(WithMerchantLookup(look)), nil)
 	got := do(t, http.MethodGet, "http://"+addr+"/v1/balance", nil, nil)
-	if got.status != http.StatusNotFound {
-		t.Fatalf("status %d body %s", got.status, got.body)
-	}
-	env := decodeEnv(t, got.body)
-	if env.Code != errno.ErrNotFound.Code || env.Msg != errno.ErrNotFound.Msg || string(env.Data) != "{}" {
-		t.Fatalf("env code %d msg %q data %s", env.Code, env.Msg, env.Data)
-	}
-	if signed(got.header) {
-		t.Fatal("404 was signed")
-	}
-	if id := got.header.Get(headerRequestID); id != env.RequestID || !requestIDPattern.MatchString(id) {
-		t.Fatalf("id %q body %q", id, env.RequestID)
+	assertErrno(t, got, errno.ErrSignInvalid)
+	if calls := look.calls(); len(calls) != 0 {
+		t.Fatalf("lookup %q", calls)
 	}
 }
 

@@ -18,10 +18,13 @@ import (
 const (
 	headerRequestID = "X-Request-Id"
 
-	requestIDKey = "gw.request_id"
-	verifiedKey  = "gw.verified"
-	bizCodeKey   = "gw.biz_code"
-	chainKey     = "gw.chain"
+	requestIDKey  = "gw.request_id"
+	verifiedKey   = "gw.verified"
+	bizCodeKey    = "gw.biz_code"
+	chainKey      = "gw.chain"
+	merchantIDKey = "gw.merchant_id"
+	// signSecretKey 只留给本次响应签名。不导出读取函数。
+	signSecretKey = "gw.sign_secret"
 
 	nonceLen      = 16
 	nonceAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
@@ -37,8 +40,39 @@ type envelope struct {
 	Data      json.RawMessage `json:"data"`
 }
 
+// MerchantID 返回本次验签写入的商户号。未验签或商户号为空时 ok 为 false。
+func MerchantID(c *app.RequestContext) (string, bool) {
+	if c == nil {
+		return "", false
+	}
+	v, ok := c.Get(merchantIDKey)
+	if !ok {
+		return "", false
+	}
+	id, ok := v.(string)
+	if !ok || id == "" {
+		return "", false
+	}
+	return id, true
+}
+
+func requestSignSecret(c *app.RequestContext) ([]byte, bool) {
+	if c == nil {
+		return nil, false
+	}
+	v, ok := c.Get(signSecretKey)
+	if !ok {
+		return nil, false
+	}
+	secret, ok := v.([]byte)
+	if !ok || len(secret) == 0 {
+		return nil, false
+	}
+	return secret, true
+}
+
 // MarkVerified 标记本请求已验签。商户端口随后给实际写出的 body 加平台签名。
-// 管理端口即使标记了也不签名。GW-03 之前由测试里的 handler 调用。
+// 管理端口即使标记了也不签名。
 func MarkVerified(c *app.RequestContext) {
 	if c == nil {
 		return

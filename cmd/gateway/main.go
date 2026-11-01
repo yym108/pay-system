@@ -48,13 +48,17 @@ func serve(ctx context.Context, logOut io.Writer) error {
 	if err := ctx.Err(); err != nil {
 		return nil
 	}
-	if _, err := gateway.NewClients(); err != nil {
+	clients, err := gateway.NewClients()
+	if err != nil {
 		return err
 	}
 	logx.SetDefault("gateway", logOut)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
-	merchant := gateway.NewMerchant(gateway.WithClock(clock.Real{}))
+	merchant := gateway.NewMerchant(
+		gateway.WithClock(clock.Real{}),
+		gateway.WithMerchantLookup(gateway.NewPaymentLookup(clients.Payment)),
+	)
 	admin := gateway.NewAdmin(gateway.WithClock(clock.Real{}))
 	errCh := make(chan error, 2)
 	var wg sync.WaitGroup
