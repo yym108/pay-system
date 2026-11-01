@@ -1,10 +1,15 @@
 package config
 
-// PayCLI 是命令行工具的配置。约定没有专属环境变量，因此结构体为空。
-// 不读取 WORKER_ID，也不定义 TL-01 的命令行参数。
-type PayCLI struct{}
+// PayCLI 是命令行工具的配置。
+// 四个字段都可选：商户命令才要 app_id 和 app_secret，管理命令才要 Token，加载时不因空值失败。
+type PayCLI struct {
+	GatewayURL string `env:"PAYCLI_GATEWAY_URL"`
+	AppID      string `env:"PAYCLI_APP_ID"`
+	AppSecret  string `env:"PAYCLI_APP_SECRET" secret:"true"`
+	AdminToken string `env:"PAYCLI_ADMIN_TOKEN" secret:"true"`
+}
 
-// LoadPayCLI 加载空配置。未知环境变量被忽略。
+// LoadPayCLI 加载 paycli 配置。未知环境变量被忽略，也不要求 WORKER_ID。
 func LoadPayCLI(environ []string) (PayCLI, error) {
 	var cfg PayCLI
 	if _, err := parse(&cfg, environ); err != nil {

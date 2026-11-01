@@ -429,7 +429,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | OPT-03 | 热点平台账户子账户拆分 | P0 | M7 | ACC-03、QA-02 | TODO |
 | OPT-04 | 链路延迟优化 | P0 | M7 | OPT-01、QA-02 | TODO |
 | OPT-05 | 平台账户缓冲入账 | P2 | M8 | OPT-03 | TODO |
-| TL-01 | paycli | P0 | M3 | BASE-13 | TODO |
+| TL-01 | paycli | P0 | M3 | BASE-13 | DONE |
 | TL-02 | merchant-demo | P0 | M5 | BASE-13 | TODO |
 | TL-03 | 一键演示脚本 | P1 | M8 | TL-01、GW-07、GW-09、MQ-04、REF-03、TRF-02、TRF-03、REC-08 | TODO |
 | TL-04 | OpenAPI 文档 | P1 | M8 | GW-02、GW-09 | TODO |
@@ -695,7 +695,7 @@ DSN 只按驱动的文本规则装配，不连接数据库：
 - payment、account、seed 的 DSN 原样保存，不改用户和口令。
 - recon 不读取 `MYSQL_DSN`，避免把 payment 的口令放进对账进程。必填 `MYSQL_RECON_PASSWORD`、`ACCOUNT_DB_DSN_0`、`ACCOUNT_DB_DSN_1`。从 `ACCOUNT_DB_DSN_0` 解析 host、port、query，生成四条 secret DSN：用户都是 `svc_recon`，口令都是 `MYSQL_RECON_PASSWORD`，库名是 `pay_recon`、`pay_payment`，以及原来的分片库 `pay_account_0`、`pay_account_1`。
 - channel-mock 不读取 `MYSQL_DSN`。必填 `MYSQL_CHANNEL_MOCK_PASSWORD`。`MYSQL_HOST` 默认 `mysql`（渠道进程在 compose 网络里；bootstrap 的默认仍是 `127.0.0.1`），`MYSQL_PORT` 默认 `3306`。查询参数固定为 `parseTime=true&loc=Asia%2FShanghai&charset=utf8mb4`。用户 `svc_channel_mock`，库 `pay_channel_mock`。
-- seed、bootstrap 只提供配置结构体，不改现有加密、写库和建号流程。paycli 没有专属变量，结构体为空，不要求 `WORKER_ID`。不新建 `cmd/migrate`。
+- seed、bootstrap 只提供配置结构体，不改现有加密、写库和建号流程。paycli 的四个变量由 TL-01 登记，加载时可以为空，不要求 `WORKER_ID`。不新建 `cmd/migrate`。
 
 验收：
 
@@ -2695,18 +2695,18 @@ ACC-10 只在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（
 
 规则：
 
-1. 配置来自环境变量或参数：网关地址、`app_id`、`app_secret`、管理 Token。
+1. 配置来自环境变量或参数，参数覆盖同名环境变量。网关地址 `PAYCLI_GATEWAY_URL` / `--gateway`，`app_id` `PAYCLI_APP_ID` / `--app-id`，`app_secret` `PAYCLI_APP_SECRET` / `--app-secret`，管理 Token `PAYCLI_ADMIN_TOKEN` / `--admin-token`。加载时不因另一个命令用不到的字段为空而失败。任一命令缺网关地址、商户命令缺 `app_id` 或 `app_secret`、管理命令缺 Token，退出码 1，错误文本不含密钥。HTTP 客户端超时取 §5.4.1 网关调用超时：默认 1 秒；`pay`、`close`、`refund` 为 5 秒；`transfer` 为 3 秒；`admin recon-run` 与 `admin check` 为 120 秒。
 2. 子命令：`create`、`pay`、`query`、`close`、`refund`、`query-refund`、`transfer`、`query-transfer`、`balance`；`admin recon-run`、`admin replay`、`admin check`。
-3. 自动生成 nonce 和时间戳并签名；校验响应签名，失败时报错。
-4. 输出 JSON；返回码 ≠ 0 时进程退出码为 1。
+3. 商户命令自动生成 nonce（16–32 位 `[A-Za-z0-9]`，生产用 `crypto/rand`）和时间戳（注入的时钟）并按接口 §3.1 调用 `pkg/sign` 签名。响应按 §3.3 验签，失败时报错且退出码 1，不把响应当成成功结果写出。管理命令只带 `X-Admin-Token`；写操作另带 `X-Admin-Operator`。管理响应不签名，不因缺少 `X-Signature` 失败。
+4. 验签通过（管理命令不验签）后把响应体原始字节写到 stdout。`code` 不等于 0 时仍然写出该 JSON，进程退出码为 1。无子命令时退出码 1，并在 stderr 给出用法。`query` 的 `pay_no` 与 `out_trade_no` 必须二选一；查询退款、查询转账、创建退款的原单号、事件重放同样按接口的二选一校验。不合法则退出码 1，不发请求。密钥和 Token 不出现在 stdout、stderr 或日志中。
 
 说明：本功能点在 M3，不依赖网关，验收用测试内的假服务端（httptest）。经网关跑通完整流程的验收移到 GW-09。
 
 验收：
 
-- [ ] 签名与 `docs/05-api.md` §3.7 测试向量一致。
-- [ ] 每个子命令对假服务端发出的请求，方法、路径、body 与 `X-App-Id`、`X-Timestamp`、`X-Nonce`、`X-Signature` 头正确，假服务端按 §3.1 验签通过；两次调用的 nonce 不同。
-- [ ] 假服务端返回正确签名的响应时输出 JSON、退出码 0；响应签名被篡改时报错、退出码 1；返回 `code ≠ 0` 时退出码 1。
+- [x] 签名与 `docs/05-api.md` §3.7 测试向量一致。
+- [x] 每个子命令对假服务端发出的请求，方法、路径、body 与 `X-App-Id`、`X-Timestamp`、`X-Nonce`、`X-Signature` 头正确，假服务端按 §3.1 验签通过；两次调用的 nonce 不同。
+- [x] 假服务端返回正确签名的响应时输出 JSON、退出码 0；响应签名被篡改时报错、退出码 1；返回 `code ≠ 0` 时退出码 1。
 
 #### TL-02 merchant-demo
 
@@ -3160,3 +3160,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-01 | v3.0 | PAY-08：直接读 `payment_order`，不缓存，不写。他人订单与不存在都是已有的 `30001`。`pay_no` 与 `out_trade_no` 二选一不合法是已有的 `10001`。不新增错误码 |
 | 2026-11-01 | v3.0 | OPS-01：`pkg/server` 在管理端口提供 `/healthz` 与 `/readyz`。数据库必检，检查可注册；Redis、Kafka 只留注册口，本次不连接，也不因此失败。SIGTERM 后 `/readyz` 立即 503，停止新请求，在途等待上限默认 10 秒且可注入，再刷新已注册生产者（本次为空）并关闭连接。account 沿用两个分片各自 1 秒的 Ping。端口固定为 gateway 6060、payment 6061、account 6062、recon 6063、channel-mock 6064；本次进程内监听的是 account、payment、channel-mock。compose 六个应用服务 `stop_grace_period: 15s`，不把 profile `apps` 并入 `make up`，A1 仍不关闭。不新增错误码，不改表，不改商户接口 |
 | 2026-11-01 | v3.0 | OPS-05：`net/http/pprof` 只注册在管理端口的私有 mux 上，不交给业务端口。channel-mock 业务端口访问 `/debug/pprof/` 为 404；payment、account 的业务端口是 Kitex，不另挂 HTTP。管理端口可采集 30 秒 CPU profile。`WriteTimeout` 改为 45 秒，`ReadHeaderTimeout` 仍是 1 秒。进程仍听 `:606x`，宿主机发布仍是 `127.0.0.1`。`/metrics` 仍不提供。不新增错误码，不改表，不改商户接口 |
+| 2026-11-01 | v3.0 | TL-01：paycli 用环境变量或参数调用商户接口和管理接口。商户请求经 `pkg/sign` 签名，响应按 §3.3 验签；管理响应不签名。验收用 httptest 假服务端，不连真网关。经网关的完整流程仍是 GW-09。新增可选配置 `PAYCLI_GATEWAY_URL`、`PAYCLI_APP_ID`、`PAYCLI_APP_SECRET`、`PAYCLI_ADMIN_TOKEN`，加载时允许为空。BASE-09 中“paycli 结构体为空”的说法由本功能点取代。不新增错误码，不改表，不改服务端契约 |

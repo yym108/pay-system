@@ -667,12 +667,37 @@ func TestLoadPayCLI(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadPayCLI: %v", err)
 	}
-	if Redact(cfg) != "" {
-		t.Fatalf("empty paycli redact = %q", Redact(cfg))
+	if cfg.GatewayURL != "" || cfg.AppID != "" || cfg.AppSecret != "" || cfg.AdminToken != "" {
+		t.Fatalf("empty paycli config = %+v", cfg)
 	}
-	cfg, err = LoadPayCLI(environ(map[string]string{"WORKER_ID": "nope", "MYSQL_DSN": paymentDSN()}))
+	empty := Redact(cfg)
+	const emptyRedact = "PAYCLI_GATEWAY_URL=\nPAYCLI_APP_ID=\nPAYCLI_APP_SECRET=***\nPAYCLI_ADMIN_TOKEN=***"
+	if empty != emptyRedact {
+		t.Fatalf("empty paycli redact = %q", empty)
+	}
+
+	const secret = "paycli-app-secret-not-in-redact" //nolint:gosec // G101: 测试用的假密钥，用来断言脱敏，不是生产密钥。
+	const token = "paycli-admin-token-not-in-redact" //nolint:gosec // G101: 测试用的假 Token，用来断言脱敏，不是生产密钥。
+	cfg, err = LoadPayCLI(environ(map[string]string{
+		"WORKER_ID":          "nope",
+		"MYSQL_DSN":          paymentDSN(),
+		"PAYCLI_GATEWAY_URL": "http://127.0.0.1:8080",
+		"PAYCLI_APP_ID":      "app_m100001",
+		"PAYCLI_APP_SECRET":  secret,
+		"PAYCLI_ADMIN_TOKEN": token,
+	}))
 	if err != nil {
 		t.Fatalf("paycli should ignore unknown vars: %v", err)
 	}
-	_ = cfg
+	if cfg.GatewayURL != "http://127.0.0.1:8080" || cfg.AppID != "app_m100001" || cfg.AppSecret != secret || cfg.AdminToken != token {
+		t.Fatal("paycli config fields mismatch")
+	}
+	out := Redact(cfg)
+	assertNoMaterial(t, out, "redacted paycli", secret, token)
+	if !strings.Contains(out, "PAYCLI_GATEWAY_URL=http://127.0.0.1:8080") || !strings.Contains(out, "PAYCLI_APP_ID=app_m100001") {
+		t.Fatalf("redact = %q", out)
+	}
+	if !strings.Contains(out, "PAYCLI_APP_SECRET=***") || !strings.Contains(out, "PAYCLI_ADMIN_TOKEN=***") {
+		t.Fatalf("redact = %q", out)
+	}
 }

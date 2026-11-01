@@ -2,6 +2,12 @@
 
 随手记录踩坑、数据和取舍。不替代需求与技术决策文档。
 
+## TL-01 paycli
+
+- 验收用测试里的 httptest 假服务端，不连本机 8080。经网关跑通下单到转账的完整流程仍是 GW-09。
+- 商户响应按接口 §3.3 验签；管理接口 §8 写明不签名，没有 `X-Signature` 不算失败。`code ≠ 0` 仍把 JSON 写到 stdout，退出码为 1。
+- 客户端总超时不另造：按需求 §5.4.1 网关调用超时，默认 1 秒，`pay` / `close` / `refund` 5 秒，`transfer` 3 秒，`admin recon-run` 与 `admin check` 120 秒。
+
 ## PAY-01 商户与密钥
 
 - `merchant` 表列跟随库默认 `utf8mb4_bin`：区分大小写，但 PAD SPACE 比较时忽略尾部空格，compose 上实测 `WHERE app_id = 'app_m100001 '` 也能查到 `app_m100001`。集成测试临时库是 `utf8mb4_0900_ai_ci`，不区分大小写和重音，`'APP_M100001'` 也能查到。两种规则下 SQL 都会匹配字节不同的值。`X-App-Id` 不在签名串里，若 nonce 防重按请求带来的 app_id 记键，换个写法同一个签名就能重放。查询后在应用里逐字节比较读回的 app_id、merchant_id，不一致按不存在返回 `20004`。去掉这次比较，集成测试 `TestPAY01UnknownAppID` 立刻失败（测试库下靠大小写触发）；尾部空格目前只在 compose 手测过。

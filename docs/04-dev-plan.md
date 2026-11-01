@@ -75,7 +75,7 @@
 - [x] PAY-08 查询
 - [x] OPS-01 健康检查与优雅退出
 - [x] OPS-05 管理端口
-- [ ] TL-01 paycli（假服务端验收，GW-01 依赖它）
+- [x] TL-01 paycli（假服务端验收，GW-01 依赖它）
 - [ ] GW-01 网关骨架 → GW-03 商户验签 → GW-02 支付与余额路由、GW-06 渠道回调入口
 
 交付：`paycli create → pay → query`，订单最终 SUCCESS，`channel_txn` 与订单一致，outbox 有 1 条事件；A3 订单层用例通过。

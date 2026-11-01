@@ -1,6 +1,6 @@
 # pay-system 全局约定与编号规范
 
-> 版本：v2.23　最后修改：2026-11-01
+> 版本：v2.24　最后修改：2026-11-01
 > 适用：全部代码、文档、配置。需求见 `docs/02-requirements.md`，接口见 `docs/05-api.md`，表结构见 `docs/database.md`。
 
 本文集中登记会被多个功能点共用的约定：编号体系、业务单号、金额、时间、错误码、幂等与事务规则、命名规范、配置项。新增或修改这些内容时，先改本文并在 §9 记录，再改代码。
@@ -393,6 +393,10 @@ Hertz `hlog` 和 Kitex `klog` 经适配器写入同一个 slog handler。`SetDef
 | `MYSQL_MIGRATOR_PASSWORD` | bootstrap、migrate | 无（必填，secret） | `migrator` 口令，只给迁移容器做 DDL |
 | `DEMO_APP_SECRET_FORMAT` | seed | `demo_secret_%s_0123456789ab` | 种子商户明文，`%s` 为商户号。种子加密后写入，明文只出现在环境文件。secret |
 | `SEED_LOAD` | seed | `0` | `1` 时额外创建 `M200000`–`M200099`。不入账。`deploy/seed.sh` 读环境文件时，调用方已设的 `SEED_LOAD` 优先（`make seed-load` 据此设为 `1`）；其他变量仍以环境文件为准 |
+| `PAYCLI_GATEWAY_URL` | paycli | 无 | 网关根地址。加载时可以为空，执行命令时缺失则退出 1。`--gateway` 覆盖 |
+| `PAYCLI_APP_ID` | paycli | 无 | 商户 `app_id`。仅商户命令必填。`--app-id` 覆盖 |
+| `PAYCLI_APP_SECRET` | paycli | 无（secret） | 商户密钥。仅商户命令必填。`--app-secret` 覆盖。生效配置输出 `***`，不写入日志和错误文本 |
+| `PAYCLI_ADMIN_TOKEN` | paycli | 无（secret） | 管理 Token。仅 admin 命令必填。`--admin-token` 覆盖。生效配置输出 `***`，不写入日志和错误文本 |
 | `TEST_MYSQL_DSN` | 集成测试（`internal/testkit`） | 无 | 只给测试。非空时复用已有 MySQL，不启动容器。不是服务配置，不进入配置结构体，也不写入 `deploy/.env.example` |
 
 ### 8.1 DSN 装配
@@ -438,3 +442,4 @@ BASE-09 只拼 DSN 文本，不连接数据库，也不调用驱动的 `ParseDSN
 | v2.21 | 2026-10-28 | PAY-03：§7.5 的 `source` 增加 `SYNC`（渠道受理同步拒绝，不是新错误码）。payment 服务端按方法区分处理超时：`Pay` 5 秒，其他方法 2 秒，不新增环境变量，不新增错误码 |
 | v2.22 | 2026-10-28 | MQ-01：§4 第 6 条写明 `pkg/outbox` 不调用 `time.Now`，时间取注入时钟。不新增错误码、前缀或配置项 |
 | v2.23 | 2026-11-01 | PAY-04：`pay_callback_conflicts_total` 的名字和 channel 标签已在需求 OPS-03 登记，不新登记错误码。计数放在进程内 `sync.Map`，键是 channel，值是 `*atomic.Uint64`，与账户核对的进程内计数同一写法。不起 HTTP `/metrics`，不引入 Prometheus 客户端 |
+| v2.24 | 2026-11-01 | TL-01：§8 登记 paycli 的 `PAYCLI_GATEWAY_URL`、`PAYCLI_APP_ID`、`PAYCLI_APP_SECRET`、`PAYCLI_ADMIN_TOKEN`。后两项为 secret。加载时允许为空，参数覆盖环境变量。不新增错误码 |
