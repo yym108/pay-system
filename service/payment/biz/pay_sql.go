@@ -96,13 +96,14 @@ func (s sqlOrderStore) fillChannelTxnNo(ctx context.Context, bizNo, txnNo string
 
 func (s sqlOrderStore) channelTxnByBizNo(ctx context.Context, bizNo string) (channelTxn, bool, error) {
 	var (
-		row    channelTxn
-		txnNo  sql.NullString
-		amount int64
+		row       channelTxn
+		txnNo     sql.NullString
+		nextQuery sql.NullTime
+		amount    int64
 	)
 	err := s.db.QueryRowContext(ctx, channelTxnByBizNoSQL, bizNo).Scan(
 		&row.Channel, &row.TxnType, &row.BizNo, &txnNo, &amount, &row.Status,
-		&row.NotifyCount, &row.QueryCount, &row.NextQueryAt, &row.Version, &row.CreatedAt, &row.UpdatedAt,
+		&row.NotifyCount, &row.QueryCount, &nextQuery, &row.Version, &row.CreatedAt, &row.UpdatedAt,
 	)
 	if errors.Is(err, sql.ErrNoRows) {
 		return channelTxn{}, false, nil
@@ -116,6 +117,10 @@ func (s sqlOrderStore) channelTxnByBizNo(ctx context.Context, bizNo string) (cha
 	row.Amount = money.Amount(amount)
 	if txnNo.Valid {
 		row.ChannelTxnNo = txnNo.String
+	}
+	// 终态把 next_query_at 写成 NULL。零值表示没有下次查单时间。
+	if nextQuery.Valid {
+		row.NextQueryAt = nextQuery.Time
 	}
 	return row, true, nil
 }

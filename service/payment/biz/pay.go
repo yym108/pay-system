@@ -73,19 +73,13 @@ type ChannelAcceptor interface {
 	Accept(ctx context.Context, req ChannelAcceptRequest) (ChannelAcceptResult, error)
 }
 
-// PayResultApplier 接收渠道同步拒绝。PAY-04 实现事务、outbox 和指标。
-// 参数顺序：bizNo、result、failCode、failMsg、source。
+// PayResultApplier 把渠道终态推进到订单。生产实现是 *Payments。
 type PayResultApplier interface {
-	ApplyPayResult(ctx context.Context, bizNo, result, failCode, failMsg, source string) (PaymentOrder, error)
+	ApplyPayResult(ctx context.Context, in PayResult) (PaymentOrder, error)
 }
 
-// UnimplementedPayResult 在 PAY-04 接入前占位。不写订单，返回 10003。
-type UnimplementedPayResult struct{}
-
-// ApplyPayResult 不修改任何订单。
-func (UnimplementedPayResult) ApplyPayResult(context.Context, string, string, string, string, string) (PaymentOrder, error) {
-	return PaymentOrder{}, errno.ErrInternal
-}
+// *Payments.ApplyPayResult 是生产实现。空实现只留在测试文件里。
+var _ PayResultApplier = (*Payments)(nil)
 
 // channelTxn 是 channel_txn 中 Pay 会读到的列。
 type channelTxn struct {
@@ -104,13 +98,13 @@ type channelTxn struct {
 }
 
 // UsePay 装上渠道受理、结果推进和平台回调地址。
-// applier 为 nil 时用 UnimplementedPayResult。不改 NewPayments 的参数。
+// applier 为 nil 时装上 p 自己的 ApplyPayResult。不改 NewPayments 的参数。
 func (p *Payments) UsePay(channel ChannelAcceptor, applier PayResultApplier, notifyURL string) {
 	if p == nil {
 		return
 	}
 	if applier == nil {
-		applier = UnimplementedPayResult{}
+		applier = p
 	}
 	p.channel = channel
 	p.applier = applier
@@ -126,7 +120,8 @@ func (p *Payments) payChannelTimeout() time.Duration {
 
 // Pay 把 INIT 支付单推进到 PAYING 并请求渠道受理。
 // 请求为 nil 返回 10001。channel 不是 mockpay 返回 30007，不读库。
-// 30006 由 ApplyPayResult 原样返回，其余业务错误不带订单。
+// 渠道同步拒绝在 ApplyPayResult 写成 FAILED 后，由本方法返回 30006 和该订单。
+// 适配器返回的错误原样带出。其余业务错误不带订单。
 func (p *Payments) Pay(ctx context.Context, in *PayInput) (PaymentOrder, error) {
 	if in == nil {
 		return PaymentOrder{}, errno.ErrInvalidParam
@@ -236,7 +231,20 @@ func (p *Payments) callChannel(ctx context.Context, order PaymentOrder) (Payment
 		if p.applier == nil {
 			return PaymentOrder{}, errno.ErrInternal
 		}
-		return p.applier.ApplyPayResult(ctx, order.PayNo, payResultFailed, failCodeChannelRejected, res.Reason, paySourceSync)
+		got, err := p.applier.ApplyPayResult(ctx, PayResult{
+			BizNo:    order.PayNo,
+			Result:   payResultFailed,
+			FailCode: failCodeChannelRejected,
+			FailMsg:  res.Reason,
+			Source:   paySourceSync,
+		})
+		if err != nil {
+			return got, err
+		}
+		if got.Status == payStatusFailed {
+			return got, errno.ErrChannelRejected
+		}
+		return got, nil
 	default:
 		return order, nil
 	}

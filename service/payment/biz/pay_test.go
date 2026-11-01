@@ -25,10 +25,14 @@ func seedInit(t *testing.T) (*Payments, *memOrders, PaymentOrder) {
 }
 
 func wirePay(p *Payments, ch ChannelAcceptor, applier PayResultApplier) {
-	if applier == nil {
-		applier = UnimplementedPayResult{}
-	}
 	p.UsePay(ch, applier, testChannelNotifyURL)
+}
+
+// UnimplementedPayResult 只留给测试。不写订单，返回 10003。
+type UnimplementedPayResult struct{}
+
+func (UnimplementedPayResult) ApplyPayResult(context.Context, PayResult) (PaymentOrder, error) {
+	return PaymentOrder{}, errno.ErrInternal
 }
 
 func payReq(order PaymentOrder) *PayInput {
@@ -73,15 +77,15 @@ func (c *countingChannel) got() ChannelAcceptRequest {
 }
 
 type recordingApplier struct {
-	bizNo, result, failCode, failMsg, source string
-	order                                    PaymentOrder
-	err                                      error
-	calls                                    int
+	in    PayResult
+	order PaymentOrder
+	err   error
+	calls int
 }
 
-func (a *recordingApplier) ApplyPayResult(_ context.Context, bizNo, result, failCode, failMsg, source string) (PaymentOrder, error) {
+func (a *recordingApplier) ApplyPayResult(_ context.Context, in PayResult) (PaymentOrder, error) {
 	a.calls++
-	a.bizNo, a.result, a.failCode, a.failMsg, a.source = bizNo, result, failCode, failMsg, source
+	a.in = in
 	return a.order, a.err
 }
 
@@ -295,7 +299,8 @@ func TestPayDuplicateTxnNoIsInternal(t *testing.T) {
 	}
 }
 
-// PAY-03：假适配器收到固定参数，30006 原样返回。生产未实现适配器不改单并返回 10003。
+// PAY-03：假适配器收到 REJECTED 结构体。适配器返回的错误原样带出。
+// 适配器成功写成 FAILED 且 error 为 nil 时，Pay 补上 30006。测试用空实现不改单并返回 10003。
 func TestPayRejectedAdapter(t *testing.T) {
 	p, orders, order := seedInit(t)
 	failed := order
@@ -309,12 +314,30 @@ func TestPayRejectedAdapter(t *testing.T) {
 	if got.Status != payStatusFailed || got.FailCode != failCodeChannelRejected {
 		t.Fatalf("passed order = %+v", got)
 	}
-	if applier.calls != 1 || applier.bizNo != order.PayNo || applier.result != payResultFailed ||
-		applier.failCode != failCodeChannelRejected || applier.failMsg != "ORDER_CLOSED" || applier.source != paySourceSync {
+	if applier.calls != 1 || applier.in.BizNo != order.PayNo || applier.in.Result != payResultFailed ||
+		applier.in.FailCode != failCodeChannelRejected || applier.in.FailMsg != "ORDER_CLOSED" ||
+		applier.in.Source != paySourceSync || applier.in.Amount != nil {
 		t.Fatalf("applier = %+v", applier)
 	}
 	if orders.rows[0].Status != payStatusPaying || orders.rows[0].FailCode != "" {
 		t.Fatalf("store was changed by Pay itself: %+v", orders.rows[0])
+	}
+
+	p3, _, order3 := seedInit(t)
+	failed3 := order3
+	failed3.Status = payStatusFailed
+	failed3.FailCode = failCodeChannelRejected
+	failed3.FailMsg = "ORDER_CLOSED"
+	applier3 := &recordingApplier{order: failed3}
+	ch3 := &countingChannel{result: ChannelAcceptResult{Outcome: acceptRejected, Reason: "ORDER_CLOSED"}}
+	wirePay(p3, ch3, applier3)
+	got, err = p3.Pay(context.Background(), payReq(order3))
+	assertErrno(t, err, errno.ErrChannelRejected)
+	if got.PayNo != order3.PayNo || got.Status != payStatusFailed || got.FailMsg != "ORDER_CLOSED" {
+		t.Fatalf("wrapped order = %+v", got)
+	}
+	if applier3.in.Amount != nil || applier3.in.Source != paySourceSync {
+		t.Fatalf("applier = %+v", applier3.in)
 	}
 
 	p2, orders2, order2 := seedInit(t)

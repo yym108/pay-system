@@ -1,6 +1,6 @@
 # pay-system 需求规格说明书
 
-> 版本：v3.0　最后修改：2026-10-28
+> 版本：v3.0　最后修改：2026-11-01
 > 状态：v3.0 重新聚焦支付、退款、转账三条资金链路（变更见 §8.2），2026-10-13 已确认为开发基线；开发按 §3 功能点总表逐项推进
 > 上游：`PROJECT_GOALS.md`（目标与约束）、`docs/01-tech-decisions.md`（技术选型与版本）
 > 关联：`docs/03-conventions.md`（编号、错误码、命名等全局约定）、`docs/05-api.md`（接口文档）、`docs/database.md`（表结构）、`docs/04-dev-plan.md`（周计划）、`docs/06-flows.md`（流程图）
@@ -377,7 +377,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | PAY-01 | 商户与密钥 | P0 | M3 | BASE-14、BASE-03 | DONE |
 | PAY-02 | 创建支付单 | P0 | M3 | PAY-01 | DONE |
 | PAY-03 | 发起支付 | P0 | M3 | PAY-02、CH-01、BASE-15 | DONE |
-| PAY-04 | 支付结果推进 | P0 | M3 | PAY-03、MQ-01 | TODO |
+| PAY-04 | 支付结果推进 | P0 | M3 | PAY-03、MQ-01 | DONE |
 | PAY-05 | 查单补偿 | P0 | M4 | PAY-04、CH-02、CH-06、GW-06、REF-03、BASE-15 | TODO |
 | PAY-06 | 商户关单 | P0 | M3 | PAY-04、CH-03 | TODO |
 | PAY-07 | 超时关单 | P0 | M4 | PAY-06 | TODO |
@@ -1478,7 +1478,7 @@ M4 切片（未实现）：
 6. 然后调渠道受理。`req_no=pay_no`，`subject` 为订单标题，`notify_url` 用配置 `CHANNEL_NOTIFY_URL`，不是订单上的商户通知地址。金额是订单金额。连接超时 500ms，总超时 3 秒，不重试，不跟随重定向。签名用 `pkg/sign` 与 `CHANNEL_MOCKPAY_KEY`，算法与 CH-01 一致。地址是 `CHANNEL_MOCKPAY_URL` 加 `/mockpay/v1/pay`。密钥不进日志和错误。签名或地址配置在发出请求前失败，按已有的 `10003` 处理。渠道客户端未装配时在 CAS 之前返回 `10003`，订单保持 INIT。
 7. 渠道结果：
    - `OK` 且带 `channel_txn_no`：`UPDATE channel_txn SET channel_txn_no=? WHERE biz_no=? AND channel_txn_no IS NULL`（同时写 `updated_at = updated_at`，避免 `ON UPDATE CURRENT_TIMESTAMP` 改成数据库时钟）。然后返回 PAYING 订单，`biz_code = 0`。影响 0 行就再读，不覆盖已有流水号。回填撞上唯一键（1062）返回 `10003`，不猜测该写哪一条。
-   - `REJECTED`：调用窄接口 `ApplyPayResult(biz_no, result, fail_code, fail_msg, source)`，参数固定为 `biz_no=pay_no`、结果 `FAILED`、`fail_code=CHANNEL_REJECTED`、`fail_msg` 为渠道 `reason`、`source=SYNC`。`SYNC` 只表示渠道受理的同步拒绝，供 PAY-04 使用。已有来源名是 NOTIFY / QUERY / CLOSE / JOB / ADMIN，没有同义名称，因此新增这个来源名，不是新的错误码。接口返回的订单和错误原样交给调用方。`30006` 放在 `PayResponse.biz_code`，error 为 nil，并携带订单。PAY-04 换上实现之前，生产组装使用明确的未实现适配器：不改订单，返回 `10003`。本功能点不实现该接口的事务、outbox 或指标。
+   - `REJECTED`：调用 `ApplyPayResult`，入参为结构体：`biz_no=pay_no`、结果 `FAILED`、`fail_code=CHANNEL_REJECTED`、`fail_msg` 为渠道 `reason`（可以是空字符串）、`source=SYNC`，不带金额。`SYNC` 只表示渠道受理的同步拒绝。已有来源名是 NOTIFY / QUERY / CLOSE / JOB / ADMIN，没有同义名称，因此新增这个来源名，不是新的错误码。PAY-04 成功把订单写成 FAILED 后，本方法返回该订单和 `30006`。`30006` 放在 `PayResponse.biz_code`，error 为 nil，并携带订单。事务、outbox 和冲突计数属于 PAY-04。
    - 超时、网络错误、5xx、其他非 200（含 400、401），HTTP 200 但验签失败，以及 `OK` 但没有流水号：结果未知。不改订单状态，不回填，返回 PAYING，`biz_code = 0`。
 8. `Pay` 的服务端处理超时是 5 秒，与 §5.4.1、GW-01 第 5 条的网关调用超时一致，让 3 秒的渠道超时先到期并返回 PAYING。其他 PaymentService 方法仍是 2 秒。不新增环境变量。渠道 HTTP 的 3 秒从调用 ctx 派生，父 ctx 先到期时先到期的生效。
 
@@ -1494,7 +1494,7 @@ M4 切片（未实现）：
 
 `P0 · M3 · 依赖：PAY-03、MQ-01 · 表：channel_txn、payment_order、outbox`
 
-说明：回调（GW-06）、查单（PAY-05）、关单（PAY-06）、同步拒绝（PAY-03）共用的状态推进函数 `ApplyPayResult(biz_no, result, source)`。
+说明：回调（GW-06）、查单（PAY-05）、关单（PAY-06）、同步拒绝（PAY-03）共用 `ApplyPayResult`。入参是结构体，字段包括 `biz_no`、`result`（SUCCESS / FAILED / CLOSED）、`source`、`fail_code`、`fail_msg`、可选金额、可选 `channel_txn_no`、`channel_status_raw`、渠道完成时间。
 
 规则：
 
@@ -1509,35 +1509,50 @@ M4 切片（未实现）：
 
    SUCCESS、FAILED、CLOSED 为终态。一笔支付单只对应一次渠道交易，失败后商户需用新的 `out_trade_no` 重新下单。
 
-2. 事务：
+2. 空 `biz_no`、未知 `result`、未知 `source`，以及 SUCCESS 未传渠道完成时间：返回 `10001`，不写库。来源只接受已有的 NOTIFY / QUERY / CLOSE / JOB / ADMIN / SYNC。
+3. 一次 `dbx.WithTx`。事务内不调用 HTTP、RPC 或 Kafka，也不调用 `fault.Point`。`callback.after_commit` 仍由 GW-06 在调用本函数之后触发。顺序如下。金额是 int64 分。渠道完成时间截到毫秒。`updated_at` 显式写本次注入时钟截到毫秒，避免 `ON UPDATE CURRENT_TIMESTAMP` 改成数据库时钟。
 
    ```
    UPDATE channel_txn
       SET status = ?, channel_txn_no = COALESCE(channel_txn_no, ?), channel_status_raw = ?,
-          channel_finished_at = ?, next_query_at = NULL, version = version + 1
-          [, notify_count = notify_count + 1]          -- source = NOTIFY 时
+          channel_finished_at = ?, next_query_at = NULL, version = version + 1, updated_at = ?
+          [, notify_count = notify_count + 1]          -- 仅 source = NOTIFY
     WHERE biz_no = ? AND status = 'PROCESSING' [AND amount = ?]   -- 结果携带金额时
-   影响行数 = 1：
-     UPDATE payment_order SET status = ?, paid_at | closed_at | fail_code, fail_msg = ?, version = version + 1
-      WHERE pay_no = ? AND status = 'PAYING'          -- 必须为 1，否则回滚、告警、返回 10003
-     SUCCESS 时 outbox.Add(payment.succeeded)         -- MQ-01
-   影响行数 = 0：重新读取 channel_txn
-     不存在                → 30001
-     金额与本地不一致       → 50002，不改状态，告警
-     已是同一终态           → 幂等成功（NOTIFY 时 notify_count + 1）
-     是不同终态             → 不改状态，pay_callback_conflicts_total + 1，记录错误日志，等待对账处理
    ```
 
-3. `paid_at` 取渠道完成时间，不取本地处理时间。渠道结果为 FAILED 时 `fail_code = CHANNEL_FAILED`（取值登记见 `docs/03-conventions.md` §5.4）。
-4. 回调只携带终态，终态不可变，因此乱序回调不会导致状态倒退。
+   `channel_txn_no`、`channel_status_raw` 为空则 SQL 用 NULL，COALESCE 不会把已有流水号盖成空。未传渠道完成时间时 `channel_finished_at` 保持空。
+
+   影响 1 行才更新订单：
+
+   ```
+   UPDATE payment_order
+      SET status = ?, version = version + 1, updated_at = ?
+    WHERE pay_no = ? AND status = 'PAYING'
+   ```
+
+   SUCCESS：`paid_at` 用调用方传入的渠道完成时间，不用本地时钟。FAILED：`fail_code` 用调用方传入的非空值，否则用 `CHANNEL_FAILED`；`fail_msg` 用传入值（可以是空字符串）。CLOSED：`closed_at` 用渠道完成时间；没传则用这次注入时钟截到毫秒。订单 CAS 影响不是 1 行：整笔回滚（`channel_txn` 回到 PROCESSING），ERROR 日志只记 `pay_no` 和 `err_code`，返回 `10003`。
+
+   只有订单 CAS 成功且结果是 SUCCESS 时，在同一个事务里调用已有的 `outbox.Add` 写 `payment.succeeded`。`msg_key` 和 `biz_no` 都是 `pay_no`。data 用订单上的 `pay_no`、`merchant_id`、`out_trade_no`、`channel`、`amount`、`fee_amount`，`paid_at` 用渠道完成时间。`event_id` 由 `outbox.Add` 发，支付不再插第二行 outbox。Add 失败则整个事务失败；发号时钟回拨映射为已有的 `10004`。FAILED 和 CLOSED 不写 outbox。
+
+   渠道更新影响 0 行：事务回滚，事务外再读 `channel_txn`（按 `biz_no`）。先比金额，再看终态：
+
+   - 没有行 → `30001`。
+   - 结果带了金额且与该行 `amount` 不同 → `50002`，不改订单、不改流水，ERROR 日志。不新增指标。已是终态时也先比金额，金额不符不是冲突。
+   - 已是同一个终态 → 返回当前订单，error 为 nil。仅 `source=NOTIFY` 时另做 `UPDATE channel_txn SET notify_count = notify_count + 1 WHERE biz_no = ? AND status = 该终态`，不改 status，不再写 outbox。
+   - 已是另一个终态 → 不改状态，进程内计数 `pay_callback_conflicts_total` 加 1（标签是 channel），ERROR 日志，返回当前订单且 error 为 nil。等待对账处理。
+   - 仍是 PROCESSING（金额相符或这次没带金额）→ `10003`，不加冲突计数。
+
+   SYNC、QUERY、CLOSE、JOB、ADMIN 都不加 `notify_count`。
+
+4. 回调只携带终态，终态不可变，因此乱序回调不会导致状态倒退。Pay 的同步拒绝在本函数把单写成 FAILED 后，由 Pay 返回该订单和 `30006`；本函数自己的成功推进返回订单且 error 为 nil。
 
 验收：
 
-- [ ] DUP_NOTIFY 的订单层：同一笔 SUCCESS 结果以 `source = NOTIFY` 调用 `ApplyPayResult` 10 次（其中 5 次并发），订单只推进一次，outbox 只有 1 条 `payment.succeeded`，`notify_count = 10`（A3 订单层；经网关的端到端在 GW-06 验收）。
-- [ ] Pay 时假渠道客户端返回 `REJECTED`（由 PAY-03 移来）：订单 FAILED，`fail_code = CHANNEL_REJECTED`，`fail_msg` 为渠道 `reason`，接口返回 `30006` 和订单。
-- [ ] 回调金额与本地不一致返回 `50002`，订单仍为 PAYING。
-- [ ] 先收到 FAILED 再收到 SUCCESS，订单保持 FAILED，冲突指标 +1。
-- [ ] 测试中让 `payment_order` 的 CAS 失败（人为改状态），整个事务回滚，`channel_txn` 未变化。
+- [x] DUP_NOTIFY 的订单层：同一笔 SUCCESS 结果以 `source = NOTIFY` 调用 `ApplyPayResult` 10 次（其中 5 次并发），订单只推进一次，outbox 只有 1 条 `payment.succeeded`，`notify_count = 10`（A3 订单层；经网关的端到端在 GW-06 验收）。
+- [x] Pay 时假渠道客户端返回 `REJECTED`（由 PAY-03 移来）：订单 FAILED，`fail_code = CHANNEL_REJECTED`，`fail_msg` 为渠道 `reason`，接口返回 `30006` 和订单。
+- [x] 回调金额与本地不一致返回 `50002`，订单仍为 PAYING。
+- [x] 先收到 FAILED 再收到 SUCCESS，订单保持 FAILED，冲突指标 +1。
+- [x] 测试中让 `payment_order` 的 CAS 失败（人为改状态），整个事务回滚，`channel_txn` 未变化。
 
 #### PAY-05 查单补偿
 
@@ -3138,3 +3153,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-10-28 | v3.0 | PAY-02 文字澄清：未传 `notify_url` 存空串，通知时才取商户默认地址；显式地址即使等于商户默认地址也原样入库。商户不存在或非 `ACTIVE` 为已有的 `20004`，不插入。没有生效费率档为已有的 `10003`，不把手续费当成 0，不读 `merchant.fee_rate_bp`，不缓存费率。时钟回拨映射为已有的 `10004`。1062 后按商户订单号读不到行返回 `10003`。不新增错误码，不改表，不改 IDL |
 | 2026-10-28 | v3.0 | PAY-03：`Pay` 服务端处理超时 5 秒，其他方法仍 2 秒。渠道同步拒绝的 `source` 名为 `SYNC`。PAY-04 之前，生产用的 `ApplyPayResult` 不改订单并返回已有的 `10003`。不新增错误码，不新增环境变量，不改表 |
 | 2026-10-28 | v3.0 | MQ-01 文字澄清：`occurred_at` 取 `Add` 时的注入时钟（提交前读取，不能改成提交后再读），无有效 span 时 `trace_context` 为 `{}`，不新增错误码。五种事件的 topic、msg_key、biz_no 与 data 字段写入规则。不改资金规则 |
+| 2026-11-01 | v3.0 | PAY-04：`ApplyPayResult` 用结构体入参，一次事务按渠道流水 CAS、订单 CAS、仅 SUCCESS 调用已有 `outbox.Add` 的顺序推进。不新增错误码。`callback.after_commit` 仍留给 GW-06，本次不调用 `fault.Point`。文字澄清：金额比较先于同一终态和不同终态，已终态但金额不符仍是 `50002`；CLOSED 传了渠道完成时间则 `closed_at` 用该时间，没传则用本次注入时钟截到毫秒，`channel_finished_at` 保持空；SUCCESS 未传完成时间、未知 `source` 在写库前返回 `10001`。不改资金流向 |
