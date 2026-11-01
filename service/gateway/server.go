@@ -26,14 +26,16 @@ const (
 
 // Handler 是一个端口上的中间件和响应签名。商户端口和管理端口各一个。
 type Handler struct {
-	admin     bool
-	clk       clock.Clock
-	secret    []byte
-	lookup    MerchantLookup
-	payment   paymentAPI
-	account   accountAPI
-	nextNonce func() (string, error)
-	logger    *slog.Logger
+	admin      bool
+	clk        clock.Clock
+	secret     []byte
+	lookup     MerchantLookup
+	payment    paymentAPI
+	account    accountAPI
+	notify     notifyAPI
+	channelKey []byte
+	nextNonce  func() (string, error)
+	logger     *slog.Logger
 }
 
 // Option 覆盖时钟、响应签名密钥、商户凭证查询或日志。
@@ -109,6 +111,7 @@ func (h *Handler) Register(r *server.Hertz) {
 	r.Use(h.platformSign)
 	if !h.admin {
 		h.registerV1(r)
+		h.registerCallback(r)
 	}
 	r.NoRoute(h.notFound)
 }

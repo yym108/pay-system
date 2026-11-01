@@ -162,6 +162,14 @@ func (a *App) QueryPayment(ctx context.Context, in *QueryInput) (PaymentOrder, e
 	return a.payments.QueryPayment(ctx, in)
 }
 
+// ApplyChannelNotify 转给渠道回调。
+func (a *App) ApplyChannelNotify(ctx context.Context, in PayResult) (string, error) {
+	if a == nil || a.payments == nil {
+		return "", errno.ErrInternal
+	}
+	return a.payments.ApplyChannelNotify(ctx, in)
+}
+
 func newPayments(merchants MerchantLookup, ids Numberer, clk clock.Clock, allowHosts string, orders orderStore) *Payments {
 	return &Payments{
 		merchants: merchants,

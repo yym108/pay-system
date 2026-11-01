@@ -36,7 +36,7 @@ func run(ctx context.Context, environ []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "write config: %v\n", werr)
 		return 1
 	}
-	if err = serve(ctx, stderr); err != nil {
+	if err = serve(ctx, stderr, cfg.ChannelMockpayKey); err != nil {
 		_, _ = fmt.Fprintf(stderr, "%s\n", err)
 		return 1
 	}
@@ -44,7 +44,7 @@ func run(ctx context.Context, environ []string, stdout, stderr io.Writer) int {
 }
 
 // serve 先建客户端再听 :8080 和 :8090。ctx 已取消时直接返回，不绑定端口。
-func serve(ctx context.Context, logOut io.Writer) error {
+func serve(ctx context.Context, logOut io.Writer, channelKey string) error {
 	if err := ctx.Err(); err != nil {
 		return nil
 	}
@@ -60,6 +60,8 @@ func serve(ctx context.Context, logOut io.Writer) error {
 		gateway.WithMerchantLookup(gateway.NewPaymentLookup(clients.Payment)),
 		gateway.WithPaymentAPI(clients.Payment),
 		gateway.WithAccountAPI(clients.Account),
+		gateway.WithChannelKey([]byte(channelKey)),
+		gateway.WithNotifyAPI(clients.Payment),
 	)
 	admin := gateway.NewAdmin(gateway.WithClock(clock.Real{}))
 	errCh := make(chan error, 2)

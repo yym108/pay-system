@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"time"
 
 	"github.com/yym108/pay-system/kitex_gen/payment"
 	"github.com/yym108/pay-system/pkg/errno"
@@ -190,9 +191,35 @@ func (h *Handler) QueryTransfer(_ context.Context, _ *payment.QueryTransferReque
 	return nil, notImplemented()
 }
 
-// HandleChannelNotify 属于 GW-06、PAY-04、REF-03，未实现，返回 10003。
-func (h *Handler) HandleChannelNotify(_ context.Context, _ *payment.HandleChannelNotifyRequest) (*payment.HandleChannelNotifyResponse, error) {
-	return nil, notImplemented()
+// HandleChannelNotify 接收渠道回调。PAY 交给 ApplyChannelNotify。REFUND 仍是 10003。
+func (h *Handler) HandleChannelNotify(ctx context.Context, req *payment.HandleChannelNotifyRequest) (r *payment.HandleChannelNotifyResponse, err error) {
+	defer recoverBiz(ctx, &err)
+	if err = h.ready(); err != nil {
+		return nil, err
+	}
+	if req == nil || req.TxnType != "PAY" {
+		if req == nil {
+			return nil, errno.ToBizStatus(errno.ErrInvalidParam)
+		}
+		return nil, errno.ToBizStatus(errno.ErrInternal)
+	}
+	finished, perr := time.Parse("2006-01-02T15:04:05.000Z07:00", req.FinishedAt)
+	if perr != nil || req.ReqNo == "" || (req.Status != "SUCCESS" && req.Status != "FAILED") {
+		return nil, errno.ToBizStatus(errno.ErrInvalidParam)
+	}
+	amt := money.Amount(req.Amount)
+	kind, callErr := h.svc.ApplyChannelNotify(ctx, biz.PayResult{
+		BizNo:        req.ReqNo,
+		Result:       req.Status,
+		Source:       "NOTIFY",
+		ChannelTxnNo: req.ChannelTxnNo,
+		Amount:       &amt,
+		FinishedAt:   finished,
+	})
+	if callErr != nil {
+		return nil, statusErr(ctx, callErr)
+	}
+	return &payment.HandleChannelNotifyResponse{Result_: kind}, nil
 }
 
 // SyncChannelTxn 属于 PAY-09，未实现，返回 10003。

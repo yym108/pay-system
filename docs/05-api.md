@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 3.3.3 |
+| 文档版本 | 3.3.4 |
 | API 版本 | v1（路径前缀 `/v1`） |
 | 最后修改 | 2026-11-01 |
 | 状态 | 设计基线，实现须与本文一致 |
@@ -70,6 +70,7 @@
 | 3.3.1 | 2026-11-01 | 文字澄清：`request_id` 由服务端生成 32 位小写十六进制，忽略客户端 `X-Request-Id`。未知路径返回 HTTP 404 / `10002`，`msg` 为 `not found`，`data` 为 `{}`，不签名。不新增字段，不改错误码数字，不改 IDL。§1 各接口的“最后修改”不变 | §2.3 | GW-01 |
 | 3.3.2 | 2026-11-01 | 文字澄清：未签名的商户 `/v1` 返回已有的 `20001`，不到路由；四个头齐全且验签通过、路径仍不存在时仍是 404 / `10002` / `not found` / `data` 为 `{}`，该 404 带平台签名。不新增字段，不改错误码数字，不改 IDL。§1 各接口的“最后修改”不变 | §2.3 | GW-03 |
 | 3.3.3 | 2026-11-01 | 网关现已提供 §4.1–§4.4 与 §4.7。字段和错误码不变。 | §4.1–§4.4、§4.7 | GW-02 |
+| 3.3.4 | 2026-11-01 | 网关商户端口已注册 `POST /callback/mockpay`。响应正文是 `SUCCESS` 或 `FAIL`，不是 JSON。字段和错误码不变。`HandleChannelNotify` 的 PAY 分支已转发到 `ApplyPayResult`；`txn_type` 不是 PAY 时仍返回已有的 `10003`。 | §7、§10.2 | GW-06 |
 
 ## 1. 接口总览
 
@@ -98,7 +99,7 @@
 | `POST /v1/transfers` 创建转账 | §4.8 | `PaymentService.CreateTransfer` | TRF-01~03 | 2.0.0 | 2026-10-27 |
 | `GET /v1/transfers/{transfer_no}`、`GET /v1/transfers?out_transfer_no=` 查询转账 | §4.9 | `PaymentService.QueryTransfer` | TRF-05 | 2.0.0 | 2026-10-27 |
 | 商户异步通知 | §6 | — | NTF-01、NTF-02 | 1.0.0 | 2026-10-12 |
-| `POST /callback/mockpay` 渠道回调入口 | §7 | `PaymentService.HandleChannelNotify` | GW-06 | 1.0.0 | 2026-10-23 |
+| `POST /callback/mockpay` 渠道回调入口 | §7 | `PaymentService.HandleChannelNotify` | GW-06 | 1.0.0 | 2026-11-01 |
 | `POST /admin/recon/run` 执行对账 | §8.2 | `ReconService.RunBatch` | REC-01、REC-08 | 1.0.0 | 2026-10-27 |
 | `POST /admin/outbox/replay` 事件重放 | §8.3 | `PaymentService.ReplayEvent` | MQ-05 | 1.0.0 | 2026-10-12 |
 | `POST /admin/accounts/check` 余额核对 | §8.4 | `AccountService.CheckBalance` | ACC-10 | 1.0.0 | 2026-10-27 |
@@ -595,6 +596,8 @@ payment 的 `QueryPayment` 直接读 `payment_order`，不缓存，不写行，�
 
 调用方为模拟渠道，请求体与签名见 §9.7。不做 nonce 检查（回调处理本身幂等）。
 
+网关商户端口已注册这条路由。响应 body 的字节是 `SUCCESS` 或 `FAIL`，没有 JSON 信封，也不做平台签名。
+
 响应为纯文本：
 
 | 情况 | HTTP | body |
@@ -973,7 +976,7 @@ account RPC 以商户号（或 owner）为入参，由 account 按商户号路�
 
 `GetMerchantCredential` 返回明文密钥，只允许网关调用；调用双方都不得记录响应内容。
 
-`GetMerchantCredential`（PAY-01）：请求为 nil 返回 `10001`。`app_id` 按字节精确匹配，为空、不存在或只是大小写、首尾空格不同都返回 `20004`（`X-App-Id` 不在签名串里，放宽匹配会让同一请求换个写法绕过按 `app_id` 记的 nonce）。`merchant` 表列跟随库默认 `utf8mb4_bin`，区分大小写，但 PAD SPACE 会忽略尾部空格；集成测试临时库为 `utf8mb4_0900_ai_ci`，不区分大小写与重音。两种规则下 SQL 都可能匹配到字节不同的值，所以服务端读回 `app_id` 再逐字节比较。DISABLED 商户照常返回，由网关返回 `20004`。密文解不开是平台内部故障，返回 `10003`。payment 不缓存凭证，网关侧缓存属于 GW-08。除 `GetMerchantCredential`、`CreatePayment`、`Pay`、`ClosePayment` 与 `QueryPayment` 外，PaymentService 其余方法在各自功能点实现前一律返回 `10003`，不是这些方法将来的错误码语义。服务端处理超时：`Pay` 为 5 秒，与需求 §5.4.1、GW-01 第 5 条的网关调用超时一致，使渠道受理的 3 秒总超时先到期并返回 PAYING；其他方法仍为 2 秒。不新增环境变量。
+`GetMerchantCredential`（PAY-01）：请求为 nil 返回 `10001`。`app_id` 按字节精确匹配，为空、不存在或只是大小写、首尾空格不同都返回 `20004`（`X-App-Id` 不在签名串里，放宽匹配会让同一请求换个写法绕过按 `app_id` 记的 nonce）。`merchant` 表列跟随库默认 `utf8mb4_bin`，区分大小写，但 PAD SPACE 会忽略尾部空格；集成测试临时库为 `utf8mb4_0900_ai_ci`，不区分大小写与重音。两种规则下 SQL 都可能匹配到字节不同的值，所以服务端读回 `app_id` 再逐字节比较。DISABLED 商户照常返回，由网关返回 `20004`。密文解不开是平台内部故障，返回 `10003`。payment 不缓存凭证，网关侧缓存属于 GW-08。除 `GetMerchantCredential`、`CreatePayment`、`Pay`、`ClosePayment`、`QueryPayment` 与 `HandleChannelNotify` 外，PaymentService 其余方法在各自功能点实现前一律返回 `10003`，不是这些方法将来的错误码语义。服务端处理超时：`Pay` 为 5 秒，与需求 §5.4.1、GW-01 第 5 条的网关调用超时一致，使渠道受理的 3 秒总超时先到期并返回 PAYING；其他方法仍为 2 秒。不新增环境变量。
 
 `QueryPayment`（PAY-08）已实现。响应类型仍是 `PaymentOrder`，不是带 `biz_code` 的包装。成功时 RPC error 为 nil 并返回订单。请求为 nil，或 `pay_no` 与 `out_trade_no` 两个都空、两个都非空，返回已有的 `10001`（空串算没提供，不 trim），handler 用 `ToBizStatus`，不读库。`10001` 不进上表业务错误列。只提供 `pay_no` 时直接读 `payment_order`：没有行，或 `merchant_id` 与库中逐字节不同（含空商户号），都返回已有的 `30001`。只提供 `out_trade_no` 时按 `(merchant_id, out_trade_no)` 读：没有行返回 `30001`，他人的商户订单号因此也是 `30001`。两种情况同一个错误，走 `BizStatusError`，不带订单，调用方看不出订单是否存在。查到且商户匹配则原样返回该行，状态可以是 `INIT`、`PAYING`、`SUCCESS`、`FAILED`、`CLOSED`，不推进状态，不改 `version`，不调渠道，不写 outbox。不缓存。服务端处理超时仍是 2 秒。`Pay` 仍是 5 秒。nil handler 或 nil service 仍由 `ready` 返回 `10003`。不新增错误码，不改 IDL。
 

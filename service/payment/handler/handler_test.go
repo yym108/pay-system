@@ -171,14 +171,19 @@ func TestUnimplementedMethodsReturnInternal(t *testing.T) {
 	if n := svc.callCount(); n != 0 {
 		t.Fatalf("invalid ClosePayment called biz %d times", n)
 	}
+	if _, err := h.HandleChannelNotify(ctx, nil); !errors.Is(errno.FromBizStatus(err), errno.ErrInvalidParam) {
+		t.Fatal("nil HandleChannelNotify")
+	}
+	if n := svc.callCount(); n != 0 {
+		t.Fatalf("nil HandleChannelNotify called biz %d times", n)
+	}
 	for name, fn := range map[string]func() error{
-		"CreateRefund":        func() error { _, err := h.CreateRefund(ctx, nil); return err },
-		"QueryRefund":         func() error { _, err := h.QueryRefund(ctx, nil); return err },
-		"CreateTransfer":      func() error { _, err := h.CreateTransfer(ctx, nil); return err },
-		"QueryTransfer":       func() error { _, err := h.QueryTransfer(ctx, nil); return err },
-		"HandleChannelNotify": func() error { _, err := h.HandleChannelNotify(ctx, nil); return err },
-		"SyncChannelTxn":      func() error { _, err := h.SyncChannelTxn(ctx, nil); return err },
-		"ReplayEvent":         func() error { _, err := h.ReplayEvent(ctx, nil); return err },
+		"CreateRefund":   func() error { _, err := h.CreateRefund(ctx, nil); return err },
+		"QueryRefund":    func() error { _, err := h.QueryRefund(ctx, nil); return err },
+		"CreateTransfer": func() error { _, err := h.CreateTransfer(ctx, nil); return err },
+		"QueryTransfer":  func() error { _, err := h.QueryTransfer(ctx, nil); return err },
+		"SyncChannelTxn": func() error { _, err := h.SyncChannelTxn(ctx, nil); return err },
+		"ReplayEvent":    func() error { _, err := h.ReplayEvent(ctx, nil); return err },
 	} {
 		if !errors.Is(errno.FromBizStatus(fn()), errno.ErrInternal) {
 			t.Fatalf("%s nil request", name)
@@ -400,10 +405,6 @@ func unimplementedCalls(cli paymentservice.Client) []call {
 		}},
 		{"QueryTransfer", func() error {
 			_, err := cli.QueryTransfer(ctx, &payment.QueryTransferRequest{MerchantId: "M100001"})
-			return err
-		}},
-		{"HandleChannelNotify", func() error {
-			_, err := cli.HandleChannelNotify(ctx, &payment.HandleChannelNotifyRequest{Channel: "mockpay", NotifyId: "n1", TxnType: "PAY", ReqNo: "PA1", Status: "SUCCESS"})
 			return err
 		}},
 		{"SyncChannelTxn", func() error {
@@ -658,6 +659,17 @@ func (s *scripted) CreatePayment(ctx context.Context, in *biz.CreatePaymentInput
 		return biz.PaymentOrder{}, err
 	}
 	return order, nil
+}
+
+func (s *scripted) ApplyChannelNotify(ctx context.Context, in biz.PayResult) (string, error) {
+	s.mu.Lock()
+	s.calls++
+	err := s.err
+	s.mu.Unlock()
+	if err != nil {
+		return "", err
+	}
+	return "APPLIED", nil
 }
 
 func (s *scripted) lastPaymentInput() biz.CreatePaymentInput {

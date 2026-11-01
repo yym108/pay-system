@@ -28,6 +28,12 @@
 - merchant_id 只来自验签。金额用 UseNumber 加 ParseInt，小数和字符串是 10001。
 - 余额只回五个字段，available_amount 原样透传，不重算。传输失败是一次 10004，不重试。
 
+## GW-06 渠道回调入口
+
+- `POST /callback/mockpay` 不走商户验签。正文只有 `SUCCESS` 或 `FAIL`。
+- 渠道密钥为空是 500，不是 401。时间窗是 ±300 秒，301 秒失败。
+- 30001 和 50002 也回 `SUCCESS`，并给进程内计数加一，避免渠道空转重试。退款分支仍是 10003，留给 REF-03。
+
 ## PAY-01 商户与密钥
 
 - `merchant` 表列跟随库默认 `utf8mb4_bin`：区分大小写，但 PAD SPACE 比较时忽略尾部空格，compose 上实测 `WHERE app_id = 'app_m100001 '` 也能查到 `app_m100001`。集成测试临时库是 `utf8mb4_0900_ai_ci`，不区分大小写和重音，`'APP_M100001'` 也能查到。两种规则下 SQL 都会匹配字节不同的值。`X-App-Id` 不在签名串里，若 nonce 防重按请求带来的 app_id 记键，换个写法同一个签名就能重放。查询后在应用里逐字节比较读回的 app_id、merchant_id，不一致按不存在返回 `20004`。去掉这次比较，集成测试 `TestPAY01UnknownAppID` 立刻失败（测试库下靠大小写触发）；尾部空格目前只在 compose 手测过。
