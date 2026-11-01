@@ -1,7 +1,7 @@
 // Package gateway 是商户 API 与管理 API 的 HTTP 入口。
 //
 // GW-01 搭了骨架：两个 Hertz 实例、统一 JSON、请求体上限、中间件顺序和 Kitex 客户端。
-// GW-03 在商户端口的 /v1 上验签。时间窗口、限流、nonce 仍是占位。生产 Register 不注册 /v1/balance。
+// GW-03 在商户端口的 /v1 上验签。GW-02 注册支付与余额路由。时间窗口、限流、nonce 仍是占位。
 package gateway
 
 import (
@@ -30,6 +30,8 @@ type Handler struct {
 	clk       clock.Clock
 	secret    []byte
 	lookup    MerchantLookup
+	payment   paymentAPI
+	account   accountAPI
 	nextNonce func() (string, error)
 	logger    *slog.Logger
 }
@@ -87,7 +89,7 @@ func newHandler(admin bool, opts ...Option) *Handler {
 	return h
 }
 
-// Register 安装中间件和未知路径。不注册 /v1/balance，那是测试或 GW-02 的路由。
+// Register 安装中间件。商户端口注册支付与余额路由，管理端口不注册。
 //
 // 顺序：请求体上限、Recovery、RequestID、Trace、AccessLog、
 // 时间窗口占位、验签、限流占位、nonce 占位、响应签名、handler。
@@ -105,6 +107,9 @@ func (h *Handler) Register(r *server.Hertz) {
 	r.Use(h.rateLimit)
 	r.Use(h.nonce)
 	r.Use(h.platformSign)
+	if !h.admin {
+		h.registerV1(r)
+	}
 	r.NoRoute(h.notFound)
 }
 

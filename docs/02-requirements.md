@@ -403,7 +403,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | NTF-01 | 通知记录生成 | P0 | M5 | MQ-03 | TODO |
 | NTF-02 | 通知发送与固定间隔重试 | P0 | M5 | NTF-01、BASE-13、TL-02 | TODO |
 | GW-01 | 网关骨架与统一响应 | P0 | M3 | BASE-12、BASE-13、TL-01 | DONE |
-| GW-02 | 商户 API 路由（支付与余额） | P0 | M3 | GW-01、GW-03、PAY-02/03/06/08、ACC-02、ACC-11 | TODO |
+| GW-02 | 商户 API 路由（支付与余额） | P0 | M3 | GW-01、GW-03、PAY-02/03/06/08、ACC-02、ACC-11 | DONE |
 | GW-03 | 商户验签 | P0 | M3 | GW-01、PAY-01 | DONE |
 | GW-04 | 时间窗口与 nonce 防重放 | P0 | M5 | GW-03、GW-06、OPS-01 | TODO |
 | GW-05 | 商户限流（进程内） | P0 | M5 | GW-03 | TODO |
@@ -2181,9 +2181,9 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 
 验收：
 
-- [ ] 创建支付单时 `amount` 为 `100.5`、`"100"`、`0`、`10000001` 均返回 `10001`。
-- [ ] 请求体中伪造 `merchant_id` 不影响订单归属。
-- [ ] `GET /v1/balance` 只返回当前验签商户的结算账户余额，查询串中的其他 `merchant_id` 被忽略。
+- [x] 创建支付单时 `amount` 为 `100.5`、`"100"`、`0`、`10000001` 均返回 `10001`。
+- [x] 请求体中伪造 `merchant_id` 不影响订单归属。
+- [x] `GET /v1/balance` 只返回当前验签商户的结算账户余额，查询串中的其他 `merchant_id` 被忽略。
 
 #### GW-03 商户验签
 
@@ -3163,3 +3163,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-01 | v3.0 | TL-01：paycli 用环境变量或参数调用商户接口和管理接口。商户请求经 `pkg/sign` 签名，响应按 §3.3 验签；管理响应不签名。验收用 httptest 假服务端，不连真网关。经网关的完整流程仍是 GW-09。新增可选配置 `PAYCLI_GATEWAY_URL`、`PAYCLI_APP_ID`、`PAYCLI_APP_SECRET`、`PAYCLI_ADMIN_TOKEN`，加载时允许为空。BASE-09 中“paycli 结构体为空”的说法由本功能点取代。不新增错误码，不改表，不改服务端契约 |
 | 2026-11-01 | v3.0 | GW-01：两个 Hertz 实例听 `:8080`（商户 API 与渠道回调）和 `:8090`（管理接口），不写成 `127.0.0.1`，这次不听 `:6060`，不改 compose。请求体超过 65536 字节返回 HTTP 413 / `10001`，不签名；恰好 65536 字节放行。handler panic 返回 500 / `10003`，进程不退出。`request_id` 由服务端生成 32 位小写十六进制，忽略客户端 `X-Request-Id`。未知路径返回 404 / `10002`，不签名。时间窗口、验签、限流、nonce 只占位。生产 Register 没有 `/v1/balance`；paycli 验签只走测试里临时加上的路由。Kitex 客户端连接 100ms，默认调用 1 秒；`Pay`、`ClosePayment`、`CreateRefund` 5 秒，`CreateTransfer` 3 秒，`RunBatch`、`CheckBalance` 120 秒，由 `RPCTimeout` 在调用时使用，客户端默认仍是 1 秒，GW-01 没有 HTTP 路由调用它们。地址写死 `payment:8881`、`account:8882`、`recon:8883`，不重试。不新增错误码，不改 IDL，不改表。 |
 | 2026-11-01 | v3.0 | GW-03：商户端口 `/v1` 缺头或验签失败返回已有的 20001，不到路由；验签通过后路径仍不存在则 404 / 10002，且该 404 带平台签名；管理端口与非 `/v1` 仍不验签、404 不签名；每次 `GetMerchantCredential`，不缓存，调用超时 1 秒，不重试；DISABLED 与非 ACTIVE 为 20004；空密钥与空 merchant_id 为 10003；响应签名用本次查到的 app_secret，没有查凭证的已标记请求仍用进程内 WithSignSecret。不新增错误码，不改表，不改 IDL。 |
+| 2026-11-01 | v3.0 | GW-02：商户端口提供创建、发起、关闭、查询支付单和查询余额。merchant_id 只取验签结果。金额在网关按 JSON 整数校验。余额只返回五个字段，available_amount 原样透传。不新增错误码，不改表，不改 IDL。 |

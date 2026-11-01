@@ -58,6 +58,8 @@ func serve(ctx context.Context, logOut io.Writer) error {
 	merchant := gateway.NewMerchant(
 		gateway.WithClock(clock.Real{}),
 		gateway.WithMerchantLookup(gateway.NewPaymentLookup(clients.Payment)),
+		gateway.WithPaymentAPI(clients.Payment),
+		gateway.WithAccountAPI(clients.Account),
 	)
 	admin := gateway.NewAdmin(gateway.WithClock(clock.Real{}))
 	errCh := make(chan error, 2)

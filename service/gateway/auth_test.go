@@ -513,7 +513,7 @@ func TestGW03ValidSignature(t *testing.T) {
 	}
 }
 
-// GW-03 验收：§3.7 V1 验签通过后路径不存在仍是 404 / 10002，且平台签名用查到的 app_secret。
+// GW-03 验收：§3.7 V1 验签通过。该路径现由 GW-02 创建支付单；没有 payment client 时是 10003，平台签名仍用查到的 app_secret。
 func TestGW03V1UnknownPathSigned(t *testing.T) {
 	clk := &clock.Fake{}
 	clk.Set(time.Unix(1_791_500_000, 0))
@@ -528,15 +528,47 @@ func TestGW03V1UnknownPathSigned(t *testing.T) {
 	hdr.Set(sign.HeaderNonce, gw03Nonce)
 	hdr.Set(sign.HeaderSignature, gw03V1Sig)
 	got := do(t, http.MethodPost, "http://"+addr+"/v1/payments", body, hdr)
+	if got.status != errno.ErrInternal.HTTPStatus {
+		t.Fatalf("status %d body %s", got.status, got.body)
+	}
+	env := decodeEnv(t, got.body)
+	if env.Code != errno.ErrInternal.Code || env.Msg != errno.ErrInternal.Msg || string(env.Data) != "{}" {
+		t.Fatalf("body %s", got.body)
+	}
+	if !signed(got.header) {
+		t.Fatal("10003 was not signed")
+	}
+	if err := sign.VerifyPlatform([]byte(gw03Secret), sign.PlatformMessage{
+		Timestamp: got.header.Get(sign.HeaderTimestamp),
+		Nonce:     got.header.Get(sign.HeaderNonce),
+		Body:      got.body,
+	}, got.header.Get(sign.HeaderSignature)); err != nil {
+		t.Fatal(err)
+	}
+	calls := look.calls()
+	if len(calls) != 1 || calls[0] != gw03AppID {
+		t.Fatalf("lookup %q", calls)
+	}
+}
+
+// GW-03 验收：验签通过但路径仍不存在时是 404 / 10002，data 为 {}，平台签名用查到的 app_secret。
+func TestGW03UnknownPathStill404(t *testing.T) {
+	clk := &clock.Fake{}
+	clk.Set(time.Unix(1_791_500_000, 0))
+	look := &fakeLookup{fn: func(string) (Credential, error) {
+		return Credential{MerchantID: gw03MID, Status: "ACTIVE", Secret: []byte(gw03Secret)}, nil
+	}}
+	addr := startGW(t, NewMerchant(WithClock(clk), WithMerchantLookup(look)), nil)
+	const path = "/v1/gw03-unknown"
+	body := []byte(`{"n":1}`)
+	hdr := signedHeader(t, []byte(gw03Secret), http.MethodPost, path, gw03AppID, "1791500000", gw03Nonce, body)
+	got := do(t, http.MethodPost, "http://"+addr+path, body, hdr)
 	if got.status != http.StatusNotFound {
 		t.Fatalf("status %d body %s", got.status, got.body)
 	}
 	env := decodeEnv(t, got.body)
 	if env.Code != errno.ErrNotFound.Code || env.Msg != errno.ErrNotFound.Msg || string(env.Data) != "{}" {
 		t.Fatalf("body %s", got.body)
-	}
-	if !signed(got.header) {
-		t.Fatal("404 was not signed")
 	}
 	if err := sign.VerifyPlatform([]byte(gw03Secret), sign.PlatformMessage{
 		Timestamp: got.header.Get(sign.HeaderTimestamp),
@@ -554,17 +586,12 @@ func TestGW03V1UnknownPathSigned(t *testing.T) {
 // GW-03 验收：未签名 GET /v1/balance 返回 20001，不签名，不进 handler，lookup 未调用。
 func TestGW03UnsignedBalance(t *testing.T) {
 	look := &fakeLookup{}
-	var hit hitBox
-	addr := startGW(t, NewMerchant(WithMerchantLookup(look)), func(r *server.Hertz) {
-		r.GET("/v1/balance", func(_ context.Context, c *app.RequestContext) {
-			id, ok := MerchantID(c)
-			hit.mark(id, ok)
-		})
-	})
+	acct := &gw02Account{}
+	addr := startGW(t, NewMerchant(WithMerchantLookup(look), WithAccountAPI(acct)), nil)
 	got := do(t, http.MethodGet, "http://"+addr+"/v1/balance", nil, nil)
 	assertErrno(t, got, errno.ErrSignInvalid)
-	if n, _, _ := hit.snapshot(); n != 0 {
-		t.Fatal("handler called")
+	if acct.calls() != 0 {
+		t.Fatal("account called")
 	}
 	if calls := look.calls(); len(calls) != 0 {
 		t.Fatalf("lookup %q", calls)

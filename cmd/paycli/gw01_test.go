@@ -8,8 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloudwego/hertz/pkg/app"
+	"github.com/cloudwego/kitex/client/callopt"
 
+	"github.com/yym108/pay-system/kitex_gen/account"
 	"github.com/yym108/pay-system/pkg/sign"
 	"github.com/yym108/pay-system/service/gateway"
 )
@@ -18,7 +19,7 @@ import (
 // GW-03 起 /v1 先验签。fake lookup 的 secret 与 testSecret 相同，handler 只 WriteOK。
 func TestGW01PayCLIVerifiesPlatformSignature(t *testing.T) {
 	clk := fixedClock()
-	h := gateway.NewMerchant(gateway.WithClock(clk), gateway.WithMerchantLookup(gw03PaycliLookup{}))
+	h := gateway.NewMerchant(gateway.WithClock(clk), gateway.WithMerchantLookup(gw03PaycliLookup{}), gateway.WithAccountAPI(gw02PaycliAccount{}))
 	ctx, cancel := context.WithCancel(context.Background())
 	ln, err := gateway.Listen(ctx, ":0")
 	if err != nil {
@@ -27,9 +28,6 @@ func TestGW01PayCLIVerifiesPlatformSignature(t *testing.T) {
 	}
 	srv := gateway.NewEngine(ln)
 	h.Register(srv)
-	srv.GET("/v1/balance", func(_ context.Context, c *app.RequestContext) {
-		gateway.WriteOK(c, map[string]int64{"available": 0})
-	})
 	errCh := make(chan error, 1)
 	go func() { errCh <- gateway.Spin(ctx, srv) }()
 	t.Cleanup(func() {
@@ -83,6 +81,12 @@ func TestGW01PayCLIVerifiesPlatformSignature(t *testing.T) {
 	if msg.Timestamp != sign.FormatTimestamp(clk.Now()) {
 		t.Fatalf("timestamp %s", msg.Timestamp)
 	}
+}
+
+type gw02PaycliAccount struct{}
+
+func (gw02PaycliAccount) GetAccount(context.Context, *account.GetAccountRequest, ...callopt.Option) (*account.Account, error) {
+	return &account.Account{AccountNo: "AC0000000000000000001", Currency: "CNY", AvailableAmount: 0}, nil
 }
 
 type gw03PaycliLookup struct{}

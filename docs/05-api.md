@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 3.3.2 |
+| 文档版本 | 3.3.3 |
 | API 版本 | v1（路径前缀 `/v1`） |
 | 最后修改 | 2026-11-01 |
 | 状态 | 设计基线，实现须与本文一致 |
@@ -69,6 +69,7 @@
 | 3.3.0 | 2026-11-01 | 管理端口提供 `/debug/pprof/` 及 cmdline、profile、symbol、trace。这不是商户 API。`/metrics` 仍是 404。`WriteTimeout` 改为 45 秒，以便写出 30 秒 CPU profile；`ReadHeaderTimeout` 仍是 1 秒。进程仍听 `:606x`，不改为 `127.0.0.1`。payment、account 的业务端口是 Kitex，不提供 HTTP `/debug/pprof/`。channel-mock :9080 对该路径返回 404。不改商户 HTTP，不改 IDL，不新增错误码。§9.8 的渠道管理接口仍未实现 | §1、§9.8、§12 | OPS-05 |
 | 3.3.1 | 2026-11-01 | 文字澄清：`request_id` 由服务端生成 32 位小写十六进制，忽略客户端 `X-Request-Id`。未知路径返回 HTTP 404 / `10002`，`msg` 为 `not found`，`data` 为 `{}`，不签名。不新增字段，不改错误码数字，不改 IDL。§1 各接口的“最后修改”不变 | §2.3 | GW-01 |
 | 3.3.2 | 2026-11-01 | 文字澄清：未签名的商户 `/v1` 返回已有的 `20001`，不到路由；四个头齐全且验签通过、路径仍不存在时仍是 404 / `10002` / `not found` / `data` 为 `{}`，该 404 带平台签名。不新增字段，不改错误码数字，不改 IDL。§1 各接口的“最后修改”不变 | §2.3 | GW-03 |
+| 3.3.3 | 2026-11-01 | 网关现已提供 §4.1–§4.4 与 §4.7。字段和错误码不变。 | §4.1–§4.4、§4.7 | GW-02 |
 
 ## 1. 接口总览
 
@@ -87,13 +88,13 @@
 
 | 接口 | 章节 | RPC | 功能点 | 引入版本 | 最后修改 |
 |---|---|---|---|---|---|
-| `POST /v1/payments` 创建支付单 | §4.1 | `PaymentService.CreatePayment` | PAY-02 | 1.0.0 | 2026-10-28 |
+| `POST /v1/payments` 创建支付单 | §4.1 | `PaymentService.CreatePayment` | PAY-02 | 1.0.0 | 2026-11-01 |
 | `POST /v1/payments/{pay_no}/pay` 发起支付 | §4.2 | `PaymentService.Pay` | PAY-03、PAY-04 | 1.0.0 | 2026-11-01 |
 | `POST /v1/payments/{pay_no}/close` 关闭支付单 | §4.3 | `PaymentService.ClosePayment` | PAY-06 | 1.0.0 | 2026-11-01 |
 | `GET /v1/payments/{pay_no}`、`GET /v1/payments?out_trade_no=` 查询支付单 | §4.4 | `PaymentService.QueryPayment` | PAY-08 | 1.0.0 | 2026-11-01 |
 | `POST /v1/refunds` 创建退款 | §4.5 | `PaymentService.CreateRefund` | REF-01、REF-02 | 1.0.0 | 2026-10-27 |
 | `GET /v1/refunds/{refund_no}`、`GET /v1/refunds?out_refund_no=` 查询退款 | §4.6 | `PaymentService.QueryRefund` | REF-05 | 1.0.0 | 2026-10-27 |
-| `GET /v1/balance` 查询余额 | §4.7 | `AccountService.GetAccount` | ACC-02 | 1.0.0 | 2026-10-27 |
+| `GET /v1/balance` 查询余额 | §4.7 | `AccountService.GetAccount` | ACC-02 | 1.0.0 | 2026-11-01 |
 | `POST /v1/transfers` 创建转账 | §4.8 | `PaymentService.CreateTransfer` | TRF-01~03 | 2.0.0 | 2026-10-27 |
 | `GET /v1/transfers/{transfer_no}`、`GET /v1/transfers?out_transfer_no=` 查询转账 | §4.9 | `PaymentService.QueryTransfer` | TRF-05 | 2.0.0 | 2026-10-27 |
 | 商户异步通知 | §6 | — | NTF-01、NTF-02 | 1.0.0 | 2026-10-12 |
@@ -346,7 +347,7 @@ signature = base64(HMAC-SHA256(channel_key, canonical))
 
 只能查询当前商户的订单。`pay_no` 与 `out_trade_no` 二选一。查询串方式必须且只能提供 `out_trade_no`。两个都空或两个都非空（空串算没提供，不 trim）是已有的 `10001`，不读库。`10001` 是通用错误，不列入下面的业务错误。
 
-payment 的 `QueryPayment` 直接读 `payment_order`，不缓存，不写行，不推进状态。只提供 `pay_no`：没有行，或 `merchant_id` 与库中逐字节不同（含空商户号），都返回 `30001`。只提供 `out_trade_no`：没有行返回 `30001`，他人的商户订单号因此也是 `30001`。两种情况同一个错误，调用方看不出订单是否存在。查到且商户匹配则原样返回该行，状态可以是 `INIT`、`PAYING`、`SUCCESS`、`FAILED`、`CLOSED`。网关路由仍是 GW-02，本次不实现网关。
+payment 的 `QueryPayment` 直接读 `payment_order`，不缓存，不写行，不推进状态。只提供 `pay_no`：没有行，或 `merchant_id` 与库中逐字节不同（含空商户号），都返回 `30001`。只提供 `out_trade_no`：没有行返回 `30001`，他人的商户订单号因此也是 `30001`。两种情况同一个错误，调用方看不出订单是否存在。查到且商户匹配则原样返回该行，状态可以是 `INIT`、`PAYING`、`SUCCESS`、`FAILED`、`CLOSED`。网关已提供这两条查询路由。
 
 响应 `data`：`PaymentOrder`。
 

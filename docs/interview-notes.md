@@ -22,6 +22,12 @@
 - 每次调用 GetMerchantCredential，不缓存，1 秒 RPCTimeout，不重试。
 - 未签名的 `/v1/balance` 从 GW-01 的 404 改为已有的 20001。
 
+## GW-02 支付与余额路由
+
+- 只做创建、发起、关闭、查询和余额。退款与转账是 GW-09。渠道回调是 GW-06。
+- merchant_id 只来自验签。金额用 UseNumber 加 ParseInt，小数和字符串是 10001。
+- 余额只回五个字段，available_amount 原样透传，不重算。传输失败是一次 10004，不重试。
+
 ## PAY-01 商户与密钥
 
 - `merchant` 表列跟随库默认 `utf8mb4_bin`：区分大小写，但 PAD SPACE 比较时忽略尾部空格，compose 上实测 `WHERE app_id = 'app_m100001 '` 也能查到 `app_m100001`。集成测试临时库是 `utf8mb4_0900_ai_ci`，不区分大小写和重音，`'APP_M100001'` 也能查到。两种规则下 SQL 都会匹配字节不同的值。`X-App-Id` 不在签名串里，若 nonce 防重按请求带来的 app_id 记键，换个写法同一个签名就能重放。查询后在应用里逐字节比较读回的 app_id、merchant_id，不一致按不存在返回 `20004`。去掉这次比较，集成测试 `TestPAY01UnknownAppID` 立刻失败（测试库下靠大小写触发）；尾部空格目前只在 compose 手测过。
