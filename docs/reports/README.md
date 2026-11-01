@@ -39,3 +39,4 @@
 | BASE-15 | 故障注入点 | 基础设施 | `9de0678` | 2026-10-28 | [BASE-15-fault.md](BASE-15-fault.md) |
 | PAY-02 | 创建支付单 | 支付 | `8934e12` | 2026-10-28 | [PAY-02-create.md](PAY-02-create.md) |
 | PAY-03 | 发起支付 | 支付 | `7a5e19f` | 2026-10-28 | [PAY-03-pay.md](PAY-03-pay.md) |
+| MQ-01 | outbox 写入 | 支付 | `917c870` | 2026-11-01 | [MQ-01-outbox.md](MQ-01-outbox.md) |
