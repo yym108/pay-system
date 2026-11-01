@@ -162,8 +162,16 @@ func TestUnimplementedMethodsReturnInternal(t *testing.T) {
 	if n := svc.callCount(); n != 0 {
 		t.Fatalf("nil Pay called biz %d times", n)
 	}
+	if _, err := h.ClosePayment(ctx, nil); !errors.Is(errno.FromBizStatus(err), errno.ErrInvalidParam) {
+		t.Fatal("nil ClosePayment request")
+	}
+	if _, err := h.ClosePayment(ctx, &payment.ClosePaymentRequest{MerchantId: "M100001"}); !errors.Is(errno.FromBizStatus(err), errno.ErrInvalidParam) {
+		t.Fatal("empty ClosePayment pay_no")
+	}
+	if n := svc.callCount(); n != 0 {
+		t.Fatalf("invalid ClosePayment called biz %d times", n)
+	}
 	for name, fn := range map[string]func() error{
-		"ClosePayment":        func() error { _, err := h.ClosePayment(ctx, nil); return err },
 		"QueryPayment":        func() error { _, err := h.QueryPayment(ctx, nil); return err },
 		"CreateRefund":        func() error { _, err := h.CreateRefund(ctx, nil); return err },
 		"QueryRefund":         func() error { _, err := h.QueryRefund(ctx, nil); return err },
@@ -319,10 +327,6 @@ type call struct {
 func unimplementedCalls(cli paymentservice.Client) []call {
 	ctx := context.Background()
 	return []call{
-		{"ClosePayment", func() error {
-			_, err := cli.ClosePayment(ctx, &payment.ClosePaymentRequest{MerchantId: "M100001", PayNo: "PA1"})
-			return err
-		}},
 		{"QueryPayment", func() error {
 			_, err := cli.QueryPayment(ctx, &payment.QueryPaymentRequest{MerchantId: "M100001"})
 			return err
@@ -506,6 +510,28 @@ func (s *scripted) GetMerchantCredential(ctx context.Context, appID string) (biz
 	return cred, nil
 }
 
+func (s *scripted) ClosePayment(ctx context.Context, _ *biz.CloseInput) (biz.PaymentOrder, error) {
+	s.mu.Lock()
+	s.calls++
+	order, err, panicking, block := s.order, s.err, s.panicking, s.block
+	s.mu.Unlock()
+	if panicking {
+		panic("boom " + testSecret)
+	}
+	if block != nil {
+		if berr := block(ctx); berr != nil {
+			return biz.PaymentOrder{}, berr
+		}
+	}
+	if err != nil {
+		if errors.Is(err, errno.ErrOrderStatusConflict) {
+			return order, err
+		}
+		return biz.PaymentOrder{}, err
+	}
+	return order, nil
+}
+
 func (s *scripted) Pay(ctx context.Context, _ *biz.PayInput) (biz.PaymentOrder, error) {
 	s.mu.Lock()
 	s.calls++
@@ -596,6 +622,33 @@ func TestPayHandlerCarriesChannelRejected(t *testing.T) {
 		t.Fatalf("30001 carried a response: %+v", resp)
 	}
 	assertBizCode(t, "not found", err, errno.ErrOrderNotFound.Code)
+}
+
+func TestClosePaymentHandlerCarriesStatusConflict(t *testing.T) {
+	created := time.Date(2026, 11, 1, 10, 0, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	order := biz.PaymentOrder{
+		PayNo: "PA0000000000000000001", OutTradeNo: "T1", Amount: 10008, FeeAmount: 60,
+		Currency: "CNY", Subject: "demo", Status: "SUCCESS",
+		ExpireAt: created.Add(15 * time.Minute), CreatedAt: created, PaidAt: created,
+	}
+	svc := &scripted{order: order, err: errno.ErrOrderStatusConflict}
+	got, err := New(svc).ClosePayment(context.Background(), &payment.ClosePaymentRequest{
+		MerchantId: "M100002", PayNo: order.PayNo,
+	})
+	if err != nil || got.GetBizCode() != errno.ErrOrderStatusConflict.Code || got.GetPaymentOrder().GetPayNo() != order.PayNo ||
+		got.GetPaymentOrder().GetStatus() != "SUCCESS" || got.GetPaymentOrder().GetAmount() != 10008 {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+	for _, code := range []*errno.Error{errno.ErrOrderNotFound, errno.ErrUnavailable, errno.ErrChannelAmountMismatch} {
+		svc.set(func(s *scripted) { s.err = code })
+		resp, callErr := New(svc).ClosePayment(context.Background(), &payment.ClosePaymentRequest{
+			MerchantId: "M100002", PayNo: order.PayNo,
+		})
+		if resp != nil {
+			t.Fatalf("%d carried a response: %+v", code.Code, resp)
+		}
+		assertBizCode(t, code.Error(), callErr, code.Code)
+	}
 }
 
 func TestCreatePaymentHandlerPassesOptionals(t *testing.T) {

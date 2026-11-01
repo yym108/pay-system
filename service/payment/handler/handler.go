@@ -1,6 +1,6 @@
 // Package handler 是 payment 的 Kitex 适配。
 // 只做协议转换和错误码转换，不改 biz 的幂等与 CAS。
-// 已实现 GetMerchantCredential（PAY-01）、CreatePayment（PAY-02）和 Pay（PAY-03）。
+// 已实现 GetMerchantCredential（PAY-01）、CreatePayment（PAY-02）、Pay（PAY-03）和 ClosePayment（PAY-06）。
 // 其余方法属于各自的功能点，实现前调用一律返回 10003，不进 biz。
 package handler
 
@@ -116,9 +116,32 @@ func (h *Handler) Pay(ctx context.Context, req *payment.PayRequest) (r *payment.
 	return &payment.PayResponse{BizCode: 0, PaymentOrder: toPaymentOrder(got)}, nil
 }
 
-// ClosePayment 属于 PAY-06。签名已改为 ClosePaymentResponse，仍不进 biz，返回 10003。
-func (h *Handler) ClosePayment(_ context.Context, _ *payment.ClosePaymentRequest) (*payment.ClosePaymentResponse, error) {
-	return nil, notImplemented()
+// ClosePayment 关闭支付单。请求为 nil 或 pay_no 为空返回 10001。
+// 30003 放在 ClosePaymentResponse.biz_code，error 为 nil，并携带订单。
+// 30001、10004、50002 和其他业务错误走 BizStatusError，不带订单。
+func (h *Handler) ClosePayment(ctx context.Context, req *payment.ClosePaymentRequest) (r *payment.ClosePaymentResponse, err error) {
+	defer recoverBiz(ctx, &err)
+	if err = h.ready(); err != nil {
+		return nil, err
+	}
+	if req == nil || req.PayNo == "" {
+		return nil, errno.ToBizStatus(errno.ErrInvalidParam)
+	}
+	got, callErr := h.svc.ClosePayment(ctx, &biz.CloseInput{
+		MerchantID: req.MerchantId,
+		PayNo:      req.PayNo,
+	})
+	if errors.Is(callErr, errno.ErrOrderStatusConflict) {
+		code, rpcErr := errno.RPCExit(callErr, true)
+		if rpcErr != nil {
+			return nil, rpcErr
+		}
+		return &payment.ClosePaymentResponse{BizCode: code, PaymentOrder: toPaymentOrder(got)}, nil
+	}
+	if callErr != nil {
+		return nil, statusErr(ctx, callErr)
+	}
+	return &payment.ClosePaymentResponse{BizCode: 0, PaymentOrder: toPaymentOrder(got)}, nil
 }
 
 // QueryPayment 属于 PAY-08，未实现，返回 10003。

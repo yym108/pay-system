@@ -84,6 +84,7 @@ func serve(cfg config.Payment, logOut io.Writer) error {
 		return err
 	}
 	payments.UsePay(channelClient, payments, cfg.ChannelNotifyURL)
+	payments.UseClose(channelClient)
 	// 健康检查和 SIGTERM 排空是 OPS-01。这里只阻塞到 Kitex 收到信号。
 	return handler.Run(handler.New(biz.NewApp(merchants, payments)), handler.Config{})
 }

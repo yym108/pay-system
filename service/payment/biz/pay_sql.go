@@ -24,6 +24,11 @@ UPDATE payment_order
    SET status = 'PAYING', channel = 'mockpay', version = version + 1, updated_at = ?
  WHERE pay_no = ? AND merchant_id = ? AND status = 'INIT'`
 
+const casInitToClosedSQL = `
+UPDATE payment_order
+   SET status = 'CLOSED', closed_at = ?, version = version + 1, updated_at = ?
+ WHERE pay_no = ? AND merchant_id = ? AND status = 'INIT'`
+
 const insertChannelTxnSQL = `
 INSERT INTO channel_txn (
   channel, txn_type, biz_no, channel_txn_no, amount, status,
@@ -76,6 +81,30 @@ func (s sqlOrderStore) casInitToPaying(ctx context.Context, order PaymentOrder, 
 			order.PayNo, int64(order.Amount), now.Add(payNextQueryDelay), now, now,
 		)
 		return err
+	})
+	if errors.Is(err, errCASMiss) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (s sqlOrderStore) casInitToClosed(ctx context.Context, order PaymentOrder, now time.Time) (bool, error) {
+	err := dbx.WithTx(ctx, s.db, func(tx *sqlx.Tx) error {
+		res, err := tx.ExecContext(ctx, casInitToClosedSQL, now, now, order.PayNo, order.MerchantID)
+		if err != nil {
+			return err
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if n != 1 {
+			return errCASMiss
+		}
+		return nil
 	})
 	if errors.Is(err, errCASMiss) {
 		return false, nil

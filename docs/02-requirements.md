@@ -379,7 +379,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | PAY-03 | 发起支付 | P0 | M3 | PAY-02、CH-01、BASE-15 | DONE |
 | PAY-04 | 支付结果推进 | P0 | M3 | PAY-03、MQ-01 | DONE |
 | PAY-05 | 查单补偿 | P0 | M4 | PAY-04、CH-02、CH-06、GW-06、REF-03、BASE-15 | TODO |
-| PAY-06 | 商户关单 | P0 | M3 | PAY-04、CH-03 | TODO |
+| PAY-06 | 商户关单 | P0 | M3 | PAY-04、CH-03 | DONE |
 | PAY-07 | 超时关单 | P0 | M4 | PAY-06 | TODO |
 | PAY-08 | 支付单查询 | P0 | M3 | PAY-02 | TODO |
 | PAY-09 | 立即同步渠道状态 | P0 | M6 | PAY-05 | TODO |
@@ -1609,7 +1609,7 @@ M4 切片（未实现）：
 | 当前状态 | 处理 | 返回 |
 |---|---|---|
 | INIT | CAS `INIT → CLOSED`，写 `closed_at` | CLOSED |
-| PAYING | 事务外调用渠道关单：`CLOSED` → `ApplyPayResult(CLOSED)`；`ALREADY_PAID` → 立即查单并 `ApplyPayResult(SUCCESS)`；`FAILED`（渠道交易已失败）→ `ApplyPayResult(FAILED, CHANNEL_FAILED)`；调用失败 → 不改状态 | CLOSED；已支付返回 `30003` 和 SUCCESS 订单；已失败返回 `30003` 和 FAILED 订单；调用失败返回 `10004` |
+| PAYING | 本地还没有渠道流水号时先查单，查无此单返回 `10004`，不调用关单。已有流水号，或查到渠道已有行，再在事务外关单：`CLOSED` → `ApplyPayResult(CLOSED)`；`ALREADY_PAID` → 立即查单并 `ApplyPayResult(SUCCESS)`；`FAILED`（渠道交易已失败）→ `ApplyPayResult(FAILED, CHANNEL_FAILED)`；调用失败 → 不改状态 | CLOSED；已支付返回 `30003` 和 SUCCESS 订单；已失败返回 `30003` 和 FAILED 订单；调用失败返回 `10004` |
 | CLOSED | 幂等 | CLOSED |
 | SUCCESS、FAILED | 不处理 | `30003` |
 
@@ -1619,9 +1619,9 @@ PAYING 状态必须等渠道确认关闭后才能 CLOSED，避免“本地已关
 
 验收：
 
-- [ ] NEVER_FINISH 场景关单后订单 CLOSED，渠道侧 `mock_txn` 为 CLOSED，之后不再有回调。
-- [ ] CLOSE_RACE 场景关单返回 `30003`，订单 SUCCESS，outbox 恰好 1 条 `payment.succeeded`。
-- [ ] 对 INIT 订单并发执行 Pay 与 Close（由 PAY-03 移来），结果只能是 PAYING 或 CLOSED 之一。
+- [x] NEVER_FINISH 场景关单后订单 CLOSED，渠道侧 `mock_txn` 为 CLOSED，之后不再有回调。
+- [x] CLOSE_RACE 场景关单返回 `30003`，订单 SUCCESS，outbox 恰好 1 条 `payment.succeeded`。
+- [x] 对 INIT 订单并发执行 Pay 与 Close（由 PAY-03 移来），结果只能是 PAYING 或 CLOSED 之一。
 
 #### PAY-07 超时关单
 
@@ -3154,3 +3154,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-10-28 | v3.0 | PAY-03：`Pay` 服务端处理超时 5 秒，其他方法仍 2 秒。渠道同步拒绝的 `source` 名为 `SYNC`。PAY-04 之前，生产用的 `ApplyPayResult` 不改订单并返回已有的 `10003`。不新增错误码，不新增环境变量，不改表 |
 | 2026-10-28 | v3.0 | MQ-01 文字澄清：`occurred_at` 取 `Add` 时的注入时钟（提交前读取，不能改成提交后再读），无有效 span 时 `trace_context` 为 `{}`，不新增错误码。五种事件的 topic、msg_key、biz_no 与 data 字段写入规则。不改资金规则 |
 | 2026-11-01 | v3.0 | PAY-04：`ApplyPayResult` 用结构体入参，一次事务按渠道流水 CAS、订单 CAS、仅 SUCCESS 调用已有 `outbox.Add` 的顺序推进。不新增错误码。`callback.after_commit` 仍留给 GW-06，本次不调用 `fault.Point`。文字澄清：金额比较先于同一终态和不同终态，已终态但金额不符仍是 `50002`；CLOSED 传了渠道完成时间则 `closed_at` 用该时间，没传则用本次注入时钟截到毫秒，`channel_finished_at` 保持空；SUCCESS 未传完成时间、未知 `source` 在写库前返回 `10001`。不改资金流向 |
+| 2026-11-01 | v3.0 | PAY-06：没有新错误码。PAYING 必须先等渠道确认关闭，不能在渠道返回之前把订单改成 CLOSED。本地还没有渠道流水号时先查单，查无此单返回 10004，不插入渠道占位 |

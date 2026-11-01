@@ -47,12 +47,13 @@ type Numberer interface {
 }
 
 // orderStore 读写支付单和渠道流水。
-// 假实现只给不连库的单元测试。状态只通过 casInitToPaying 做 CAS，回填不改状态。
+// 假实现只给不连库的单元测试。状态只通过 casInitToPaying、casInitToClosed 做 CAS，回填不改状态。
 type orderStore interface {
 	insertPayment(ctx context.Context, row PaymentOrder) error
 	paymentByOutTradeNo(ctx context.Context, merchantID, outTradeNo string) (PaymentOrder, bool, error)
 	paymentByPayNo(ctx context.Context, payNo string) (PaymentOrder, bool, error)
 	casInitToPaying(ctx context.Context, order PaymentOrder, now time.Time) (bool, error)
+	casInitToClosed(ctx context.Context, order PaymentOrder, now time.Time) (bool, error)
 	fillChannelTxnNo(ctx context.Context, bizNo, txnNo string) (int64, error)
 	channelTxnByBizNo(ctx context.Context, bizNo string) (channelTxn, bool, error)
 }
@@ -103,6 +104,7 @@ type Payments struct {
 	orders           orderStore
 	channel          ChannelAcceptor
 	applier          PayResultApplier
+	closer           channelCloser
 	channelNotifyURL string
 	// channelTimeout 大于 0 时替换渠道受理总超时。生产保持 0，用 PayChannelTimeout。
 	channelTimeout time.Duration
@@ -142,6 +144,14 @@ func (a *App) Pay(ctx context.Context, in *PayInput) (PaymentOrder, error) {
 		return PaymentOrder{}, errno.ErrInternal
 	}
 	return a.payments.Pay(ctx, in)
+}
+
+// ClosePayment 转给商户关单。
+func (a *App) ClosePayment(ctx context.Context, in *CloseInput) (PaymentOrder, error) {
+	if a == nil || a.payments == nil {
+		return PaymentOrder{}, errno.ErrInternal
+	}
+	return a.payments.ClosePayment(ctx, in)
 }
 
 func newPayments(merchants MerchantLookup, ids Numberer, clk clock.Clock, allowHosts string, orders orderStore) *Payments {

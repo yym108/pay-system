@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 3.1.5 |
+| 文档版本 | 3.1.7 |
 | API 版本 | v1（路径前缀 `/v1`） |
 | 最后修改 | 2026-11-01 |
 | 状态 | 设计基线，实现须与本文一致 |
@@ -62,6 +62,8 @@
 | 3.1.3 | 2026-10-28 | 落地 3.0.0 已预告的返回类型：`Pay`、`ClosePayment` 改为返回 `PayResponse`、`ClosePaymentResponse`（`biz_code` 与必填的 `payment_order`）。`Pay` 已实现；`ClosePayment` 仍返回 `10003`，不进 biz。`Pay` 服务端处理超时 5 秒，其他方法仍 2 秒。不改商户 HTTP 字段，不新增错误码 | §1、§10.2 | PAY-03 |
 | 3.1.4 | 2026-10-28 | MQ-01 已按 §11.3 写入。不改字段，不新增错误码 | §11 | MQ-01 |
 | 3.1.5 | 2026-11-01 | 落地已公布的 `30006` 契约：渠道同步拒绝由 PAY-04 写成 FAILED，`Pay` 把 `30006` 放进 `biz_code` 并携带订单。删去“PAY-04 接入前生产适配器返回 `10003`”。不改商户 HTTP 字段，不改 IDL，不新增错误码 | §1、§10.2 | PAY-03、PAY-04 |
+| 3.1.6 | 2026-11-01 | `ClosePayment` 进入 biz。请求为 nil 或 `pay_no` 为空返回 `10001`。INIT 本地 CAS 为 CLOSED；CLOSED 幂等；SUCCESS / FAILED 把已有 `30003` 放进 `biz_code` 并携带订单。PAYING 必须先等渠道关单：`OK` / `CLOSED` 经 `ApplyPayResult` 写成 CLOSED；`ALREADY_PAID` 再查单，只有查得 SUCCESS 且带 `finished_at` 才推进为 SUCCESS 并返回 `30003`；`OK` / `FAILED` 推进为 FAILED（`fail_code = CHANNEL_FAILED`）并返回 `30003`；调用失败、查单失败或未知结果返回 `10004`，订单保持 PAYING。`ApplyPayResult` 返回已有 `50002` 时走 `BizStatusError`，不带订单，不新增 errno。服务端处理超时仍为 2 秒。不改 IDL，不新增错误码，不新增环境变量 | §1、§4.3、§10.2 | PAY-06 |
+| 3.1.7 | 2026-11-01 | PAYING 且本地还没有渠道流水号时先查单。查无此单返回已有 `10004`，不调用关单，不插入渠道 amount 0 占位。查到已有行（含 PROCESSING）后再关单。已有 `channel_txn_no` 时仍直接关单。不新增错误码，不改 IDL | §4.3、§10.2 | PAY-06 |
 
 ## 1. 接口总览
 
@@ -81,7 +83,7 @@
 |---|---|---|---|---|---|
 | `POST /v1/payments` 创建支付单 | §4.1 | `PaymentService.CreatePayment` | PAY-02 | 1.0.0 | 2026-10-28 |
 | `POST /v1/payments/{pay_no}/pay` 发起支付 | §4.2 | `PaymentService.Pay` | PAY-03、PAY-04 | 1.0.0 | 2026-11-01 |
-| `POST /v1/payments/{pay_no}/close` 关闭支付单 | §4.3 | `PaymentService.ClosePayment` | PAY-06 | 1.0.0 | 2026-10-27 |
+| `POST /v1/payments/{pay_no}/close` 关闭支付单 | §4.3 | `PaymentService.ClosePayment` | PAY-06 | 1.0.0 | 2026-11-01 |
 | `GET /v1/payments/{pay_no}`、`GET /v1/payments?out_trade_no=` 查询支付单 | §4.4 | `PaymentService.QueryPayment` | PAY-08 | 1.0.0 | 2026-10-27 |
 | `POST /v1/refunds` 创建退款 | §4.5 | `PaymentService.CreateRefund` | REF-01、REF-02 | 1.0.0 | 2026-10-27 |
 | `GET /v1/refunds/{refund_no}`、`GET /v1/refunds?out_refund_no=` 查询退款 | §4.6 | `PaymentService.QueryRefund` | REF-05 | 1.0.0 | 2026-10-27 |
@@ -318,7 +320,7 @@ signature = base64(HMAC-SHA256(channel_key, canonical))
 
 响应 `data`：`PaymentOrder`，`status = CLOSED`。
 
-对应 RPC `PaymentService.ClosePayment` 返回 `ClosePaymentResponse{biz_code, payment_order}`：`30003` 放在 `biz_code` 并携带当前订单，`30001`、`10004` 走 `BizStatusError`（§10.2）。
+对应 RPC `PaymentService.ClosePayment` 返回 `ClosePaymentResponse{biz_code, payment_order}`：`30003` 放在 `biz_code` 并携带当前订单，`30001`、`10004` 走 `BizStatusError`（§10.2）。PAYING 且本地已有 `channel_txn_no` 时必须先等渠道 `POST /mockpay/v1/close` 的结果。本地还没有渠道流水号时先查单，查无此单返回 10004，不插入渠道占位。查到已有行后再关单。`ALREADY_PAID` 后再查单；查单失败、非 200、验签失败、`NOT_FOUND`、状态不是 SUCCESS 或没有 `finished_at` 时不调用 `ApplyPayResult`，订单保持 PAYING，返回 `10004`。未知 result/status 同样是 `10004`，不当成 CLOSED。`ApplyPayResult` 返回已有的 `50002` 时走 `BizStatusError`，不携带订单。这是已有错误码，不新增 errno。服务端处理超时仍是 2 秒。
 
 业务错误：
 
@@ -326,7 +328,7 @@ signature = base64(HMAC-SHA256(channel_key, canonical))
 |---|---|---|
 | 30001 | 订单不存在或不属于当前商户 | 空 |
 | 30003 | 订单为 SUCCESS 或 FAILED；或关单时渠道返回已支付（订单推进为 SUCCESS）、渠道交易已失败（订单推进为 FAILED） | `PaymentOrder`（推进后的当前状态） |
-| 10004 | 订单 PAYING 且渠道关单调用失败，订单状态未变 | 空 |
+| 10004 | 订单 PAYING，渠道关单或先行查单没有确认，订单状态未变。本地还没有渠道流水号时先查单，查无此单返回 10004，不插入渠道占位 | 空 |
 
 ### 4.4 查询支付单
 
@@ -958,9 +960,9 @@ account RPC 以商户号（或 owner）为入参，由 account 按商户号路�
 
 `GetMerchantCredential` 返回明文密钥，只允许网关调用；调用双方都不得记录响应内容。
 
-`GetMerchantCredential`（PAY-01）：请求为 nil 返回 `10001`。`app_id` 按字节精确匹配，为空、不存在或只是大小写、首尾空格不同都返回 `20004`（`X-App-Id` 不在签名串里，放宽匹配会让同一请求换个写法绕过按 `app_id` 记的 nonce）。`merchant` 表列跟随库默认 `utf8mb4_bin`，区分大小写，但 PAD SPACE 会忽略尾部空格；集成测试临时库为 `utf8mb4_0900_ai_ci`，不区分大小写与重音。两种规则下 SQL 都可能匹配到字节不同的值，所以服务端读回 `app_id` 再逐字节比较。DISABLED 商户照常返回，由网关返回 `20004`。密文解不开是平台内部故障，返回 `10003`。payment 不缓存凭证，网关侧缓存属于 GW-08。除 `GetMerchantCredential`、`CreatePayment` 与 `Pay` 外，PaymentService 其余方法在各自功能点实现前一律返回 `10003`，不是这些方法将来的错误码语义。服务端处理超时：`Pay` 为 5 秒，与需求 §5.4.1、GW-01 第 5 条的网关调用超时一致，使渠道受理的 3 秒总超时先到期并返回 PAYING；其他方法仍为 2 秒。不新增环境变量。
+`GetMerchantCredential`（PAY-01）：请求为 nil 返回 `10001`。`app_id` 按字节精确匹配，为空、不存在或只是大小写、首尾空格不同都返回 `20004`（`X-App-Id` 不在签名串里，放宽匹配会让同一请求换个写法绕过按 `app_id` 记的 nonce）。`merchant` 表列跟随库默认 `utf8mb4_bin`，区分大小写，但 PAD SPACE 会忽略尾部空格；集成测试临时库为 `utf8mb4_0900_ai_ci`，不区分大小写与重音。两种规则下 SQL 都可能匹配到字节不同的值，所以服务端读回 `app_id` 再逐字节比较。DISABLED 商户照常返回，由网关返回 `20004`。密文解不开是平台内部故障，返回 `10003`。payment 不缓存凭证，网关侧缓存属于 GW-08。除 `GetMerchantCredential`、`CreatePayment`、`Pay` 与 `ClosePayment` 外，PaymentService 其余方法在各自功能点实现前一律返回 `10003`，不是这些方法将来的错误码语义。服务端处理超时：`Pay` 为 5 秒，与需求 §5.4.1、GW-01 第 5 条的网关调用超时一致，使渠道受理的 3 秒总超时先到期并返回 PAYING；其他方法仍为 2 秒。不新增环境变量。
 
-`Pay`、`ClosePayment` 的返回类型已落地：IDL 为 `PayResponse`、`ClosePaymentResponse`（`1: base.BizCode biz_code`、`2: PaymentOrder payment_order`。订单字段是必填，不加 `optional`，与 `CreateRefundResponse` 的 `2: RefundOrder refund_order` 一致）。这是 3.0.0 预告的返回类型变更，两个方法当时还没有业务调用方。之后按“只增不删”。成功时 `biz_code = 0`。`Pay`（PAY-03、PAY-04）已实现。`30006` 放在 `biz_code`，error 为 nil，并携带订单；其他业务错误仍是 `BizStatusError`，不带订单。渠道同步拒绝调用 `ApplyPayResult`（`source = SYNC`，不带金额）。PAY-04 把订单写成 FAILED 后，`Pay` 返回 `30006` 和该订单。`ClosePayment` 只改了签名，仍然不进 biz，返回 `10003`。
+`Pay`、`ClosePayment` 的返回类型已落地：IDL 为 `PayResponse`、`ClosePaymentResponse`（`1: base.BizCode biz_code`、`2: PaymentOrder payment_order`。订单字段是必填，不加 `optional`，与 `CreateRefundResponse` 的 `2: RefundOrder refund_order` 一致）。这是 3.0.0 预告的返回类型变更，两个方法当时还没有业务调用方。之后按“只增不删”。成功时 `biz_code = 0`。`Pay`（PAY-03、PAY-04）已实现。`30006` 放在 `biz_code`，error 为 nil，并携带订单；其他业务错误仍是 `BizStatusError`，不带订单。渠道同步拒绝调用 `ApplyPayResult`（`source = SYNC`，不带金额）。PAY-04 把订单写成 FAILED 后，`Pay` 返回 `30006` 和该订单。`ClosePayment`（PAY-06）已实现。请求为 nil 或 `pay_no` 为空返回 `10001`，不写库。订单不存在或商户号字节不同返回 `30001`。INIT 只做本地 CAS `INIT → CLOSED`，不调用渠道，不写 outbox。CLOSED 幂等，不改行。SUCCESS 或 FAILED 不调用渠道，把已有 `30003` 放进 `biz_code` 并携带当前订单，RPC error 为 nil。PAYING 且本地已有 `channel_txn_no` 时，先在事务外调用渠道关单，body 只有 `req_no = pay_no`。本地还没有渠道流水号时先查单，查无此单返回 10004，不插入渠道占位，不调用关单；查到已有行后再关单。关单结果：`OK` / `CLOSED` 调用 `ApplyPayResult(CLOSED, source=CLOSE)`，成功时 `biz_code = 0`；`ALREADY_PAID` / `SUCCESS` 再查单，只有 `result=OK`、`status=SUCCESS` 且带 `finished_at` 才 `ApplyPayResult(SUCCESS, source=CLOSE)`，金额用查单的 int64 分，然后 `biz_code = 30003` 并携带 SUCCESS 订单；`OK` / `FAILED` 则 `ApplyPayResult(FAILED, CHANNEL_FAILED, source=CLOSE)`，`biz_code = 30003` 并携带 FAILED 订单。调用失败、查单不符合上述条件、或 result/status 不是这三种，返回 `10004`，订单保持 PAYING。`ApplyPayResult` 返回已有 `50002` 时原样走 `BizStatusError`，不带订单，不新增 errno。其他 Apply 失败原样返回。服务端处理超时仍是 2 秒，不改为 5 秒。不新增环境变量。
 
 `CreateTransfer` 的响应码规则同 §4.8：本次请求执行到 FAILED 且 `fail_code = INSUFFICIENT_BALANCE` → `biz_code = 40002` 并携带转账单；其他 FAILED、SUCCESS、处理中状态与幂等命中 → 成功返回。
 

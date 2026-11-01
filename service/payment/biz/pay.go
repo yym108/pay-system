@@ -26,16 +26,23 @@ const (
 	paySourceSync           = "SYNC"
 	faultPayAfterTx1        = "pay.after_tx1"
 	channelPayPath          = "/mockpay/v1/pay"
+	channelClosePath        = "/mockpay/v1/close"
+	channelQueryPath        = "/mockpay/v1/query"
 	payExpireMargin         = 30 * time.Second
 	payNextQueryDelay       = 10 * time.Second
 	maxChannelBody          = 64 << 10
+	resultAlreadyPaid       = "ALREADY_PAID"
+	queryResultNotFound     = "NOT_FOUND"
+	channelTimeLayout       = "2006-01-02T15:04:05.000Z07:00"
 )
 
 const (
 	// PayChannelTimeout 是渠道受理的总超时。父 ctx 更短时，先到期的生效。
 	PayChannelTimeout = 3 * time.Second
-	// PayChannelDialTimeout 是渠道受理的 TCP 连接超时。
+	// PayChannelDialTimeout 是渠道 TCP 连接超时。受理、关单和查单共用。
 	PayChannelDialTimeout = 500 * time.Millisecond
+	// CloseChannelTimeout 是关单和随后查单各自的总超时上限。父 ctx 更短时，先到期的生效。
+	CloseChannelTimeout = 1500 * time.Millisecond
 )
 
 // PayInput 是发起支付的入参。Channel 必须恰好是 mockpay。

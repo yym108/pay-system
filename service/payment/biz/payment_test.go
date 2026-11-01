@@ -426,6 +426,30 @@ func (m *memOrders) casInitToPaying(_ context.Context, order PaymentOrder, now t
 	return false, nil
 }
 
+func (m *memOrders) casInitToClosed(_ context.Context, order PaymentOrder, now time.Time) (bool, error) {
+	if m.beforeCAS != nil {
+		m.beforeCAS()
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.forceMiss {
+		m.forceMiss = false
+		return false, nil
+	}
+	for i := range m.rows {
+		row := &m.rows[i]
+		if row.PayNo != order.PayNo || row.MerchantID != order.MerchantID || row.Status != payStatusInit {
+			continue
+		}
+		row.Status = payStatusClosed
+		row.ClosedAt = now
+		row.Version++
+		row.UpdatedAt = now
+		return true, nil
+	}
+	return false, nil
+}
+
 func (m *memOrders) fillChannelTxnNo(_ context.Context, bizNo, txnNo string) (int64, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
