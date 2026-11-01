@@ -13,6 +13,7 @@ type Service interface {
 	CreatePayment(ctx context.Context, in *biz.CreatePaymentInput) (biz.PaymentOrder, error)
 	Pay(ctx context.Context, in *biz.PayInput) (biz.PaymentOrder, error)
 	ClosePayment(ctx context.Context, in *biz.CloseInput) (biz.PaymentOrder, error)
+	QueryPayment(ctx context.Context, in *biz.QueryInput) (biz.PaymentOrder, error)
 }
 
 var _ Service = (*biz.App)(nil)

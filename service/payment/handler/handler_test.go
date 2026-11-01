@@ -172,7 +172,6 @@ func TestUnimplementedMethodsReturnInternal(t *testing.T) {
 		t.Fatalf("invalid ClosePayment called biz %d times", n)
 	}
 	for name, fn := range map[string]func() error{
-		"QueryPayment":        func() error { _, err := h.QueryPayment(ctx, nil); return err },
 		"CreateRefund":        func() error { _, err := h.CreateRefund(ctx, nil); return err },
 		"QueryRefund":         func() error { _, err := h.QueryRefund(ctx, nil); return err },
 		"CreateTransfer":      func() error { _, err := h.CreateTransfer(ctx, nil); return err },
@@ -282,6 +281,65 @@ func TestHooksAndGuards(t *testing.T) {
 	}
 }
 
+func TestQueryPaymentHandler(t *testing.T) {
+	created := time.Date(2026, 11, 1, 10, 0, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	order := biz.PaymentOrder{
+		PayNo: "PA0000000000000000001", OutTradeNo: "T1", Amount: 10000, FeeAmount: 60,
+		Currency: "CNY", Subject: "demo", Status: "INIT",
+		ExpireAt: created.Add(15 * time.Minute), CreatedAt: created,
+	}
+	svc := &scripted{order: order}
+	h := New(svc)
+	ctx := context.Background()
+	if _, err := h.QueryPayment(ctx, nil); !errors.Is(errno.FromBizStatus(err), errno.ErrInvalidParam) {
+		t.Fatalf("nil request = %v", err)
+	}
+	emptyPay := ""
+	if _, err := h.QueryPayment(ctx, &payment.QueryPaymentRequest{MerchantId: "M100002", PayNo: &emptyPay}); !errors.Is(errno.FromBizStatus(err), errno.ErrInvalidParam) {
+		t.Fatalf("empty pay_no = %v", err)
+	}
+	payNo := order.PayNo
+	outNo := order.OutTradeNo
+	if _, err := h.QueryPayment(ctx, &payment.QueryPaymentRequest{MerchantId: "M100002", PayNo: &payNo, OutTradeNo: &outNo}); !errors.Is(errno.FromBizStatus(err), errno.ErrInvalidParam) {
+		t.Fatalf("both keys = %v", err)
+	}
+	spacedPay := " "
+	spacedOut := " "
+	if _, err := h.QueryPayment(ctx, &payment.QueryPaymentRequest{MerchantId: "M100002", PayNo: &spacedPay, OutTradeNo: &spacedOut}); !errors.Is(errno.FromBizStatus(err), errno.ErrInvalidParam) {
+		t.Fatalf("untrimmed spaces = %v", err)
+	}
+	if n := svc.callCount(); n != 0 {
+		t.Fatalf("invalid query called biz %d times", n)
+	}
+	got, err := h.QueryPayment(ctx, &payment.QueryPaymentRequest{MerchantId: "M100002", PayNo: &payNo})
+	if err != nil || got.GetPayNo() != order.PayNo || got.GetAmount() != 10000 || got.GetStatus() != "INIT" || got.GetOutTradeNo() != order.OutTradeNo {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+	if svc.lastQuery().PayNo != payNo || svc.lastQuery().OutTradeNo != "" || svc.lastQuery().MerchantID != "M100002" {
+		t.Fatalf("biz input = %+v", svc.lastQuery())
+	}
+	rawPay := " " + order.PayNo
+	if _, err = h.QueryPayment(ctx, &payment.QueryPaymentRequest{MerchantId: "M100002", PayNo: &rawPay}); err != nil {
+		t.Fatal(err)
+	}
+	if svc.lastQuery().PayNo != rawPay {
+		t.Fatalf("pay_no was trimmed: %q", svc.lastQuery().PayNo)
+	}
+	svc.set(func(s *scripted) { s.err = errno.ErrOrderNotFound })
+	resp, err := h.QueryPayment(ctx, &payment.QueryPaymentRequest{MerchantId: "M100001", PayNo: &payNo})
+	if resp != nil {
+		t.Fatalf("30001 carried a response: %+v", resp)
+	}
+	assertBizCode(t, "not found", err, errno.ErrOrderNotFound.Code)
+	if _, err = New(nil).QueryPayment(ctx, &payment.QueryPaymentRequest{MerchantId: "M100002", PayNo: &payNo}); !errors.Is(errno.FromBizStatus(err), errno.ErrInternal) {
+		t.Fatalf("nil service = %v", err)
+	}
+	var nilH *Handler
+	if _, err = nilH.QueryPayment(ctx, nil); !errors.Is(errno.FromBizStatus(err), errno.ErrInternal) {
+		t.Fatalf("nil handler = %v", err)
+	}
+}
+
 func TestListenAddrAndTimeout(t *testing.T) {
 	if ListenAddr != ":8881" {
 		t.Fatalf("ListenAddr = %s", ListenAddr)
@@ -292,7 +350,8 @@ func TestListenAddrAndTimeout(t *testing.T) {
 	if PayServerTimeout != 5*time.Second {
 		t.Fatalf("PayServerTimeout = %s", PayServerTimeout)
 	}
-	if (Config{}).timeoutFor("Pay") != PayServerTimeout || (Config{}).timeoutFor("CreatePayment") != ServerTimeout {
+	if (Config{}).timeoutFor("Pay") != PayServerTimeout || (Config{}).timeoutFor("CreatePayment") != ServerTimeout ||
+		(Config{}).timeoutFor("QueryPayment") != ServerTimeout {
 		t.Fatal("method timeout split drifted")
 	}
 	if (Config{Timeout: 80 * time.Millisecond}).timeoutFor("Pay") != 80*time.Millisecond {
@@ -327,10 +386,6 @@ type call struct {
 func unimplementedCalls(cli paymentservice.Client) []call {
 	ctx := context.Background()
 	return []call{
-		{"QueryPayment", func() error {
-			_, err := cli.QueryPayment(ctx, &payment.QueryPaymentRequest{MerchantId: "M100001"})
-			return err
-		}},
 		{"CreateRefund", func() error {
 			_, err := cli.CreateRefund(ctx, &payment.CreateRefundRequest{MerchantId: "M100001", OutRefundNo: "r1", Amount: 1})
 			return err
@@ -470,6 +525,7 @@ type scripted struct {
 	calls     int32
 	appID     string
 	lastIn    biz.CreatePaymentInput
+	queryIn   biz.QueryInput
 }
 
 func (s *scripted) set(fn func(*scripted)) {
@@ -508,6 +564,34 @@ func (s *scripted) GetMerchantCredential(ctx context.Context, appID string) (biz
 		return biz.MerchantCredential{}, err
 	}
 	return cred, nil
+}
+
+func (s *scripted) QueryPayment(ctx context.Context, in *biz.QueryInput) (biz.PaymentOrder, error) {
+	s.mu.Lock()
+	s.calls++
+	order, err, panicking, block := s.order, s.err, s.panicking, s.block
+	if in != nil {
+		s.queryIn = *in
+	}
+	s.mu.Unlock()
+	if panicking {
+		panic("boom " + testSecret)
+	}
+	if block != nil {
+		if berr := block(ctx); berr != nil {
+			return biz.PaymentOrder{}, berr
+		}
+	}
+	if err != nil {
+		return biz.PaymentOrder{}, err
+	}
+	return order, nil
+}
+
+func (s *scripted) lastQuery() biz.QueryInput {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.queryIn
 }
 
 func (s *scripted) ClosePayment(ctx context.Context, _ *biz.CloseInput) (biz.PaymentOrder, error) {

@@ -154,6 +154,14 @@ func (a *App) ClosePayment(ctx context.Context, in *CloseInput) (PaymentOrder, e
 	return a.payments.ClosePayment(ctx, in)
 }
 
+// QueryPayment 转给支付单查询。
+func (a *App) QueryPayment(ctx context.Context, in *QueryInput) (PaymentOrder, error) {
+	if a == nil || a.payments == nil {
+		return PaymentOrder{}, errno.ErrInternal
+	}
+	return a.payments.QueryPayment(ctx, in)
+}
+
 func newPayments(merchants MerchantLookup, ids Numberer, clk clock.Clock, allowHosts string, orders orderStore) *Payments {
 	return &Payments{
 		merchants: merchants,

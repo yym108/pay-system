@@ -352,6 +352,8 @@ type memOrders struct {
 	updates    int
 	failIns    error
 	payNoReads int
+	outReads   int
+	readErr    error
 	forceMiss  bool
 	beforeCAS  func()
 }
@@ -377,6 +379,10 @@ func (m *memOrders) insertPayment(_ context.Context, row PaymentOrder) error {
 func (m *memOrders) paymentByOutTradeNo(_ context.Context, merchantID, outTradeNo string) (PaymentOrder, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.outReads++
+	if m.readErr != nil {
+		return PaymentOrder{}, false, m.readErr
+	}
 	for _, ex := range m.rows {
 		if ex.MerchantID == merchantID && ex.OutTradeNo == outTradeNo {
 			return ex, true, nil
@@ -389,12 +395,21 @@ func (m *memOrders) paymentByPayNo(_ context.Context, payNo string) (PaymentOrde
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.payNoReads++
+	if m.readErr != nil {
+		return PaymentOrder{}, false, m.readErr
+	}
 	for _, ex := range m.rows {
 		if ex.PayNo == payNo {
 			return ex, true, nil
 		}
 	}
 	return PaymentOrder{}, false, nil
+}
+
+func (m *memOrders) queryReads() (payNo, outTrade int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.payNoReads, m.outReads
 }
 
 func (m *memOrders) casInitToPaying(_ context.Context, order PaymentOrder, now time.Time) (bool, error) {

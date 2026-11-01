@@ -381,7 +381,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | PAY-05 | 查单补偿 | P0 | M4 | PAY-04、CH-02、CH-06、GW-06、REF-03、BASE-15 | TODO |
 | PAY-06 | 商户关单 | P0 | M3 | PAY-04、CH-03 | DONE |
 | PAY-07 | 超时关单 | P0 | M4 | PAY-06 | TODO |
-| PAY-08 | 支付单查询 | P0 | M3 | PAY-02 | TODO |
+| PAY-08 | 支付单查询 | P0 | M3 | PAY-02 | DONE |
 | PAY-09 | 立即同步渠道状态 | P0 | M6 | PAY-05 | TODO |
 | PAY-10 | 商户费率变更与订单手续费核对 | P0 | M3 | BASE-03、BASE-04、BASE-08 | DONE |
 | REF-01 | 创建退款与额度占用 | P0 | M4 | PAY-04 | TODO |
@@ -1643,11 +1643,11 @@ PAYING 状态必须等渠道确认关闭后才能 CLOSED，避免“本地已关
 
 接口：`GET /v1/payments/{pay_no}`、`GET /v1/payments?out_trade_no=` → `PaymentService.QueryPayment`
 
-规则：只能查询当前商户的订单，他人订单返回 `30001`（不泄露存在性）；直接读库，不做缓存。
+规则：只能查询当前商户的订单。直接读 `payment_order`，不做缓存，不写行，不推进状态。`pay_no` 与 `out_trade_no` 二选一，空串算没提供，不 trim；两个都空或两个都非空返回已有的 `10001`，不读库。只提供 `pay_no` 时，没有行，或 `merchant_id` 与库中逐字节不同（含空商户号），都返回已有的 `30001`。只提供 `out_trade_no` 时，没有行返回 `30001`；他人的商户订单号因此也是 `30001`。两种情况同一个错误，不泄露订单是否存在。查到且商户匹配则原样返回该行，状态可以是 INIT、PAYING、SUCCESS、FAILED、CLOSED。
 
 验收：
 
-- [ ] 用商户 B 查询商户 A 的 pay_no 返回 `30001`。
+- [x] 用商户 B 查询商户 A 的 pay_no 返回 `30001`。
 
 #### PAY-09 立即同步渠道状态
 
@@ -3155,3 +3155,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-10-28 | v3.0 | MQ-01 文字澄清：`occurred_at` 取 `Add` 时的注入时钟（提交前读取，不能改成提交后再读），无有效 span 时 `trace_context` 为 `{}`，不新增错误码。五种事件的 topic、msg_key、biz_no 与 data 字段写入规则。不改资金规则 |
 | 2026-11-01 | v3.0 | PAY-04：`ApplyPayResult` 用结构体入参，一次事务按渠道流水 CAS、订单 CAS、仅 SUCCESS 调用已有 `outbox.Add` 的顺序推进。不新增错误码。`callback.after_commit` 仍留给 GW-06，本次不调用 `fault.Point`。文字澄清：金额比较先于同一终态和不同终态，已终态但金额不符仍是 `50002`；CLOSED 传了渠道完成时间则 `closed_at` 用该时间，没传则用本次注入时钟截到毫秒，`channel_finished_at` 保持空；SUCCESS 未传完成时间、未知 `source` 在写库前返回 `10001`。不改资金流向 |
 | 2026-11-01 | v3.0 | PAY-06：没有新错误码。PAYING 必须先等渠道确认关闭，不能在渠道返回之前把订单改成 CLOSED。本地还没有渠道流水号时先查单，查无此单返回 10004，不插入渠道占位 |
+| 2026-11-01 | v3.0 | PAY-08：直接读 `payment_order`，不缓存，不写。他人订单与不存在都是已有的 `30001`。`pay_no` 与 `out_trade_no` 二选一不合法是已有的 `10001`。不新增错误码 |

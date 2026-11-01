@@ -1,6 +1,6 @@
 // Package handler 是 payment 的 Kitex 适配。
 // 只做协议转换和错误码转换，不改 biz 的幂等与 CAS。
-// 已实现 GetMerchantCredential（PAY-01）、CreatePayment（PAY-02）、Pay（PAY-03）和 ClosePayment（PAY-06）。
+// 已实现 GetMerchantCredential（PAY-01）、CreatePayment（PAY-02）、Pay（PAY-03）、ClosePayment（PAY-06）和 QueryPayment（PAY-08）。
 // 其余方法属于各自的功能点，实现前调用一律返回 10003，不进 biz。
 package handler
 
@@ -144,9 +144,30 @@ func (h *Handler) ClosePayment(ctx context.Context, req *payment.ClosePaymentReq
 	return &payment.ClosePaymentResponse{BizCode: 0, PaymentOrder: toPaymentOrder(got)}, nil
 }
 
-// QueryPayment 属于 PAY-08，未实现，返回 10003。
-func (h *Handler) QueryPayment(_ context.Context, _ *payment.QueryPaymentRequest) (*payment.PaymentOrder, error) {
-	return nil, notImplemented()
+// QueryPayment 读取当前商户的支付单。响应是 PaymentOrder，不带 biz_code。
+// 请求为 nil，或 pay_no 与 out_trade_no 都空、都非空，返回 10001，不进 biz。空串算没提供，不 trim。
+// 30001 走 BizStatusError，不带订单。成功时 error 为 nil 并返回订单。
+func (h *Handler) QueryPayment(ctx context.Context, req *payment.QueryPaymentRequest) (r *payment.PaymentOrder, err error) {
+	defer recoverBiz(ctx, &err)
+	if err = h.ready(); err != nil {
+		return nil, err
+	}
+	if req == nil || !queryKeysOK(req.GetPayNo(), req.GetOutTradeNo()) {
+		return nil, errno.ToBizStatus(errno.ErrInvalidParam)
+	}
+	got, callErr := h.svc.QueryPayment(ctx, &biz.QueryInput{
+		MerchantID: req.MerchantId,
+		PayNo:      req.GetPayNo(),
+		OutTradeNo: req.GetOutTradeNo(),
+	})
+	if callErr != nil {
+		return nil, statusErr(ctx, callErr)
+	}
+	return toPaymentOrder(got), nil
+}
+
+func queryKeysOK(payNo, outTradeNo string) bool {
+	return (payNo != "") != (outTradeNo != "")
 }
 
 // CreateRefund 属于 REF-01、REF-02，未实现，返回 10003。
