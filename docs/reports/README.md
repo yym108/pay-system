@@ -49,3 +49,4 @@
 | GW-01 | 网关骨架 | 基础设施 | `97b776d` | 2026-11-01 | [GW-01-gateway-skeleton.md](GW-01-gateway-skeleton.md) |
 | GW-03 | 商户验签 | 基础设施 | `86379b2` | 2026-11-01 | [GW-03-merchant-sign.md](GW-03-merchant-sign.md) |
 | GW-02 | 支付与余额路由 | 基础设施 | `5103705` | 2026-11-01 | [GW-02-payment-routes.md](GW-02-payment-routes.md) |
+| GW-06 | 渠道回调入口 | 基础设施 | `dcd1718` | 2026-11-02 | [GW-06-channel-callback.md](GW-06-channel-callback.md) |
