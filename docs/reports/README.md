@@ -44,3 +44,4 @@
 | PAY-06 | 商户关单 | 支付 | `24b55db` | 2026-11-01 | [PAY-06-close.md](PAY-06-close.md) |
 | PAY-08 | 支付单查询 | 支付 | `ddfe22c` | 2026-11-01 | [PAY-08-query.md](PAY-08-query.md) |
 | OPS-01 | 健康检查与优雅退出 | 基础设施 | `7f9b2f6` | 2026-11-01 | [OPS-01-health.md](OPS-01-health.md) |
+| OPS-05 | pprof 与管理端口 | 基础设施 | `40792e8` | 2026-11-01 | [OPS-05-pprof.md](OPS-05-pprof.md) |
