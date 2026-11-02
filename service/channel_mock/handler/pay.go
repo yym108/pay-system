@@ -40,8 +40,11 @@ const (
 	// timestampWindowSec 是 X-Mock-Timestamp 与本地时钟的最大偏差（秒，§3.5，含边界）。
 	// 本地时间先取整秒（Unix()）再相减，与只有整秒的请求时间戳同一精度比较。
 	timestampWindowSec = 300
-	// requestTimeout 是单个请求进入业务后的上限。
+	// requestTimeout 是查单和关单进入业务后的上限。
 	requestTimeout = 3 * time.Second
+	// payRequestTimeout 只用于受理。ACCEPT_TIMEOUT 要等注入时钟 5 秒才写 200，
+	// 沿用 3 秒会先取消 Pay，调用方得到 500 而不是晚到的 200。
+	payRequestTimeout = 8 * time.Second
 )
 
 // Payer 是渠道 HTTP 的业务入口，由 biz.Service 实现。
@@ -114,7 +117,7 @@ func (h *Handler) servePay(ctx context.Context, c *app.RequestContext) int {
 	if !ok {
 		return bare(c, http.StatusBadRequest)
 	}
-	callCtx, cancel := context.WithTimeout(ctx, requestTimeout)
+	callCtx, cancel := context.WithTimeout(ctx, payRequestTimeout)
 	defer cancel()
 	res, err := h.pay.Pay(callCtx, biz.PayRequest{
 		ReqNo:     in.ReqNo,

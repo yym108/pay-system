@@ -1,6 +1,6 @@
 # Database Schema
 
-> **Last updated:** 2026-10-27
+> **Last updated:** 2026-11-02
 > **Database engine/version:** MySQL 8.4.11（InnoDB，utf8mb4 / utf8mb4_bin）
 > **Schema sources:** `migrations/account/000001_init.up.sql`（`pay_account_0` 与 `pay_account_1` 各执行一次）、`migrations/payment/000001_init.up.sql`、`migrations/payment/000002_merchant_fee_rate.up.sql`、`migrations/recon/000001_init.up.sql`、`migrations/channel_mock/000001_init.up.sql`。设计稿 `docs/schema/schema_draft.sql` 已在 BASE-03 删除。golang-migrate 还会在每个 schema 创建工具表 `schema_migrations`（`version`、`dirty`），不在业务清单里。
 > **Owner:** pay-system 项目作者
@@ -919,7 +919,7 @@
 | `status` | VARCHAR(16) | 否 | — | `ck_mock_status` | 只用 CAS 推进：`WHERE id = ? AND status = 'PROCESSING'`（无 version 列） | 测试 |
 | `scenario` | VARCHAR(32) | 否 | `'NORMAL'` | — | 由金额末两位决定的故障场景（CH-06） | 测试 |
 | `notify_url` | VARCHAR(512) | 否 | `''` | — | | 测试 |
-| `notify_sent_count` | INT | 否 | 0 | — | 已发送回调次数。发出 HTTP 前条件加一，不改 `status`。普通回调按当前值相等（`notify_sent_count = ?`，最多 5 次，CH-05）。DUP_NOTIFY 按 `notify_sent_count < 10` 加一（最多 10 次，CH-06），因为同一波 5 次并发不能共用同一个期望值。发号失败、空密钥、更新失败，以及 DROP_NOTIFY 不加。SLOW：现状（CH-06 M3 切片第 5 条）不发、不加；M4 切片第 6 条实现后，只把首次回调推迟到 `finished_at` 后 30 秒，之后与普通回调相同，按 `notify_sent_count = ?` 加一，连首次最多 5 次 | 测试 |
+| `notify_sent_count` | INT | 否 | 0 | — | 已发送回调次数。发出 HTTP 前条件加一，不改 `status`。普通回调按当前值相等（`notify_sent_count = ?`，最多 5 次，CH-05）。DUP_NOTIFY 按 `notify_sent_count < 10` 加一（最多 10 次，CH-06），因为同一波 5 次并发不能共用同一个期望值。发号失败、空密钥、更新失败，以及 DROP_NOTIFY 不加。SLOW（CH-06 规则 6，已实现）：首次回调推迟到 `finished_at` 后 30 秒才按 `notify_sent_count = ?` 加一，之后与普通回调相同，连首次最多 5 次；没到点不加 | 测试 |
 | `finished_at` | DATETIME(3) | 是 | NULL | — | 自动完成或 CLOSE_RACE 关单的实际时间，应用截到毫秒后写入（CH-01、CH-03）。普通关单不写，保持 NULL | 测试 |
 | `bill_date` | DATE | 是 | NULL | `idx_bill_date` | 计入账单的日期，= `finished_at` 的东八区日期；只在 SUCCESS 时写（自动完成或 CLOSE_RACE 关单），BILL_MISSING、FAILED 与普通 CLOSED 为 NULL | 测试 |
 | `created_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | — | 受理或关单防悬挂行由 channel_mock 按自己的时钟显式写入（截到毫秒），不用列默认值。自动完成的到期时刻 = `created_at` + delay | 测试 |
@@ -971,6 +971,7 @@
 | 2026-10-27 | 无（仅文档） | `outbox.next_retry_at`、`idx_status_next_retry_at`（说明） | 用户确认（A1）：投递器改为领取（`FOR UPDATE SKIP LOCKED`，把 `next_retry_at` 设为租约到期 now + 30s）→ 提交 → 事务外发送 → 按 `id`、`status = 'PENDING'`、`next_retry_at = <租约值>` CAS 回写。`next_retry_at` 兼作投递租约，重放回 PENDING 时设为 now。不改表结构、不改索引、不新增状态 | 未执行迁移（无 SQL 变更） |
 | 2026-10-27 | 无（仅文档） | `recon_batch.updated_at`、`recon_batch.started_at`、`recon_batch`（Lifecycle）、`mock_txn.notify_sent_count`（说明） | 用户决定（需求 §8.1 Q6，REC-01 第 5、6 条）：INIT、DOWNLOADED 的卡死判定用 `updated_at` 超过 30 分钟，CHECKING 仍用 `started_at`；只在 RunBatch 被调用时判定；接管 CAS 带原状态与原时间戳，每条 UPDATE 显式写 `updated_at`。`BILL_NOT_READY` 每 30 分钟重试、当天最多 6 次后置 FAILED，计数只在进程内。`notify_sent_count` 区分 SLOW 的现状（不发、不加）与 CH-06 第 6 条（只推迟首次回调，之后按普通回调计数）。不改表结构、不改索引 | 未执行迁移（无 SQL 变更） |
 | 2026-10-27 | 无（仅文档，迁移随 REC-01、REC-03 新增） | `recon_batch.retry_count`（新增，计划）、`recon_batch.updated_at`、`recon_batch.started_at`、`recon_batch`（Lifecycle）；`recon_diff.uk_batch_type_biz_no_diff_type`（替换 `uk_batch_type_biz_no`，计划）、`recon_diff.channel_status`、`recon_diff.handle_action`、`idx_status_bill_date`（说明）、`recon_diff`（Lifecycle）；§1 Deletion convention | 用户决定（需求 REC-01、REC-03、REC-05、REC-06、REC-08，2026-10-27）。`BILL_NOT_READY` 重试计数改为持久化到 `recon_batch.retry_count INT NOT NULL DEFAULT 0`（每次 CAS 加一，到 6 置 FAILED，重跑归 0），作废上一行“计数只在进程内、重启从 0 开始”。卡死判定写明满 30 分钟（≥）；`started_at` 接管 CHECKING 时改写，DONE / FAILED 的 CAS 带它。`recon_diff` 唯一键加 `diff_type`；重跑与接管只删 PENDING 且 `handle_action` 为空的差错；插入同键跳过（`ON DUPLICATE KEY UPDATE id = id`）；终态 CAS `WHERE id = ? AND status = 'PENDING'`；`handle_action` 失败时也写；`channel_status` 非空表示严重不一致、不再自动重试。§6 新增两条计划变更，按 REC-05 第 4 条关闭转账差错归属与 TRANSFER_MISMATCH 取值两条问题 | 未执行迁移（迁移未落，计划见 §6） |
+| 2026-11-02 | 无（仅文档） | `mock_txn.notify_sent_count`（说明） | CH-06 M4：SLOW 的首次回调已排在 `finished_at` 后 30 秒，之后按普通回调 `notify_sent_count = ?` 加一，连首次最多 5 次。无 DDL | 未执行迁移 |
 
 ## 6. Open Questions
 

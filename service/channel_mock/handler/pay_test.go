@@ -42,6 +42,7 @@ type fakePayer struct {
 	// 关单 req_no 非法，都返回 ErrInvalidRequest。
 	validate bool
 	got      []biz.PayRequest
+	payCtx   context.Context
 	qres     biz.QueryResult
 	qerr     error
 	qgot     []biz.QueryRequest
@@ -52,9 +53,10 @@ type fakePayer struct {
 	closeCtx context.Context
 }
 
-func (f *fakePayer) Pay(_ context.Context, req biz.PayRequest) (biz.PayResult, error) {
+func (f *fakePayer) Pay(ctx context.Context, req biz.PayRequest) (biz.PayResult, error) {
 	f.mu.Lock()
 	f.got = append(f.got, req)
+	f.payCtx = ctx
 	f.mu.Unlock()
 	if f.panic {
 		panic("payer exploded")
@@ -172,6 +174,50 @@ func assertBare(t *testing.T, w *ut.ResponseRecorder, status int) {
 	}
 	if v := resp.Header.Peek(sign.HeaderMockTimestamp); len(v) != 0 {
 		t.Fatalf("error response has timestamp: %q", v)
+	}
+}
+
+// CH-06 验收：受理上下文上限是 8 秒，查单和关单仍是 3 秒。3 秒会在 5 秒后的 200 写出来之前取消 Pay。
+func TestPayContextOutlivesThreeSecondLimit(t *testing.T) {
+	p := &fakePayer{
+		res:  biz.PayResult{Result: biz.ResultOK, ChannelTxnNo: "MC0001", Status: "PROCESSING"},
+		qres: biz.QueryResult{Found: true, Status: "PROCESSING", Amount: 10005, ChannelTxnNo: "MC0001"},
+		cres: biz.CloseResult{Result: biz.ResultOK, Status: "CLOSED"},
+	}
+	srv := newTestServer(t, p, testKey)
+	w := signedPost(t, srv, testKey, nowTS(), []byte(goodBody))
+	if w.Result().StatusCode() != http.StatusOK {
+		t.Fatalf("pay status = %d", w.Result().StatusCode())
+	}
+	assertRemain(t, p.payCtx, payRequestTimeout)
+	payDL, _ := p.payCtx.Deadline()
+	if time.Until(payDL) <= requestTimeout {
+		t.Fatal("pay deadline is not above the 3s query and close limit")
+	}
+	qw := postSigned(t, srv, QueryPath, testKey, nowTS(), []byte(`{"txn_type":"PAY","req_no":"PA0001"}`))
+	if qw.Result().StatusCode() != http.StatusOK {
+		t.Fatalf("query status = %d", qw.Result().StatusCode())
+	}
+	assertRemain(t, p.queryCtx, requestTimeout)
+	cw := postSigned(t, srv, ClosePath, testKey, nowTS(), []byte(`{"req_no":"PA0001"}`))
+	if cw.Result().StatusCode() != http.StatusOK {
+		t.Fatalf("close status = %d", cw.Result().StatusCode())
+	}
+	assertRemain(t, p.closeCtx, requestTimeout)
+}
+
+func assertRemain(t *testing.T, ctx context.Context, limit time.Duration) {
+	t.Helper()
+	if ctx == nil {
+		t.Fatal("nil context")
+	}
+	dl, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("no deadline")
+	}
+	remain := time.Until(dl)
+	if remain > limit+100*time.Millisecond || remain < limit-2*time.Second {
+		t.Fatalf("remain = %s, want just under %s", remain, limit)
 	}
 }
 

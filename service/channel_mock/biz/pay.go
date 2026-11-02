@@ -1,4 +1,4 @@
-// Package biz 是模拟渠道的业务逻辑：支付受理与自动完成（CH-01）、查单（CH-02）、关单（CH-03）、渠道回调（CH-05）、M3 故障场景（CH-06）。
+// Package biz 是模拟渠道的业务逻辑：支付受理与自动完成（CH-01）、查单（CH-02）、关单（CH-03）、渠道回调（CH-05）、故障场景（CH-06）。
 //
 // 幂等靠 uk_type_req_no：先 INSERT，冲突（1062）再读已有行，不做先查后插。
 // 状态推进只用 CAS（WHERE id = ? AND status = 'PROCESSING'），事务内不调用外部系统；
@@ -39,6 +39,8 @@ const (
 	maxNotifyURLRunes = 512
 	// rereadTimeout 是 INSERT 报非 1062 错误后再读一次的上限。
 	rereadTimeout = time.Second
+	// acceptHold 是 ACCEPT_TIMEOUT 从 created_at 到返回 OK 的等待。只用于新插入成功的那一次。
+	acceptHold = 5 * time.Second
 )
 
 // ErrInvalidRequest 表示受理、查单或关单的参数非法。handler 映射为 HTTP 400，不写库。
@@ -127,9 +129,10 @@ type PayResult struct {
 // Pay 受理一笔支付（CH-01）。
 //
 // 新 req_no：写入 PROCESSING 行并按场景调度自动完成，返回 OK。
+// ACCEPT_TIMEOUT 只在这次新插入成功之后等到 created_at + 5 秒再返回，见 holdAccept。
 // 已存在：CLOSED → REJECTED / ORDER_CLOSED（不论金额）；金额一致 → OK，带已有流水号和当前状态；
-// 金额不一致 → REJECTED / PARAM_CONFLICT。已存在时不改行、不重复调度。
-// INSERT 报非 1062 错误时行可能已提交，见 recoverInsert。
+// 金额不一致 → REJECTED / PARAM_CONFLICT。已存在时不改行、不重复调度、不等待。
+// INSERT 报非 1062 错误时行可能已提交，见 recoverInsert。那条路径不额外等待。
 // 参数非法返回 ErrInvalidRequest；其余错误是内部错误。
 func (s *Service) Pay(ctx context.Context, req PayRequest) (PayResult, error) {
 	if err := ctx.Err(); err != nil {
@@ -156,6 +159,9 @@ func (s *Service) Pay(ctx context.Context, req PayRequest) (PayResult, error) {
 	if err == nil {
 		t.ID = id
 		s.schedule(ctx, t)
+		if err := s.holdAccept(ctx, t); err != nil {
+			return PayResult{}, err
+		}
 		return PayResult{Result: ResultOK, ChannelTxnNo: no, Status: dal.StatusProcessing}, nil
 	}
 	if !dbx.IsDuplicate(err) {
@@ -187,6 +193,27 @@ func (s *Service) recoverInsert(ctx context.Context, t dal.Txn, insertErr error)
 		s.schedule(ctx, row)
 	}
 	return replay(row, t.Amount), nil
+}
+
+// holdAccept 只挡住新插入成功的 ACCEPT_TIMEOUT。
+// 到期时刻用注入时钟，等待交给 Scheduler：测试用 RunDue 放行，生产用 TimerScheduler 的 time.AfterFunc。
+// ctx 取消时不删行；schedule 已经排上的自动完成留在调度器上。
+func (s *Service) holdAccept(ctx context.Context, t dal.Txn) error {
+	if scenario.Scenario(t.Scenario) != scenario.AcceptTimeout {
+		return nil
+	}
+	due := t.CreatedAt.Add(acceptHold)
+	if !s.clk.Now().Before(due) {
+		return nil
+	}
+	done := make(chan struct{})
+	s.sched.Schedule(due, func() { close(done) })
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return nil
+	}
 }
 
 // replay 按已有行回答重复受理。CLOSED 优先于金额比较。

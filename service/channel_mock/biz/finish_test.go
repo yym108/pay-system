@@ -96,7 +96,34 @@ func TestScenarioOutcomes(t *testing.T) {
 		t.Run(c.scenario, func(t *testing.T) {
 			e := newEnv(t)
 			reqNo := fmt.Sprintf("PA%d", c.amount)
-			if _, err := e.svc.Pay(context.Background(), payReq(reqNo, c.amount)); err != nil {
+			// ACCEPT_TIMEOUT 的 Pay 要等注入时钟 5 秒。完成延迟在 2 秒内，先让完成跑完再放行受理。
+			var accept chan error
+			if c.scenario == "ACCEPT_TIMEOUT" {
+				accept = make(chan error, 1)
+				go func() {
+					_, err := e.svc.Pay(context.Background(), payReq(reqNo, c.amount))
+					accept <- err
+				}()
+				waitCond(t, func() bool {
+					_, ok := e.store.row(reqNo)
+					return ok && e.sched.len() == 2
+				})
+				defer func() {
+					row, _ := e.store.row(reqNo)
+					if e.clk.Now().Before(row.CreatedAt.Add(acceptHold)) {
+						e.clk.Set(row.CreatedAt.Add(acceptHold))
+					}
+					e.sched.RunDue(e.clk.Now())
+					select {
+					case err := <-accept:
+						if err != nil {
+							t.Error(err)
+						}
+					case <-time.After(2 * time.Second):
+						t.Error("accept hold did not release")
+					}
+				}()
+			} else if _, err := e.svc.Pay(context.Background(), payReq(reqNo, c.amount)); err != nil {
 				t.Fatal(err)
 			}
 			if c.scenario == "NEVER_FINISH" && e.sched.len() != 0 {

@@ -11,6 +11,7 @@ import (
 	"github.com/yym108/pay-system/pkg/clock"
 	"github.com/yym108/pay-system/pkg/money"
 	"github.com/yym108/pay-system/service/channel_mock/dal"
+	"github.com/yym108/pay-system/service/channel_mock/scenario"
 )
 
 var shanghaiTZ = time.FixedZone("Asia/Shanghai", 8*3600)
@@ -390,6 +391,167 @@ func TestPayInsertErrorAfterCommitSchedules(t *testing.T) {
 				t.Fatalf("hook calls = %+v", calls)
 			}
 		})
+	}
+}
+
+func waitCond(t *testing.T, cond func() bool) {
+	t.Helper()
+	timeout := time.After(5 * time.Second)
+	for {
+		if cond() {
+			return
+		}
+		select {
+		case <-timeout:
+			t.Fatal("condition not met")
+		case <-time.After(5 * time.Millisecond):
+		}
+	}
+}
+
+type payOut struct {
+	res PayResult
+	err error
+}
+
+// CH-06 验收：ACCEPT_TIMEOUT 在 RunDue 之前不返回。阻塞期间再次 Pay 立刻得到同一 channel_txn_no。
+func TestPayAcceptTimeoutWaitsForRunDue(t *testing.T) {
+	e := newEnv(t)
+	e.svc.opts.DelayMinMS = 60000
+	e.svc.opts.DelayMaxMS = 60000
+	ch := make(chan payOut, 1)
+	go func() {
+		res, err := e.svc.Pay(context.Background(), payReq("PA_AT", 10005))
+		ch <- payOut{res, err}
+	}()
+	waitCond(t, func() bool {
+		_, ok := e.store.row("PA_AT")
+		return ok && e.sched.len() == 2
+	})
+	select {
+	case got := <-ch:
+		t.Fatalf("returned before RunDue: %+v %v", got.res, got.err)
+	default:
+	}
+	row, _ := e.store.row("PA_AT")
+	if row.Scenario != scenario.AcceptTimeout.String() {
+		t.Fatalf("scenario = %s", row.Scenario)
+	}
+	second, err := e.svc.Pay(context.Background(), payReq("PA_AT", 10005))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Result != ResultOK || second.Status != dal.StatusProcessing || second.ChannelTxnNo != row.ChannelTxnNo {
+		t.Fatalf("replay = %+v, row = %s", second, row.ChannelTxnNo)
+	}
+	select {
+	case got := <-ch:
+		t.Fatalf("replay unblocked the first call: %+v %v", got.res, got.err)
+	default:
+	}
+	if e.sched.len() != 2 {
+		t.Fatalf("scheduled = %d", e.sched.len())
+	}
+	e.clk.Set(row.CreatedAt.Add(acceptHold).Add(-time.Millisecond))
+	if n := e.sched.RunDue(e.clk.Now()); n != 0 {
+		t.Fatalf("early ran %d", n)
+	}
+	select {
+	case got := <-ch:
+		t.Fatalf("returned before due: %+v %v", got.res, got.err)
+	default:
+	}
+	e.clk.Set(row.CreatedAt.Add(acceptHold))
+	if n := e.sched.RunDue(e.clk.Now()); n != 1 {
+		t.Fatalf("hold ran %d", n)
+	}
+	select {
+	case got := <-ch:
+		if got.err != nil || got.res.Result != ResultOK || got.res.Status != dal.StatusProcessing || got.res.ChannelTxnNo != row.ChannelTxnNo {
+			t.Fatalf("result = %+v %v", got.res, got.err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("did not return after RunDue")
+	}
+	if got, _ := e.store.row("PA_AT"); got.Status != dal.StatusProcessing {
+		t.Fatalf("status = %s", got.Status)
+	}
+	finishDue := row.CreatedAt.Add(Delay(row.ReqNo, 60000, 60000))
+	e.clk.Set(finishDue)
+	if n := e.sched.RunDue(e.clk.Now()); n != 1 {
+		t.Fatalf("finish ran %d", n)
+	}
+	if got, _ := e.store.row("PA_AT"); got.Status != dal.StatusSuccess {
+		t.Fatalf("status = %s", got.Status)
+	}
+}
+
+// CH-06 验收：非 ACCEPT_TIMEOUT 的 Pay 不因为这 5 秒而堵住。
+func TestPayOtherScenariosDoNotHoldAccept(t *testing.T) {
+	cases := []struct {
+		amount money.Amount
+		tasks  int
+		scen   string
+	}{
+		{10000, 1, scenario.Normal.String()},
+		{10001, 1, scenario.Fail.String()},
+		{10002, 1, scenario.DropNotify.String()},
+		{10004, 1, scenario.Slow.String()},
+		{10008, 0, scenario.NeverFinish.String()},
+	}
+	for _, c := range cases {
+		t.Run(c.scen, func(t *testing.T) {
+			e := newEnv(t)
+			ch := make(chan payOut, 1)
+			go func() {
+				res, err := e.svc.Pay(context.Background(), payReq("PA_HOLD", c.amount))
+				ch <- payOut{res, err}
+			}()
+			select {
+			case got := <-ch:
+				if got.err != nil {
+					t.Fatal(got.err)
+				}
+				if got.res.Result != ResultOK || got.res.Status != dal.StatusProcessing {
+					t.Fatalf("result = %+v", got.res)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("Pay blocked")
+			}
+			if e.sched.len() != c.tasks {
+				t.Fatalf("scheduled = %d, want %d", e.sched.len(), c.tasks)
+			}
+			row, ok := e.store.row("PA_HOLD")
+			if !ok || row.Scenario != c.scen {
+				t.Fatalf("row = %+v", row)
+			}
+		})
+	}
+}
+
+// CH-06：recoverInsert 不额外等待，只留下自动完成，不再排 5 秒。
+func TestPayAcceptTimeoutRecoverInsertDoesNotHold(t *testing.T) {
+	e := newEnv(t)
+	e.store.insertCommitErr = errStore
+	ch := make(chan payOut, 1)
+	go func() {
+		res, err := e.svc.Pay(context.Background(), payReq("PA_AT_REC", 10005))
+		ch <- payOut{res, err}
+	}()
+	select {
+	case got := <-ch:
+		if got.err != nil {
+			t.Fatal(got.err)
+		}
+		row, ok := e.store.row("PA_AT_REC")
+		if !ok || got.res.Result != ResultOK || got.res.ChannelTxnNo != row.ChannelTxnNo || got.res.Status != dal.StatusProcessing {
+			t.Fatalf("result = %+v ok=%v", got.res, ok)
+		}
+		if e.sched.len() != 1 {
+			t.Fatalf("scheduled = %d, want only the finish task", e.sched.len())
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("recoverInsert waited")
 	}
 }
 

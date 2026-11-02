@@ -409,8 +409,8 @@ func TestNotifyFailBodyIsFailed(t *testing.T) {
 	}
 }
 
-// CH-05：DROP_NOTIFY、SLOW、空 notify_url、finished_at 为零、非终态都不发，计数不变。
-// DUP_NOTIFY 的 10 次发送是 CH-06，不在这里当成不发送。
+// CH-05：DROP_NOTIFY、空 notify_url、finished_at 为零、非终态都不发，计数不变。
+// SLOW 的首次延迟是 CH-06，不在这里当成不发送。DUP_NOTIFY 的 10 次发送也是 CH-06。
 func TestNotifySkipsWithoutSending(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -421,7 +421,6 @@ func TestNotifySkipsWithoutSending(t *testing.T) {
 		count    int
 	}{
 		{name: "drop", status: dal.StatusSuccess, scenario: scenario.DropNotify.String(), url: "http://keep", finished: notifyWhen},
-		{name: "slow", status: dal.StatusSuccess, scenario: scenario.Slow.String(), url: "http://keep", finished: notifyWhen},
 		{name: "empty url", status: dal.StatusSuccess, scenario: scenario.Normal.String(), url: "", finished: notifyWhen},
 		{name: "zero finished", status: dal.StatusSuccess, scenario: scenario.Normal.String(), url: "http://keep", finished: time.Time{}},
 		{name: "processing", status: dal.StatusProcessing, scenario: scenario.Normal.String(), url: "http://keep", finished: notifyWhen},
@@ -444,6 +443,28 @@ func TestNotifySkipsWithoutSending(t *testing.T) {
 				t.Fatalf("scheduled=%d adds=%d count=%d", sched.len(), box.adds, box.count())
 			}
 		})
+	}
+}
+
+// CH-06 验收：SLOW 的首次 due 是 finished_at 之后 30 秒。到这之前 HTTP 0 次、不加计数；到点且对方 body 恰好是 SUCCESS 后计数为 1。
+func TestNotifySlowFirstDueIsFinishedAtPlus30s(t *testing.T) {
+	rig := newNotifyRig(t, notifySample(dal.StatusSuccess, scenario.Slow.String()), func(w http.ResponseWriter, _ *http.Request, _ []byte, _ int) {
+		writeBytes(t, w, []byte("SUCCESS"))
+	})
+	rig.n.Handle(context.Background(), rig.box.row)
+	due := rig.box.row.FinishedAt.Add(slowFirstDelay)
+	wantDue(t, rig.sched, due)
+	if len(rig.cap.list()) != 0 || rig.box.adds != 0 || rig.box.count() != 0 {
+		t.Fatalf("hits=%d adds=%d count=%d", len(rig.cap.list()), rig.box.adds, rig.box.count())
+	}
+	rig.clk.Set(due.Add(-time.Millisecond))
+	if n := rig.sched.RunDue(rig.clk.Now()); n != 0 || len(rig.cap.list()) != 0 || rig.box.adds != 0 || rig.box.count() != 0 {
+		t.Fatalf("early n=%d hits=%d adds=%d count=%d", n, len(rig.cap.list()), rig.box.adds, rig.box.count())
+	}
+	rig.clk.Set(due)
+	runOne(t, rig.clk, rig.sched)
+	if rig.box.count() != 1 || len(rig.cap.list()) != 1 || rig.sched.len() != 0 {
+		t.Fatalf("count=%d hits=%d scheduled=%d", rig.box.count(), len(rig.cap.list()), rig.sched.len())
 	}
 }
 

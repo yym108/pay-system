@@ -36,6 +36,8 @@ const (
 	notifyMaxBody = 1024
 	// notifyHTTPTimeout 是单次回调的上下文超时。
 	notifyHTTPTimeout = 5 * time.Second
+	// slowFirstDelay 是 SLOW 第一次回调相对 finished_at 的延迟。失败后的间隔从当时的时钟算，不再加这一段。
+	slowFirstDelay = 30 * time.Second
 	// notifyPrepRetry 是发号、签名或计数更新没发出请求时的再试间隔。这次不计入 5 次。
 	notifyPrepRetry = time.Second
 	// notifyTimeLayout 与查单的 finished_at 相同：先截到毫秒，再标东八区。
@@ -131,7 +133,8 @@ func refuseRedirect(*http.Request, []*http.Request) error {
 	return http.ErrUseLastResponse
 }
 
-// Handle 只把第一次发送排到当前时钟，然后返回。发送和重试都在 Scheduler 上执行。
+// Handle 只入队，然后返回。发送和重试都在 Scheduler 上执行。
+// 普通场景的第一次排在当前时钟。SLOW 的第一次排在 finished_at 之后 30 秒。
 // 同一 id 已经有一条发送链时直接返回，避免完成钩子被调用两次把次数打双。
 func (n *Notifier) Handle(ctx context.Context, row dal.Txn) {
 	if !shouldNotify(row) {
@@ -148,10 +151,15 @@ func (n *Notifier) Handle(ctx context.Context, row dal.Txn) {
 		n.sched.Schedule(n.clk.Now(), func() { n.dupWave(ctx, row) })
 		return
 	}
+	if scenario.Scenario(row.Scenario) == scenario.Slow && row.NotifySentCount == 0 {
+		n.scheduleAttempt(ctx, row, 0, row.FinishedAt.Add(slowFirstDelay))
+		return
+	}
 	n.again(ctx, row, row.NotifySentCount, 0)
 }
 
-// shouldNotify 决定要不要入队。DROP_NOTIFY 与 SLOW 不发也不加计数。
+// shouldNotify 决定要不要入队。DROP_NOTIFY 不发也不加计数。
+// SLOW 与普通场景一样，终态且次数未满才入队；第一次的到期时刻由 Handle 单独排。
 // DUP_NOTIFY 入队后按 10 次发送，不走普通的 5 次退避。
 func shouldNotify(row dal.Txn) bool {
 	if row.Status != dal.StatusSuccess && row.Status != dal.StatusFailed {
@@ -161,7 +169,7 @@ func shouldNotify(row dal.Txn) bool {
 		return false
 	}
 	switch scenario.Scenario(row.Scenario) {
-	case scenario.DropNotify, scenario.Slow:
+	case scenario.DropNotify:
 		return false
 	case scenario.DupNotify:
 		return row.NotifySentCount < dupMaxSends
@@ -260,9 +268,13 @@ func (n *Notifier) scheduleDupTail(ctx context.Context, row dal.Txn) {
 	}
 }
 
-// again 按注入时钟排下一次尝试。after 为 0 时就是第一次发送。
+// again 按注入时钟排下一次尝试。after 为 0 时到期时刻就是当前时钟。
+// 重试的 after 从这次调用时的时钟算，不回到 finished_at。
 func (n *Notifier) again(ctx context.Context, row dal.Txn, expected int, after time.Duration) {
-	due := n.clk.Now().Add(after)
+	n.scheduleAttempt(ctx, row, expected, n.clk.Now().Add(after))
+}
+
+func (n *Notifier) scheduleAttempt(ctx context.Context, row dal.Txn, expected int, due time.Time) {
 	n.sched.Schedule(due, func() { n.attempt(ctx, row, expected) })
 }
 
