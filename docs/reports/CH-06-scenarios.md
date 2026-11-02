@@ -2,12 +2,12 @@
 
 | 项 | 内容 |
 |---|---|
-| 功能点 | CH-06（P0，第 3 周的 M3 切片；M4 仍开放） |
+| 功能点 | CH-06（P0，M3–M4）。SLOW 与 ACCEPT_TIMEOUT 已完成。账单文件仍属于 CH-08。 |
 | 所属链路 | 支付 |
-| 代码提交 | `86049ab` `[CH-06] add fail drop dup never scenarios`（完整 `86049abf41614b28d76ceacedac2019dd8ed8fc8`，2026-10-27 16:20:01 +0800） |
-| 分支 | `feat/CH-06-scenarios` |
+| 代码提交 | `86049ab` `[CH-06] add fail drop dup never scenarios`（完整 `86049abf41614b28d76ceacedac2019dd8ed8fc8`，2026-10-27 16:20:01 +0800）<br>`1245a2f` `[CH-06] defer slow notify and accept timeout`（完整 `1245a2f3af255b0620fe5f0e9bb286f2ac414058`，2026-11-02 23:41:08 +0800） |
+| 分支 | `feat/CH-06-scenarios`（M3）；`feat/CH-06-slow-accept`（M4） |
 | 日期 | 2026-10-27 |
-| 状态 | DOING。还差 M4：SLOW 的 30 秒延迟、ACCEPT_TIMEOUT 的受理阻塞 5 秒、BILL_MISSING / BILL_AMOUNT_DIFF 的账单内容。CLOSE_RACE 本切片不重做（关单抢成功已在 CH-03）。第 4 周计划行未勾 |
+| 状态 | DONE。SLOW 的 30 秒首次回调和 ACCEPT_TIMEOUT 的 5 秒受理等待已实现并验收。BILL_MISSING、BILL_AMOUNT_DIFF 的账单文件仍在 CH-08，本功能点不产生 CSV。CLOSE_RACE 不重做。第 4 周计划那一行还同时写着 CH-04，所以那一行保持未勾。正文一句话结论里“整项仍是 DOING”已被文末 2026-11-02 修订取代。 |
 
 这次代码提交 12 个文件，670 行新增，31 行删除。本报告在该提交之后写，不在这 12 个文件里。
 
@@ -350,3 +350,273 @@ make cover
 | 日期 | 提交 | 修订内容 |
 |---|---|---|
 | 2026-10-27 | 代码提交 `86049ab`；本报告尚未进入该提交 | 初稿。只覆盖 M3。状态保持 DOING |
+| 2026-11-02 | `1245a2f` | M4：SLOW 首次回调与 ACCEPT_TIMEOUT 受理等待。详见下方修订说明。 |
+
+### 2026-11-02 M4：SLOW 与 ACCEPT_TIMEOUT
+
+SLOW 和 ACCEPT_TIMEOUT 已经按金额末两位落地：10004 分（100.04 元）仍按原来的自动完成时间变成成功，查单马上看得到，只有第一次回调晚 30 秒；10005 分（100.05 元）只把新插入成功的那一次受理拖到创建后 5 秒，行在返回之前就已经在库里。上文把 SLOW 写成“不发、不加计数”、并把整项写成 DOING，说的是 2026-10-27 提交 `86049ab` 的代码。从 2026-11-02 的 `1245a2f` 起，这两条改成下面的行为。账单文件仍然不做。
+
+这次代码在分支 `feat/CH-06-slow-accept`，提交信息 `[CH-06] defer slow notify and accept timeout`，完整哈希 `1245a2f3af255b0620fe5f0e9bb286f2ac414058`，作者时间 2026-11-02 23:41:08 +0800。13 个文件，720 行新增，29 行删除。新建的测试文件是 `service/channel_mock/biz/ch06_m4_integration_test.go` 和 `service/channel_mock/handler/ch06_m4_integration_test.go`。本修订写在该提交之后，不在这 13 个文件里。没有新的配置项、错误码、表或接口定义。
+
+金额末两位仍决定场景，场景表本身不改。末两位 04 是 SLOW，05 是 ACCEPT_TIMEOUT。00 以及 10 到 99 仍是 NORMAL。下面用 10000 分（100.00 元）当 NORMAL 的对照。
+
+渠道交易记在表 `mock_txn`。状态 `PROCESSING` 是处理中，`SUCCESS` 是成功。`finished_at` 是写成成功或失败的时刻。`bill_date` 是账单日，成功且该进账单时，取 `finished_at` 换到东八区固定偏移（UTC+8）后的日历日，格式 `2006-01-02`。`notify_sent_count` 是已经占到名额并发出的回调次数，从 0 起。`notify_url` 是受理时留下的回调地址。`channel_txn_no` 是渠道给这一笔的流水号。`req_no` 是调用方带来的请求号，同一笔重复受理靠它找到已有行。回调是渠道在交易终态之后，向 `notify_url` 发的 HTTP POST。
+
+注入时钟是测试可以拨动的时间源（`clock.Fake` 可以 `Set`）。生产用真实时间。`Scheduler` 是进程内调度器：到点执行一个函数，任务不落盘。`RunDue` 是测试用手动调度器上的方法，只执行已经到期的任务。goroutine 是 Go 里的一条并发执行流。channel 在这里是一个用来等待的信号：到期时把它关掉，堵在上面的 `Pay` 才会继续。`select` 同时等上下文取消和这个信号。CAS 在这里指更新时带上旧的计数值：`WHERE notify_sent_count = ?`，对不上就改不到行。
+
+#### 行为
+
+SLOW 不推迟成功，只推迟第一次回调。10004 分仍按自动完成时间写成 `SUCCESS`。完成之后立刻查单就是成功。`bill_date` 与金额 10000 分的 NORMAL 相同，都等于 `finished_at` 的东八区日期。设完成时刻为 T。T 之后、T 加 30 秒之前，发往 `notify_url` 的 HTTP 是 0 次。到期时刻是 `finished_at` 加 30 秒；提前 1 毫秒不发。到点才发出第 1 次。
+
+通知器的 `Handle` 在场景是 SLOW 且 `notify_sent_count` 是 0 时，调用 `scheduleAttempt`，到期时刻是 `row.FinishedAt.Add(30 * time.Second)`。第一次如果失败，后面的重试不再加这 30 秒，改从当时的注入时钟算间隔：5 秒、15 秒、30 秒、60 秒。连第一次最多 5 次。例如第 1 次在 T 加 30 秒发出且对方回 HTTP 500，第 2 次就在这一次之后 5 秒发出；对方 body 字节恰好是 `SUCCESS` 时停住，`notify_sent_count` 为 2，之后不再发。占名额的 SQL 仍是 `WHERE notify_sent_count = ?`。`DROP_NOTIFY`（10002 分，100.02 元）仍然不发。`DUP_NOTIFY`（10003 分，100.03 元）的 10 次发送不改。
+
+ACCEPT_TIMEOUT 只挡住新插入成功的那一次受理。顺序是：先写入 `mock_txn`，再调度自动完成，然后才 `holdAccept`。到期时刻是 `created_at` 加 5 秒。设创建时刻为 C。若注入时钟已经不早于 C 加 5 秒，立刻返回，不再排一次等待。否则 `Scheduler.Schedule` 在到期时关闭一个 channel，`Pay` 在 `ctx.Done()` 和这个 channel 上 `select`。C 加 5 秒之前 `Pay` 不返回。到点后返回结果 OK、状态 `PROCESSING`、同一个 `channel_txn_no`。返回前这一行已经在库里。集成测试把完成延迟设为 60000 毫秒（60 秒），所以放行受理时行仍是处理中；再把时钟推进到完成时刻，状态才变成 `SUCCESS`。
+
+同一 `req_no` 在第一次还堵着时再次 `Pay`，立刻得到同一个 `channel_txn_no`，并且不会把第一次放行。重复受理不进入 `holdAccept`，也不再排一次 5 秒。`recoverInsert` 是插入结果不确定时再读一次已提交行的路径：它不额外等待，调度器里只留下自动完成那一个任务。上下文取消时 `holdAccept` 返回 `ctx.Err()`，不删行，已经排上的自动完成任务留在调度器上。这次验证没有单独的测试函数覆盖取消这条分支。`holdAccept` 的语句覆盖率是 81.8%，不是 100%。
+
+等待用的是已有 `Scheduler`，不是 `time.Sleep`，也不是在业务里调用 `time.Now`。`holdAccept` 用注入时钟判断“现在是否已经不早于到期时刻”。生产实现 `TimerScheduler` 用 `time.AfterFunc`，等待长度在排任务时按注入时钟算好，之后走墙上时钟，所以生产上这 5 秒是墙上时钟的 5 秒。测试用手动调度器：`Schedule` 只把任务记下来，`RunDue` 才执行。把 `clock.Fake` 往前拨，不会让已经武装的 `time.AfterFunc` 提前触发，所以测试不能靠拨假时钟放行。`Pay` 堵在 `select` 上等 channel 被关掉，而关掉它的函数要等 `RunDue`。这两步若在同一个 goroutine 里调用，`RunDue` 轮不到，`holdAccept` 也回不来，形成死锁。验收里需要两边都推进的测试，把 `Pay` 放在另一个 goroutine。
+
+受理 HTTP 的上下文上限从 3 秒改为 8 秒。常量名 `payRequestTimeout`，只包 `servePay` 里对 `Pay` 的那一次调用。查单和关单仍用 `requestTimeout`，各 3 秒。平台自己客户端的 3 秒总超时不改，所以平台仍把这次受理看成结果未知，而不是失败。这是两个不同的 3 秒：一个是渠道 HTTP 自己给受理的上下文，一个是平台向外呼叫渠道时的总超时。若受理上下文仍是 3 秒，会在 5 秒等待结束前取消 `Pay`，调用方得到 HTTP 500，而不是晚到的 200。
+
+```mermaid
+flowchart TD
+  A["金额末两位"] --> B{"哪一种"}
+  B -->|"04 SLOW，10004 分"| C["自动完成写成 SUCCESS"]
+  C --> D["查单立刻可见，bill_date 同 10000 分"]
+  C --> E["首次回调排在 finished_at 加 30 秒"]
+  E --> F["失败后从当时时钟：5 秒、15 秒、30 秒、60 秒"]
+  B -->|"05 新插入，10005 分"| G["写入 mock_txn，并排自动完成"]
+  G --> H["holdAccept 等到 created_at 加 5 秒"]
+  H --> I{"上下文先取消？"}
+  I -->|否| J["返回 OK 和 PROCESSING"]
+  I -->|是| K["返回 ctx.Err，不删行"]
+  B -->|"05 重复受理"| L["立刻返回已有 channel_txn_no"]
+```
+
+10004 分的成功时刻不因为慢通知而推迟，晚的只是第一次 POST。10005 分在 HTTP 返回之前行就已经在库里；同一 `req_no` 再来一笔不会再等 5 秒，也不会把还堵着的第一次放行。
+
+这段代码在做的事：SLOW 且还没发过时，把第一次尝试的到期时刻定在完成时间加 30 秒，然后返回；别的场景仍从当前注入时钟排。DUP 的 10 次分支留在前面，没有改道。
+
+```go
+// service/channel_mock/biz/notify.go
+func (n *Notifier) Handle(ctx context.Context, row dal.Txn) {
+	if !shouldNotify(row) {
+		return
+	}
+	n.mu.Lock()
+	if _, ok := n.chains[row.ID]; ok {
+		n.mu.Unlock()
+		return
+	}
+	n.chains[row.ID] = struct{}{}
+	n.mu.Unlock()
+	if scenario.Scenario(row.Scenario) == scenario.DupNotify {
+		n.sched.Schedule(n.clk.Now(), func() { n.dupWave(ctx, row) })
+		return
+	}
+	if scenario.Scenario(row.Scenario) == scenario.Slow && row.NotifySentCount == 0 {
+		n.scheduleAttempt(ctx, row, 0, row.FinishedAt.Add(slowFirstDelay))
+		return
+	}
+	n.again(ctx, row, row.NotifySentCount, 0)
+}
+```
+
+`slowFirstDelay` 就是 30 秒。`shouldNotify` 不再把 SLOW 直接挡掉：状态已是成功或失败、回调地址非空、`finished_at` 非零、计数小于 5，就入队。`DROP_NOTIFY` 仍直接不发。`DUP_NOTIFY` 仍是计数小于 10 才发，发满 10 次的规则不变。
+
+失败后的下一次从调用当时的注入时钟加间隔，不回到 `finished_at`，因此不会把 30 秒再加一遍。已经发出 1 次之后，间隔表依次是 5 秒、15 秒、30 秒、60 秒；第 5 次失败不再取间隔。连第一次最多 5 次。
+
+```go
+// service/channel_mock/biz/notify.go
+var notifyBackoff = [...]time.Duration{
+	5 * time.Second,
+	15 * time.Second,
+	30 * time.Second,
+	60 * time.Second,
+}
+
+func (n *Notifier) again(ctx context.Context, row dal.Txn, expected int, after time.Duration) {
+	n.scheduleAttempt(ctx, row, expected, n.clk.Now().Add(after))
+}
+```
+
+占名额仍是短事务里的条件加一，期望值对不上就不发。SLOW 没有换成另一条 SQL。
+
+```sql
+-- service/channel_mock/dal/txn.go
+UPDATE mock_txn SET notify_sent_count = notify_sent_count + 1
+WHERE id = ? AND notify_sent_count = ?
+```
+
+`holdAccept` 只在场景确是 ACCEPT_TIMEOUT、且注入时钟还早于 `created_at` 加 5 秒时才登记等待。到期任务只做一件事：关掉 `done`。取消和到期谁先到，`select` 谁先返回。取消只把 `ctx.Err()` 交回去，函数里没有删除语句。
+
+```go
+// service/channel_mock/biz/pay.go
+func (s *Service) holdAccept(ctx context.Context, t dal.Txn) error {
+	if scenario.Scenario(t.Scenario) != scenario.AcceptTimeout {
+		return nil
+	}
+	due := t.CreatedAt.Add(acceptHold)
+	if !s.clk.Now().Before(due) {
+		return nil
+	}
+	done := make(chan struct{})
+	s.sched.Schedule(due, func() { close(done) })
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-done:
+		return nil
+	}
+}
+```
+
+`acceptHold` 是 5 秒。调用点只在新插入成功之后：先 `schedule` 自动完成，再 `holdAccept`。插入撞上已有 `req_no`，或者走 `recoverInsert`，都不会调用它。
+
+受理上下文改成 8 秒，并且只出现在 `servePay`。注释里写了原因：沿用 3 秒会先取消 `Pay`，调用方得到 500。
+
+```go
+// service/channel_mock/handler/pay.go
+const (
+	// requestTimeout 是查单和关单进入业务后的上限。
+	requestTimeout = 3 * time.Second
+	// payRequestTimeout 只用于受理。ACCEPT_TIMEOUT 要等注入时钟 5 秒才写 200，
+	// 沿用 3 秒会先取消 Pay，调用方得到 500 而不是晚到的 200。
+	payRequestTimeout = 8 * time.Second
+)
+
+func (h *Handler) servePay(ctx context.Context, c *app.RequestContext) int {
+	body := c.Request.Body()
+	if status := h.verify(ctx, c, body); status != http.StatusOK {
+		return bare(c, status)
+	}
+	in, ok := decodePay(body)
+	if !ok {
+		return bare(c, http.StatusBadRequest)
+	}
+	callCtx, cancel := context.WithTimeout(ctx, payRequestTimeout)
+	defer cancel()
+	res, err := h.pay.Pay(callCtx, biz.PayRequest{
+		ReqNo:     in.ReqNo,
+		Amount:    money.Amount(in.Amount),
+		Subject:   in.Subject,
+		NotifyURL: in.NotifyURL,
+	})
+```
+
+查单在 `service/channel_mock/handler/query.go`、关单在 `service/channel_mock/handler/close.go`，两处仍是 `context.WithTimeout(ctx, requestTimeout)`。
+
+生产调度器把等待交给标准库的墙上定时器。`due.Sub(s.clk.Now())` 只在排任务的那一刻算一次长度，之后 `time.AfterFunc` 不再看注入时钟。
+
+```go
+// service/channel_mock/biz/scheduler.go
+s.timers[id] = time.AfterFunc(due.Sub(s.clk.Now()), func() {
+	s.mu.Lock()
+	if _, ok := s.timers[id]; !ok {
+		s.mu.Unlock()
+		return
+	}
+	delete(s.timers, id)
+	s.mu.Unlock()
+	defer s.running.Done()
+	s.run(task)
+})
+```
+
+测试用的手动调度器只记录，不在 `Schedule` 里执行。放到 `RunDue` 里、且到期时刻不晚于传入的 `now`，任务才跑。
+
+```go
+// service/channel_mock/biz/fakes_test.go
+func (m *manualSched) Schedule(due time.Time, task func()) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tasks = append(m.tasks, schedTask{due: due, task: task})
+}
+
+func (m *manualSched) RunDue(now time.Time) int {
+	m.mu.Lock()
+	var run []func()
+	var keep []schedTask
+	for _, t := range m.tasks {
+		if !t.due.After(now) {
+			run = append(run, t.task)
+		} else {
+			keep = append(keep, t)
+		}
+	}
+	m.tasks = keep
+	m.mu.Unlock()
+	for _, f := range run {
+		f()
+	}
+	return len(run)
+}
+```
+
+#### 被否决的方案
+
+| 方案 | 做法 | 优点 | 缺点 | 结论 |
+|---|---|---|---|---|
+| 采用：沿用已有 `Scheduler` | SLOW 的第一次到期用 `finished_at` 加 30 秒。ACCEPT_TIMEOUT 在新插入并排好自动完成之后，用 `Schedule` 到点关 channel，`Pay` 在 `select` 里等 | 业务代码不睡眠，也不调用 `time.Now`。测试靠 `RunDue` 决定何时放行 | 生产上这 5 秒是墙上时钟。`Pay` 和 `RunDue` 不能放在同一个 goroutine，否则死锁 | 采用 |
+| 备选：在 biz 里 `time.Sleep` 5 秒或 30 秒 | 受理或回调路径上直接睡 | 调用栈短 | biz 禁止靠睡眠等异步结果。测试也无法用注入时钟推进 | 不采用 |
+| 备选：把 5 秒等待缩短到 3 秒以内 | 让原来的 3 秒受理 HTTP 上限够用，不必改成 8 秒 | 少改一个常量 | 会改掉场景表里“阻塞 5 秒”的规则 | 不采用 |
+| 备选：新增环境变量或新错误码 | 用配置表示等待时长，或为超时单独加错误码 | 以后可以调 | 这次没有新配置、新错误码、新表、新 IDL | 不采用 |
+
+#### 验收对照
+
+下表结果都是通过。类型按这一列，不把单元写成集成。
+
+| 验收条目 | 测试函数 | 类型 | 结果 |
+|---|---|---|---|
+| 自动完成后查单立即 SUCCESS，`bill_date` 与金额 10000 分的 NORMAL 相同；`finished_at` 加 30 秒之前 HTTP 0 次，到点发出第 1 次 | `TestScenarioSlowNotifyAfter30sMySQL` | 集成 | 通过 |
+| 首次到期时刻就是 `finished_at` 加 30 秒，提前 1 毫秒不发 | `TestNotifySlowFirstDueIsFinishedAtPlus30s` | 单元 | 通过 |
+| 首次回调 HTTP 500，第 2 次 body 恰好 `SUCCESS`：第 2 次在首次之后 5 秒发出，之后不再发，`notify_sent_count` 为 2 | `TestScenarioSlowRetryFiveSecondsMySQL` | 集成 | 通过 |
+| 受理在注入时钟到 `created_at` 加 5 秒之前不返回；到点后返回 OK、PROCESSING、同一 `channel_txn_no`；返回前行已存在；完成延迟设为 60000 毫秒，放行受理后再推进到完成时刻，状态变为 SUCCESS | `TestPayAcceptTimeoutHoldsFiveSecondsMySQL` | 集成 | 通过 |
+| 同一 `req_no` 在第一次还堵着时再次 Pay，立刻得到同一 `channel_txn_no`，并且不放行第一次 | `TestPayAcceptTimeoutWaitsForRunDue` | 单元 | 通过 |
+| NORMAL、FAIL、DROP_NOTIFY、SLOW、NEVER_FINISH 的 Pay 不因为这 5 秒堵住 | `TestPayOtherScenariosDoNotHoldAccept` | 单元 | 通过 |
+| `recoverInsert` 不额外等待，调度器里只留下自动完成那一个任务 | `TestPayAcceptTimeoutRecoverInsertDoesNotHold` | 单元 | 通过 |
+| 受理 HTTP 在注入时钟到 `created_at` 加 5 秒之前没有响应；`RunDue` 放行后 HTTP 200，JSON 的 `result` 是 OK；当时行仍是 PROCESSING、场景 ACCEPT_TIMEOUT。这条走 8 秒受理上下文 | `TestAcceptTimeoutHTTPMySQL` | 集成 | 通过 |
+| 受理上下文剩余时间按 8 秒检查，查单和关单按 3 秒检查 | `TestPayContextOutlivesThreeSecondLimit` | 单元 | 通过 |
+| 场景结果表里 ACCEPT_TIMEOUT 仍会自动完成为 SUCCESS 并写入 `bill_date`。测试把 Pay 放到另一个 goroutine，先推进完成，最后再放行 5 秒等待 | `TestScenarioOutcomes` 的 ACCEPT_TIMEOUT 子测试 | 单元 | 通过 |
+
+#### 验证记录
+
+环境：go1.27.2 darwin/arm64。golangci-lint 2.14.0，用 go1.27.1 构建，来源 114493f，构建时间 2026-09-24T10:54:53Z。日志从 2026-11-02 23:38:18 +0800 到 2026-11-02 23:39:57 +0800。下面每个命令退出码都是 0。`/usr/bin/time -p` 的 real、user、sys 单位是秒。没列在这张表里的命令，本次未运行。
+
+| 命令 | real | user | sys | 结果 |
+|---|---|---|---|---|
+| `gofmt -l .` | 0.04 | 0.20 | 0.04 | 无输出 |
+| `make lint` | 2.24 | 4.41 | 5.27 | `0 issues.` |
+| `make test` | 5.70 | 4.38 | 5.26 | 根包 5.239s；`service/channel_mock/biz` 1.400s；`service/channel_mock/handler` 1.308s |
+| `make test-integration` | 46.12 | 9.56 | 8.37 | 根包 37.871s；`service/channel_mock/biz` 16.256s；`service/channel_mock/handler` 10.454s；`service/payment/biz` 43.986s |
+| `make cover` | 45.10 | 12.55 | 11.20 | 全仓库 total 31.1%（含生成代码，不作判据）。`service/channel_mock/biz` 16.865s，语句覆盖率 93.5%。handler 11.820s，95.5%。dal 为缓存结果 60.2%，不在 70% 门槛里。`service/payment/biz` 42.414s，86.1%。gateway 为缓存结果 76.2%，不在门槛里 |
+
+函数覆盖率，来自同一次 `make cover` 的 `go tool cover -func`：
+
+- `Handle` 100.0%
+- `shouldNotify` 100.0%
+- `again` 100.0%
+- `scheduleAttempt` 100.0%
+- `Pay` 95.7%
+- `recoverInsert` 100.0%
+- `holdAccept` 81.8%
+- `servePay` 100.0%
+
+`make gen` 未运行。`mmdc` 未运行，没有新的 SVG。CF-24 的 mermaid 节点没有重画。
+
+#### 同步过的文档
+
+- `docs/02-requirements.md`：版本仍是 v3.0。§3 的 CH-06 改为 DONE。规则 6、7 和三条 M4 验收已勾。CH-05 规则 1 改为 SLOW 的首次发送在 `finished_at` 之后 30 秒，失败后再按 5 秒、15 秒、30 秒、60 秒。§8.2 新增 2026-11-02 一行。PAY-06 的说明改为：CH-06 已 DONE，但关单验收仍不使用 SLOW 和 ACCEPT_TIMEOUT，依赖列仍不写 CH-06。更早的变更记录没有改写。
+- `docs/06-flows.md`：版本 v2.29，最后修改 2026-11-02。CF-24 图下文字写明 SLOW 已实现。图节点未改。
+- `docs/database.md`：最后更新 2026-11-02。`mock_txn.notify_sent_count` 写明 SLOW 首次在 `finished_at` 后 30 秒才按 `notify_sent_count = ?` 加一，连首次最多 5 次。变更记录写“无（仅文档）”，无 DDL，未执行迁移。
+- `docs/interview-notes.md`：补了 SLOW 只推迟第一次回调，以及受理 HTTP 上限改为 8 秒的原因。
+- `docs/04-dev-plan.md`：这次没有改。第 4 周那一行仍未勾，因为同一行还写着渠道退款。
+
+#### 未完成
+
+- 账单文件，以及 BILL_MISSING、BILL_AMOUNT_DIFF 的金额差异，仍是 CH-08。本功能点不产生 CSV。
+- 渠道退款是 CH-04，还没做。第 4 周计划那一行因此不能勾，这次也没有把它勾上。
+- 上下文取消时不删行、自动完成任务仍留着：代码如此。这次没有单独的测试函数证明这条分支。
+- 进程退出后还没发出的回调重试会丢。这是 CH-05 已有的限制：调度任务只在内存里，启动恢复只扫描仍在处理中的行。这次不改。
+- 生产上 ACCEPT_TIMEOUT 的 5 秒是墙上时钟。平台 3 秒超时后得到的是未知，不是失败。
+- CLOSE_RACE 不重做。关单抢成功仍是更早的渠道关单行为，本修订没有再实现一遍。
