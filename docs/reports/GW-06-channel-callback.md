@@ -6,10 +6,10 @@
 | --- | --- |
 | 功能点 | GW-06（P0，第 3 周） |
 | 所属链路 | 基础设施 |
-| 代码提交 | `dcd1718` `[GW-06] add channel callback`（完整 `dcd17189a9b15063b80d15ef912504642fc60499`） |
-| 分支 | `feat/GW-06-channel-callback` |
+| 代码提交 | `dcd1718` `[GW-06] add channel callback`（完整 `dcd17189a9b15063b80d15ef912504642fc60499`）；`34671d0` `[GW-06] prove channel callback acceptance`（完整 `34671d080764fed468ac0f1e943502449b8d6b45`，2026-11-02 10:45:06 +0800） |
+| 分支 | `feat/GW-06-callback-accept`（验收补齐从已合入 main 的 `feat/GW-06-channel-callback` 继续） |
 | 日期 | 2026-11-02 |
-| 状态 | DOING。签名错误不调用 payment 已有测试。未知单号和金额不一致的 MySQL 订单行、2 秒自动完成、经本入口的 10 次 DUP_NOTIFY 都还没有测。开发计划里的 GW-06 勾选框仍未勾。周交付段落仍未满足。 |
+| 状态 | DONE。四条验收已勾，开发计划里的 GW-06 已勾。周交付段落 `paycli create → pay → query` 这次没有执行，不能把那一段写成已经完成。正文一句话结论里“这四件事都还没有在 MySQL 上证明”已被文末修订取代。 |
 
 本报告写在上面这次代码提交之后，不在那次提交的文件里。报告撰写时尚未提交。
 
@@ -251,3 +251,40 @@ make cover
 | 日期 | 提交 | 修订内容 |
 | --- | --- | --- |
 | 2026-11-02 | 尚未提交 | 首版。对应代码提交 `dcd1718`。撰写时本报告还未提交。 |
+| 2026-11-02 | 尚未提交 | 验收补齐。代码提交 `34671d0`。取代正文里“四件事都还没有在 MySQL 上证明”，以及 4.3 后三行、第 5 节前三条、4.5 里“后三条未勾”“开发计划没有勾选”、术语表 DUP_NOTIFY 的“还没有测”、讲解要点第 2 条末句。本修订撰写时报告提交还未发生。 |
+
+### 2026-11-02 验收补齐
+
+这一节取代正文里已经过时的结论。第一次报告提交是 `5f96b1b` `[GW-06] add report`（完整 `5f96b1b0d0420073e7673b522131d69eacf9bde1`）。当时未知单号、金额不一致、2 秒内 SUCCESS、DUP_NOTIFY 十次都还没有在 MySQL 上证明，所以状态是 DOING。代码提交 `34671d0` 补上了这三件事。签名错误那一条仍然只由原来的单元测试 `TestGW06BadSignature` 证明：HTTP 401，正文 `FAIL`，假 RPC 调用 0 次，没有读 MySQL。
+
+新增文件只有 `service/payment/biz/callback_integration_test.go`。它带 `//go:build integration`。同一提交还改了需求、开发计划和面试笔记。生产代码、IDL、表、错误码、环境变量都没有改。`ApplyPayResult` 的 CAS 和 outbox 规则没有改。网关不算手续费，也不改余额。
+
+测试里的 `gwNotify` 不是 Kitex 的 `HandleChannelNotify`。`service/payment/biz` 的测试不能 import `service/payment/handler`，否则和 handler 对 biz 的引用成环。`gwNotify` 只复制了 PAY 分支：空请求或非 PAY 返回已有的 `10003` 或 `10001`，然后调用真正的 `Payments.ApplyChannelNotify`。真正走到的是网关 HTTP、渠道签名、进程内拒绝计数、channel-mock 的通知器，以及 `ApplyChannelNotify` / `ApplyPayResult`。Kitex handler 函数本身没有被调用，所以它的覆盖率仍是 33.3%。
+
+三条新测试：
+
+| 验收 | 测试 | 证明了什么 |
+| --- | --- | --- |
+| 签名正确但 req_no 未知、金额不一致：HTTP 200，正文恰好 `SUCCESS`，订单不变，拒绝计数 +1 | `TestGW06RejectKeepsOrder` | 商户 `M100080`，商户单号 `GW06-REJ`，金额 10000 分（100.00 元）。先用假的渠道受理把订单停在 PAYING，不启动自动回调，避免和“订单不变”抢跑。未知单号 `PA0000000000000000099`：HTTP 200，正文 `SUCCESS`，`CallbackRejected("30001")` 加 1，`payment_order.pay_no` 和 `channel_txn.biz_no` 对这个单号的行数都是 0，原订单和原渠道流水与回调前逐字段相同。然后对真实 `pay_no` 把金额改成 1 分再投一次：HTTP 200，正文 `SUCCESS`，`CallbackRejected("50002")` 加 1，订单和渠道流水仍与回调前相同，流水状态 PROCESSING、金额 10000、`notify_count` 为 0，outbox 为空。 |
+| Pay 返回 PAYING 后，channel-mock 自动完成并经本路由回调，2 秒内订单变为 SUCCESS | `TestGW06PaySucceedsWithinTwoSeconds` | 商户 `M100081`，商户单号 `GW06-FAST`，金额 10000 分，场景 NORMAL。测试把自动完成延迟的最小值和最大值都设成 50 毫秒，所以这次延迟就是 50 毫秒。生产默认最大延迟没有改。计时从 `Pay` 返回 PAYING 开始，2 秒内轮询到订单 SUCCESS。订单只有 1 行，`paid_at` 有值。渠道流水 SUCCESS，金额 10000，`notify_count` 为 1，`channel_txn_no` 已填。outbox 恰好 1 条 `payment.succeeded`，`biz_no` 等于 `pay_no`。mock 侧 1 行，场景 NORMAL，状态 SUCCESS，`notify_sent_count` 为 1，金额 10000。 |
+| 渠道 10 次回调后订单只推进一次，outbox 恰好 1 条 `payment.succeeded`，`notify_count` 为 10 | `TestGW06DupNotifyTenCallbacks` | 商户 `M100082`，商户单号 `GW06-DUP`，金额 10003 分（100.03 元），末两位 03 是 DUP_NOTIFY。轮询上限 15 秒，直到 `notify_count` 为 10。订单只有 1 行且为 SUCCESS，金额 10003。渠道流水 SUCCESS，金额 10003，`notify_count` 为 10。outbox 恰好 1 条 `payment.succeeded`。mock 侧 1 行，场景 DUP_NOTIFY，状态 SUCCESS，`notify_sent_count` 为 10，金额 10003。 |
+
+DUP_NOTIFY 有一个限制：channel-mock 在 POST 之前就把 `notify_sent_count` 加一，所以 mock 侧等于 10 不能单独证明这 10 次 HTTP 正文都是 `SUCCESS`。payment 的 `notify_count` 等于 10，表示 `ApplyPayResult` 的 NOTIFY 路径成功匹配了 10 次：第一次是 APPLIED，后面是 DUPLICATE。网关对这两种结果写 HTTP 200 和正文 `SUCCESS`。测试没有把这 10 次 HTTP 响应体记下来。后 5 次按真实时钟落在大约 +1 秒到 +5 秒，所以等待用的是 15 秒，没有放宽 2 秒那一条。2 秒那一条只约束 NORMAL 的 10000 分。
+
+同一轮验证，2026-11-02，go1.27.2 darwin/arm64，golangci-lint 2.14.0 built with go1.27.1 from 114493f on 2026-09-24T10:54:53Z。日志起点 2026-11-02 10:39:56 +0800。五条命令都是退出码 0。这是验收补齐这一版的数字，不替换第 4.4 节。
+
+| 命令 | 结果 |
+| --- | --- |
+| `gofmt -l .` | 退出码 0，无文件名。real 0.07s，user 0.30s，sys 0.06s |
+| `make lint` | 退出码 0，`0 issues.`。real 3.15s，user 4.85s，sys 9.99s |
+| `make test` | 退出码 0。real 8.81s，user 6.62s，sys 7.32s。根包 8.146s。新文件有 integration 构建标签，这条命令不编译它。`service/payment/biz` 与 `service/gateway` 为 cached |
+| `make test-integration` | 退出码 0。real 57.33s，user 12.35s，sys 12.09s。根包 53.343s。`service/payment/biz` 54.747s。`service/gateway` 为 cached |
+| `make cover` | 退出码 0。real 58.43s，user 16.25s，sys 18.20s。全仓库 total 31.1%（含生成代码，不是门槛）。`service/payment/biz` 51.665s / 86.1%（门槛内）。`service/payment/handler` cached 81.7%。`service/gateway` cached 76.2%（不在门槛内）。`cmd/gateway` cached 25.6%。`pkg/money` cached 100%，`pkg/sign` cached 100%，`pkg/idgen` cached 88.1%，`pkg/outbox` cached 95.0% |
+
+同一次 `make cover` 的函数覆盖：`notify.go` 里的 `ApplyChannelNotify` 80.0%。`payment.go` 里的 `App.ApplyChannelNotify` 0.0%。`HandleChannelNotify` 33.3%。`cmd/gateway` 的 `serve` 7.4%。网关包是 cached，函数比例与第 4.4 节相同：`channelCallback` 74.0%，`parseCallback` 68.2%，`callbackResult` 81.8%，`writeCallback` 85.7%，`CallbackRejected` 85.7%，`addCallbackRejected` 83.3%，`registerCallback` 66.7%，`skew` 100%。新测试在 payment 的测试进程里调用了网关，但 `make cover` 只统计正在被测试的那个包，所以没有把这些执行算进 `service/gateway` 的 76.2%。
+
+`make gen` 未运行。`mmdc` 未运行。`docs/06-flows.md` 没有改。没有用 paycli 打到正在运行的环境。
+
+`34671d0` 同步的文档：需求版本仍是 v3.0，最后修改改为 2026-11-02。§3 的 GW-06 从 DOING 改为 DONE。后三条验收改为已勾，第一条保持已勾。§8.2 追加一行 2026-11-02，2026-11-01 那一行没有改写。开发计划里 GW-06 已勾。同一段下面的交付句 `paycli create → pay → query` 没有改，这次也没有执行。面试笔记加了一条：这三项由 payment 的集成测试打到进程内网关和 channel-mock，延迟固定 50 毫秒，生产默认延迟不变。
+
+仍然没做的：`REFUND` 仍返回已有的 `10003`，这次没有单独测试，留给 REF-03。故障点 `callback.after_commit` 没有设成真的杀进程。进程内计数重启后归零，`/metrics` 仍是 404。周交付那一句要等以后对正在运行的环境执行 paycli，这次不能写成已经完成。
