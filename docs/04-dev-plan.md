@@ -79,7 +79,7 @@
 - [x] GW-01 网关骨架
 - [x] GW-03 商户验签
 - [x] GW-02 支付与余额路由
-- [ ] GW-06 渠道回调入口
+- [x] GW-06 渠道回调入口
 
 交付：`paycli create → pay → query`，订单最终 SUCCESS，`channel_txn` 与订单一致，outbox 有 1 条事件；A3 订单层用例通过。
 

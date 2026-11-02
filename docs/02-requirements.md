@@ -1,6 +1,6 @@
 # pay-system 需求规格说明书
 
-> 版本：v3.0　最后修改：2026-11-01
+> 版本：v3.0　最后修改：2026-11-02
 > 状态：v3.0 重新聚焦支付、退款、转账三条资金链路（变更见 §8.2），2026-10-13 已确认为开发基线；开发按 §3 功能点总表逐项推进
 > 上游：`PROJECT_GOALS.md`（目标与约束）、`docs/01-tech-decisions.md`（技术选型与版本）
 > 关联：`docs/03-conventions.md`（编号、错误码、命名等全局约定）、`docs/05-api.md`（接口文档）、`docs/database.md`（表结构）、`docs/04-dev-plan.md`（周计划）、`docs/06-flows.md`（流程图）
@@ -407,7 +407,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | GW-03 | 商户验签 | P0 | M3 | GW-01、PAY-01 | DONE |
 | GW-04 | 时间窗口与 nonce 防重放 | P0 | M5 | GW-03、GW-06、OPS-01 | TODO |
 | GW-05 | 商户限流（进程内） | P0 | M5 | GW-03 | TODO |
-| GW-06 | 渠道回调入口 | P0 | M3 | GW-01、PAY-04、CH-05、BASE-15 | DOING |
+| GW-06 | 渠道回调入口 | P0 | M3 | GW-01、PAY-04、CH-05、BASE-15 | DONE |
 | GW-07 | 管理接口（重放、核对、触发对账） | P0 | M6 | GW-01、MQ-05、ACC-10、ACC-11、REC-01 | TODO |
 | GW-08 | 商户密钥缓存 | P0 | M7 | GW-03、OPT-01、QA-02 | TODO |
 | GW-09 | 商户 API 路由（退款与转账） | P0 | M4 | GW-01、GW-02、GW-06、TL-01、REF-01、REF-05、TRF-01、TRF-05 | TODO |
@@ -2257,9 +2257,9 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 验收：
 
 - [x] 签名错误的回调不改变任何订单（A7）。
-- [ ] 签名正确但 req_no 未知、金额不一致的回调返回 200 SUCCESS，订单不变，告警指标 + 1。
-- [ ] 正常场景（由 PAY-03 移来）：Pay 返回 PAYING，经 channel_mock 自动完成与 CH-05 回调，2 秒内订单变为 SUCCESS。
-- [ ] DUP_NOTIFY 端到端（A3 订单层）：渠道 10 次回调都得到 200 `SUCCESS`，订单只推进一次，outbox 恰好 1 条 `payment.succeeded`，`notify_count = 10`。
+- [x] 签名正确但 req_no 未知、金额不一致的回调返回 200 SUCCESS，订单不变，告警指标 + 1。
+- [x] 正常场景（由 PAY-03 移来）：Pay 返回 PAYING，经 channel_mock 自动完成与 CH-05 回调，2 秒内订单变为 SUCCESS。
+- [x] DUP_NOTIFY 端到端（A3 订单层）：渠道 10 次回调都得到 200 `SUCCESS`，订单只推进一次，outbox 恰好 1 条 `payment.succeeded`，`notify_count = 10`。
 
 #### GW-07 管理接口
 
@@ -3165,3 +3165,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-01 | v3.0 | GW-03：商户端口 `/v1` 缺头或验签失败返回已有的 20001，不到路由；验签通过后路径仍不存在则 404 / 10002，且该 404 带平台签名；管理端口与非 `/v1` 仍不验签、404 不签名；每次 `GetMerchantCredential`，不缓存，调用超时 1 秒，不重试；DISABLED 与非 ACTIVE 为 20004；空密钥与空 merchant_id 为 10003；响应签名用本次查到的 app_secret，没有查凭证的已标记请求仍用进程内 WithSignSecret。不新增错误码，不改表，不改 IDL。 |
 | 2026-11-01 | v3.0 | GW-02：商户端口提供创建、发起、关闭、查询支付单和查询余额。merchant_id 只取验签结果。金额在网关按 JSON 整数校验。余额只返回五个字段，available_amount 原样透传。不新增错误码，不改表，不改 IDL。 |
 | 2026-11-01 | v3.0 | GW-06：商户端口接受 POST /callback/mockpay。响应正文只有 SUCCESS 或 FAIL。空密钥是 500。签名或时间窗失败是 401，不调用 payment。30001 与 50002 回 200 SUCCESS，并把进程内 pay_callback_rejected_total 加一。PAY 转发到 ApplyPayResult，成功返回后触发 callback.after_commit。REFUND 仍是 10003。两秒自动完成和 DUP_NOTIFY 端到端还没测。不新增错误码，不改表，不改 IDL。 |
+| 2026-11-02 | v3.0 | GW-06：未知 req_no 与金额不一致在 MySQL 上保持原订单，HTTP 200 正文 SUCCESS，进程内 pay_callback_rejected_total 按 30001 或 50002 加一。Pay 返回 PAYING 后，测试把自动完成延迟固定为 50 毫秒，经 channel_mock 回调在 2 秒内订单变为 SUCCESS，channel_txn 与订单同为 SUCCESS，outbox 恰好 1 条 payment.succeeded。DUP_NOTIFY 十次回调后 notify_count 为 10，订单只推进一次，outbox 仍是 1 条。不新增错误码，不改表，不改 IDL。 |
