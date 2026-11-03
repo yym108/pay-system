@@ -239,3 +239,7 @@
 - gateway 和 recon 的 `run` 打印完配置就返回，现有测试也这么断言。本次不在那里阻塞监听。6060 和 6063 只有常量。Redis、Kafka 和生产者也只留注册口。
 - A1 仍开着。profile `apps` 还是占位，没有并进 `make up`。`stop_grace_period: 15s` 只写在六个应用服务上。
 - 管理端口写超时从 3 秒改成 45 秒，是为了 30 秒 CPU profile；进程监听地址没改。
+
+## CH-04 渠道退款
+
+两笔全额退款如果先各自查出“还没退过”，再分别插入，两笔都会通过，同一笔支付会被退两次。必须在同一事务里 `FOR UPDATE` 锁住原支付行，锁内再合计 status 不是 FAILED 的退款，超额的那笔不插入。已有同一个 `(REFUND, req_no)` 要直接返回已有结果，不能再做额度校验，否则全额退款重提会被自己挡成 `REFUND_EXCEEDED`。退款场景只保留金额末两位 01 的 FAIL 和 02 的 DROP_NOTIFY，其余都按 NORMAL 完成。

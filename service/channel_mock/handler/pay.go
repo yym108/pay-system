@@ -34,6 +34,8 @@ const (
 	QueryPath = "/mockpay/v1/query"
 	// ClosePath 是关单路由。
 	ClosePath = "/mockpay/v1/close"
+	// RefundPath 是退款受理路由。
+	RefundPath = "/mockpay/v1/refund"
 )
 
 const (
@@ -51,6 +53,7 @@ const (
 // 受理、查单和关单共用这一份依赖，New 不用再增加参数。
 type Payer interface {
 	Pay(ctx context.Context, req biz.PayRequest) (biz.PayResult, error)
+	Refund(ctx context.Context, req biz.RefundRequest) (biz.PayResult, error)
 	Query(ctx context.Context, req biz.QueryRequest) (biz.QueryResult, error)
 	Close(ctx context.Context, req biz.CloseRequest) (biz.CloseResult, error)
 }
@@ -73,6 +76,7 @@ func (h *Handler) Register(srv *server.Hertz) {
 	srv.POST(PayPath, h.handlePay)
 	srv.POST(QueryPath, h.handleQuery)
 	srv.POST(ClosePath, h.handleClose)
+	srv.POST(RefundPath, h.handleRefund)
 }
 
 func recoverPanic(ctx context.Context, c *app.RequestContext) {
@@ -138,6 +142,63 @@ func (h *Handler) servePay(ctx context.Context, c *app.RequestContext) int {
 		ChannelTxnNo: res.ChannelTxnNo,
 		Status:       res.Status,
 	})
+}
+
+type refundBody struct {
+	ReqNo     string `json:"req_no"`
+	OrigReqNo string `json:"orig_req_no"`
+	Amount    int64  `json:"amount"`
+	NotifyURL string `json:"notify_url"`
+}
+
+func (h *Handler) handleRefund(ctx context.Context, c *app.RequestContext) {
+	start := h.clk.Now()
+	status := h.serveRefund(ctx, c)
+	logx.Access(ctx, RefundPath, status, h.clk.Now().Sub(start), "", "")
+}
+
+// serveRefund 处理一次退款受理并返回 HTTP 状态码。超时是 requestTimeout，不是受理的 8 秒。
+func (h *Handler) serveRefund(ctx context.Context, c *app.RequestContext) int {
+	body := c.Request.Body()
+	if status := h.verify(ctx, c, body); status != http.StatusOK {
+		return bare(c, status)
+	}
+	in, ok := decodeRefund(body)
+	if !ok {
+		return bare(c, http.StatusBadRequest)
+	}
+	callCtx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+	res, err := h.pay.Refund(callCtx, biz.RefundRequest{
+		ReqNo:     in.ReqNo,
+		OrigReqNo: in.OrigReqNo,
+		Amount:    money.Amount(in.Amount),
+		NotifyURL: in.NotifyURL,
+	})
+	if errors.Is(err, biz.ErrInvalidRequest) {
+		return bare(c, http.StatusBadRequest)
+	}
+	if err != nil {
+		slog.ErrorContext(ctx, "mock refund failed", slog.String("error", err.Error()))
+		return bare(c, http.StatusInternalServerError)
+	}
+	return h.writeSigned(ctx, c, payResponse{
+		Result:       res.Result,
+		Reason:       res.Reason,
+		ChannelTxnNo: res.ChannelTxnNo,
+		Status:       res.Status,
+	})
+}
+
+func decodeRefund(body []byte) (refundBody, bool) {
+	var in refundBody
+	ok := decodeObject(body, map[string]any{
+		"req_no":      &in.ReqNo,
+		"orig_req_no": &in.OrigReqNo,
+		"amount":      &in.Amount,
+		"notify_url":  &in.NotifyURL,
+	})
+	return in, ok
 }
 
 // verify 校验渠道签名与时间窗。通过返回 200；对端问题 401；本端密钥为空 500。

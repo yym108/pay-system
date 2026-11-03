@@ -26,8 +26,10 @@ const (
 	ResultOK       = "OK"
 	ResultRejected = "REJECTED"
 
-	ReasonParamConflict = "PARAM_CONFLICT"
-	ReasonOrderClosed   = "ORDER_CLOSED"
+	ReasonParamConflict  = "PARAM_CONFLICT"
+	ReasonOrderClosed    = "ORDER_CLOSED"
+	ReasonOrigNotSuccess = "ORIG_NOT_SUCCESS"
+	ReasonRefundExceeded = "REFUND_EXCEEDED"
 )
 
 const (
@@ -57,6 +59,8 @@ var shanghai = time.FixedZone("Asia/Shanghai", 8*60*60)
 type Store interface {
 	// Insert 写入新行并返回 id；唯一键冲突返回可被 dbx.IsDuplicate 识别的错误。
 	Insert(ctx context.Context, t dal.Txn) (uint64, error)
+	// InsertRefund 在锁住原支付的事务里插入退款。reject 非空表示业务拒绝且未插入。1062 走 err。
+	InsertRefund(ctx context.Context, t dal.Txn, look dal.RefundLook) (id uint64, reject string, err error)
 	// Get 按 (txn_type, req_no) 读一行，不存在返回 ok = false。
 	Get(ctx context.Context, txnType, reqNo string) (dal.Txn, bool, error)
 	// GetByID 按主键读一行，不存在返回 ok = false。
@@ -179,13 +183,13 @@ func (s *Service) Pay(ctx context.Context, req PayRequest) (PayResult, error) {
 
 // recoverInsert 处理 INSERT 的非 1062 错误（提交结果不确定、请求被取消等）。
 // 行可能已经提交：不处理的话它会停在 PROCESSING，直到重启扫描才被调度。
-// 用不随请求取消的 ctx 按 (PAY, req_no) 再读一次：读到本次写入的行（channel_txn_no 一致）
+// 用不随请求取消的 ctx 按 (txn_type, req_no) 再读一次：读到本次写入的行（channel_txn_no 一致）
 // 就按新受理处理：仍是 PROCESSING 则调度，按该行回答（通常是 OK / PROCESSING）。
 // 读不到、读失败或是别的请求写入的行，返回原错误（HTTP 500），平台按结果未知处理。
 func (s *Service) recoverInsert(ctx context.Context, t dal.Txn, insertErr error) (PayResult, error) {
 	readCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), rereadTimeout)
 	defer cancel()
-	row, ok, err := s.store.Get(readCtx, dal.TxnTypePay, t.ReqNo)
+	row, ok, err := s.store.Get(readCtx, t.TxnType, t.ReqNo)
 	if err != nil || !ok || row.ChannelTxnNo != t.ChannelTxnNo {
 		return PayResult{}, insertErr
 	}

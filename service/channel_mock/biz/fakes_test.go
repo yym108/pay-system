@@ -10,6 +10,7 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 
+	"github.com/yym108/pay-system/pkg/money"
 	"github.com/yym108/pay-system/service/channel_mock/dal"
 )
 
@@ -62,7 +63,9 @@ func newMemStore() *memStore {
 func key(txnType, reqNo string) string { return txnType + "|" + reqNo }
 
 func (m *memStore) Insert(_ context.Context, t dal.Txn) (uint64, error) {
-	id, err := m.insert(t)
+	m.mu.Lock()
+	id, err := m.insertLocked(t)
+	m.mu.Unlock()
 	if m.afterInsert != nil {
 		m.afterInsert()
 	}
@@ -72,9 +75,8 @@ func (m *memStore) Insert(_ context.Context, t dal.Txn) (uint64, error) {
 	return id, err
 }
 
-func (m *memStore) insert(t dal.Txn) (uint64, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+// insertLocked 写入一行。调用方必须已持有 m.mu。
+func (m *memStore) insertLocked(t dal.Txn) (uint64, error) {
 	m.inserts++
 	if m.insertErr != nil {
 		return 0, m.insertErr
@@ -93,6 +95,32 @@ func (m *memStore) insert(t dal.Txn) (uint64, error) {
 	row := t
 	m.rows[k] = &row
 	return t.ID, nil
+}
+
+func (m *memStore) InsertRefund(_ context.Context, t dal.Txn, look dal.RefundLook) (uint64, string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.insertErr != nil {
+		return 0, "", m.insertErr
+	}
+	pay, found := m.rows[key(dal.TxnTypePay, t.OrigReqNo)]
+	var payCopy dal.Txn
+	if found {
+		payCopy = *pay
+	}
+	var sum money.Amount
+	if found {
+		for _, r := range m.rows {
+			if r.TxnType == dal.TxnTypeRefund && r.OrigReqNo == t.OrigReqNo && r.Status != dal.StatusFailed {
+				sum += r.Amount
+			}
+		}
+	}
+	if reject := look(payCopy, found, sum); reject != "" {
+		return 0, reject, nil
+	}
+	id, err := m.insertLocked(t)
+	return id, "", err
 }
 
 func (m *memStore) Get(ctx context.Context, txnType, reqNo string) (dal.Txn, bool, error) {

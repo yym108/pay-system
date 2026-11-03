@@ -1,6 +1,6 @@
 # pay-system 需求规格说明书
 
-> 版本：v3.0　最后修改：2026-11-02
+> 版本：v3.0　最后修改：2026-11-03
 > 状态：v3.0 重新聚焦支付、退款、转账三条资金链路（变更见 §8.2），2026-10-13 已确认为开发基线；开发按 §3 功能点总表逐项推进
 > 上游：`PROJECT_GOALS.md`（目标与约束）、`docs/01-tech-decisions.md`（技术选型与版本）
 > 关联：`docs/03-conventions.md`（编号、错误码、命名等全局约定）、`docs/05-api.md`（接口文档）、`docs/database.md`（表结构）、`docs/04-dev-plan.md`（周计划）、`docs/06-flows.md`（流程图）
@@ -368,7 +368,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | CH-01 | 渠道支付受理与自动完成 | P0 | M3 | BASE-13、BASE-03 | DONE |
 | CH-02 | 渠道查单 | P0 | M3 | CH-01 | DONE |
 | CH-03 | 渠道关单 | P0 | M3 | CH-01 | DONE |
-| CH-04 | 渠道退款受理与查询 | P0 | M4 | CH-01 | TODO |
+| CH-04 | 渠道退款受理与查询 | P0 | M4 | CH-01 | DONE |
 | CH-05 | 渠道异步回调 | P0 | M3 | CH-01 | DONE |
 | CH-06 | 确定性故障场景 | P0 | M3–M4 | CH-01、CH-02、CH-03、CH-05 | DONE |
 | CH-07 | 全局故障配置（压测延迟） | P0 | M6 | CH-06、PAY-05 | TODO |
@@ -1292,11 +1292,13 @@ channel_mock 代表外部支付机构，拥有独立 schema `pay_channel_mock`�
 3. 该原支付下非 FAILED 退款金额合计 + 本次金额 ≤ 原支付金额，否则 `REJECTED / REFUND_EXCEEDED`。
 4. 自动完成与回调规则同 CH-01、CH-05；场景按退款金额末两位决定，仅 01（FAIL）、02（DROP_NOTIFY）生效，其余为 NORMAL。
 
+先按 `(REFUND, req_no)` 返回已有结果；新单在同一事务里 `FOR UPDATE` 锁原支付，再合计 status 不是 FAILED 的退款。场景只有 01 FAIL 和 02 DROP_NOTIFY，其余 NORMAL。当日账单只断言 `bill_date`，CSV 仍是 CH-08。
+
 验收：
 
-- [ ] 超额退款被拒绝；原支付未成功被拒绝。
-- [ ] 全额退款受理后，用同一 `req_no` 重新提交返回已有结果，而不是 `REFUND_EXCEEDED`。
-- [ ] 退款成功后进入当日账单（`txn_type = REFUND`）。
+- [x] 超额退款被拒绝；原支付未成功被拒绝。
+- [x] 全额退款受理后，用同一 `req_no` 重新提交返回已有结果，而不是 `REFUND_EXCEEDED`。
+- [x] 退款成功后进入当日账单（`txn_type = REFUND`）。
 
 #### CH-05 渠道异步回调
 
@@ -3167,3 +3169,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-01 | v3.0 | GW-06：商户端口接受 POST /callback/mockpay。响应正文只有 SUCCESS 或 FAIL。空密钥是 500。签名或时间窗失败是 401，不调用 payment。30001 与 50002 回 200 SUCCESS，并把进程内 pay_callback_rejected_total 加一。PAY 转发到 ApplyPayResult，成功返回后触发 callback.after_commit。REFUND 仍是 10003。两秒自动完成和 DUP_NOTIFY 端到端还没测。不新增错误码，不改表，不改 IDL。 |
 | 2026-11-02 | v3.0 | GW-06：未知 req_no 与金额不一致在 MySQL 上保持原订单，HTTP 200 正文 SUCCESS，进程内 pay_callback_rejected_total 按 30001 或 50002 加一。Pay 返回 PAYING 后，测试把自动完成延迟固定为 50 毫秒，经 channel_mock 回调在 2 秒内订单变为 SUCCESS，channel_txn 与订单同为 SUCCESS，outbox 恰好 1 条 payment.succeeded。DUP_NOTIFY 十次回调后 notify_count 为 10，订单只推进一次，outbox 仍是 1 条。不新增错误码，不改表，不改 IDL。 |
 | 2026-11-02 | v3.0 | CH-06 M4：SLOW 的首次回调排在 finished_at 之后 30 秒，失败后仍按 CH-05 的 5s/15s/30s/60s 重试，连首次最多 5 次；ACCEPT_TIMEOUT 只在新插入成功的受理上用调度器等到 created_at 之后 5 秒再返回 OK。受理 HTTP 上下文上限改为 8 秒，查单和关单仍是 3 秒。BILL 的账单表现仍在 CH-08，CLOSE_RACE 仍不重做。不新增错误码，不改表，不改 IDL。§3 改为 DONE。PAY-06 说明改为：CH-06 已 DONE，但关单验收仍不使用 SLOW 和 ACCEPT_TIMEOUT，依赖列仍不写 CH-06。 |
+| 2026-11-03 | v3.0 | CH-04：先按 (REFUND, req_no) 返回已有结果；新单在同一事务里 FOR UPDATE 锁原支付，再合计 status 不是 FAILED 的退款。场景只有 01 FAIL 和 02 DROP_NOTIFY，其余 NORMAL。当日账单只断言 bill_date，CSV 仍是 CH-08。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |

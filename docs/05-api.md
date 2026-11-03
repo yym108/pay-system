@@ -2,9 +2,9 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 3.3.4 |
+| 文档版本 | 3.3.5 |
 | API 版本 | v1（路径前缀 `/v1`） |
-| 最后修改 | 2026-11-01 |
+| 最后修改 | 2026-11-03 |
 | 状态 | 设计基线，实现须与本文一致 |
 
 关联文档：需求 `docs/02-requirements.md`（各接口的业务规则以功能点为准）、约定 `docs/03-conventions.md`（错误码、单号、时间格式）。
@@ -71,6 +71,7 @@
 | 3.3.2 | 2026-11-01 | 文字澄清：未签名的商户 `/v1` 返回已有的 `20001`，不到路由；四个头齐全且验签通过、路径仍不存在时仍是 404 / `10002` / `not found` / `data` 为 `{}`，该 404 带平台签名。不新增字段，不改错误码数字，不改 IDL。§1 各接口的“最后修改”不变 | §2.3 | GW-03 |
 | 3.3.3 | 2026-11-01 | 网关现已提供 §4.1–§4.4 与 §4.7。字段和错误码不变。 | §4.1–§4.4、§4.7 | GW-02 |
 | 3.3.4 | 2026-11-01 | 网关商户端口已注册 `POST /callback/mockpay`。响应正文是 `SUCCESS` 或 `FAIL`，不是 JSON。字段和错误码不变。`HandleChannelNotify` 的 PAY 分支已转发到 `ApplyPayResult`；`txn_type` 不是 PAY 时仍返回已有的 `10003`。 | §7、§10.2 | GW-06 |
+| 3.3.5 | 2026-11-03 | 重复 req_no 先返回已有退款结果；额度校验和插入在同一事务，先锁原支付行。不新增字段。 | §9.5 | CH-04 |
 
 ## 1. 接口总览
 
@@ -103,7 +104,7 @@
 | `POST /admin/recon/run` 执行对账 | §8.2 | `ReconService.RunBatch` | REC-01、REC-08 | 1.0.0 | 2026-10-27 |
 | `POST /admin/outbox/replay` 事件重放 | §8.3 | `PaymentService.ReplayEvent` | MQ-05 | 1.0.0 | 2026-10-12 |
 | `POST /admin/accounts/check` 余额核对 | §8.4 | `AccountService.CheckBalance` | ACC-10 | 1.0.0 | 2026-10-27 |
-| 模拟渠道 `pay` / `query` / `close` / `refund` / `bills` | §9.2–§9.6 | — | CH-01~04、CH-08 | 1.0.0 | 2026-10-27 |
+| 模拟渠道 `pay` / `query` / `close` / `refund` / `bills` | §9.2–§9.6 | — | CH-01~04、CH-08 | 1.0.0 | 2026-11-03 |
 | 模拟渠道回调 | §9.7 | — | CH-05、CH-06 | 1.0.0 | 2026-10-27 |
 | 模拟渠道管理 `config` / `bill-inject` | §9.8 | — | CH-07、CH-09 | 1.0.0 | 2026-10-12 |
 | AccountService / PaymentService / ReconService | §10 | — | 见各方法 | 1.0.0 | 2026-10-27 |
@@ -840,7 +841,7 @@ PROCESSING 的更新只用 CAS：`WHERE id = ? AND status = 'PROCESSING'`。影�
 | `amount` | int64 | 是 | 退款金额 |
 | `notify_url` | string | 是 | 回调地址 |
 
-响应同 §9.2；`REJECTED` 的 `reason` 增加 `ORIG_NOT_SUCCESS`、`REFUND_EXCEEDED`。先按 `req_no` 幂等返回已有结果，再校验原支付状态与累计额度。
+响应同 §9.2；`REJECTED` 的 `reason` 增加 `ORIG_NOT_SUCCESS`、`REFUND_EXCEEDED`。先按 `req_no` 幂等返回已有结果，再校验原支付状态与累计额度。重复 `req_no` 先返回已有结果。额度校验和插入在同一事务，先锁原支付行。不新增字段。
 
 ### 9.6 账单下载
 

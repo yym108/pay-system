@@ -40,17 +40,18 @@ type fakePayer struct {
 	panic bool
 	// validate 为真时模拟 biz 的参数校验：支付 amount 不是正数、查单 txn_type / req_no 非法、
 	// 关单 req_no 非法，都返回 ErrInvalidRequest。
-	validate bool
-	got      []biz.PayRequest
-	payCtx   context.Context
-	qres     biz.QueryResult
-	qerr     error
-	qgot     []biz.QueryRequest
-	queryCtx context.Context
-	cres     biz.CloseResult
-	cerr     error
-	cgot     []biz.CloseRequest
-	closeCtx context.Context
+	validate  bool
+	got       []biz.PayRequest
+	payCtx    context.Context
+	qres      biz.QueryResult
+	qerr      error
+	qgot      []biz.QueryRequest
+	queryCtx  context.Context
+	cres      biz.CloseResult
+	cerr      error
+	cgot      []biz.CloseRequest
+	closeCtx  context.Context
+	refundCtx context.Context
 }
 
 func (f *fakePayer) Pay(ctx context.Context, req biz.PayRequest) (biz.PayResult, error) {
@@ -63,6 +64,16 @@ func (f *fakePayer) Pay(ctx context.Context, req biz.PayRequest) (biz.PayResult,
 	}
 	if f.validate && req.Amount <= 0 {
 		return biz.PayResult{}, fmt.Errorf("amount: %w", biz.ErrInvalidRequest)
+	}
+	return f.res, f.err
+}
+
+func (f *fakePayer) Refund(ctx context.Context, req biz.RefundRequest) (biz.PayResult, error) {
+	f.mu.Lock()
+	f.refundCtx = ctx
+	f.mu.Unlock()
+	if f.panic {
+		panic("payer exploded")
 	}
 	return f.res, f.err
 }
@@ -204,6 +215,22 @@ func TestPayContextOutlivesThreeSecondLimit(t *testing.T) {
 		t.Fatalf("close status = %d", cw.Result().StatusCode())
 	}
 	assertRemain(t, p.closeCtx, requestTimeout)
+}
+
+// CH-04：退款上下文上限是 3 秒，不是受理的 8 秒。
+func TestRefundContextUsesThreeSecondLimit(t *testing.T) {
+	p := &fakePayer{res: biz.PayResult{Result: biz.ResultOK, ChannelTxnNo: "MC0001", Status: "PROCESSING"}}
+	srv := newTestServer(t, p, testKey)
+	body := []byte(`{"req_no":"RF0001","orig_req_no":"PA0001","amount":10000,"notify_url":"http://keep"}`)
+	w := postSigned(t, srv, RefundPath, testKey, nowTS(), body)
+	if w.Result().StatusCode() != http.StatusOK {
+		t.Fatalf("status = %d body = %s", w.Result().StatusCode(), w.Result().Body())
+	}
+	assertRemain(t, p.refundCtx, requestTimeout)
+	dl, _ := p.refundCtx.Deadline()
+	if remain := time.Until(dl); remain > requestTimeout+100*time.Millisecond {
+		t.Fatalf("remain = %s, refund used the 8s pay limit", remain)
+	}
 }
 
 func assertRemain(t *testing.T, ctx context.Context, limit time.Duration) {

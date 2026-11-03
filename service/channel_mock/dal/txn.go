@@ -43,6 +43,7 @@ type Txn struct {
 	ChannelTxnNo    string
 	TxnType         string
 	ReqNo           string
+	OrigReqNo       string
 	Amount          money.Amount
 	Status          string
 	Scenario        string
@@ -72,22 +73,23 @@ func New(db *sqlx.DB) *DB {
 	return &DB{db: db}
 }
 
-const txnColumns = `id, channel_txn_no, txn_type, req_no, amount, status, scenario, notify_url,
+const txnColumns = `id, channel_txn_no, txn_type, req_no, orig_req_no, amount, status, scenario, notify_url,
   notify_sent_count, finished_at, bill_date, created_at`
 
 type txnRow struct {
-	ID              uint64       `db:"id"`
-	ChannelTxnNo    string       `db:"channel_txn_no"`
-	TxnType         string       `db:"txn_type"`
-	ReqNo           string       `db:"req_no"`
-	Amount          int64        `db:"amount"`
-	Status          string       `db:"status"`
-	Scenario        string       `db:"scenario"`
-	NotifyURL       string       `db:"notify_url"`
-	NotifySentCount int          `db:"notify_sent_count"`
-	FinishedAt      sql.NullTime `db:"finished_at"`
-	BillDate        sql.NullTime `db:"bill_date"`
-	CreatedAt       time.Time    `db:"created_at"`
+	ID              uint64         `db:"id"`
+	ChannelTxnNo    string         `db:"channel_txn_no"`
+	TxnType         string         `db:"txn_type"`
+	ReqNo           string         `db:"req_no"`
+	OrigReqNo       sql.NullString `db:"orig_req_no"`
+	Amount          int64          `db:"amount"`
+	Status          string         `db:"status"`
+	Scenario        string         `db:"scenario"`
+	NotifyURL       string         `db:"notify_url"`
+	NotifySentCount int            `db:"notify_sent_count"`
+	FinishedAt      sql.NullTime   `db:"finished_at"`
+	BillDate        sql.NullTime   `db:"bill_date"`
+	CreatedAt       time.Time      `db:"created_at"`
 }
 
 func (r txnRow) txn() Txn {
@@ -103,6 +105,9 @@ func (r txnRow) txn() Txn {
 		NotifySentCount: r.NotifySentCount,
 		CreatedAt:       r.CreatedAt,
 	}
+	if r.OrigReqNo.Valid {
+		t.OrigReqNo = r.OrigReqNo.String
+	}
 	if r.FinishedAt.Valid {
 		t.FinishedAt = r.FinishedAt.Time
 	}
@@ -115,10 +120,14 @@ func (r txnRow) txn() Txn {
 // Insert 写入一笔新交易并返回 id。created_at 取 t.CreatedAt（调用方的注入时钟），不用列默认值。
 // (txn_type, req_no) 或 channel_txn_no 冲突时返回驱动的 1062 错误。
 func (d *DB) Insert(ctx context.Context, t Txn) (uint64, error) {
+	var orig any
+	if t.OrigReqNo != "" {
+		orig = t.OrigReqNo
+	}
 	res, err := d.db.ExecContext(ctx, `
-INSERT INTO mock_txn (channel_txn_no, txn_type, req_no, amount, status, scenario, notify_url, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ChannelTxnNo, t.TxnType, t.ReqNo, int64(t.Amount), t.Status, t.Scenario, t.NotifyURL, t.CreatedAt)
+INSERT INTO mock_txn (channel_txn_no, txn_type, req_no, orig_req_no, amount, status, scenario, notify_url, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ChannelTxnNo, t.TxnType, t.ReqNo, orig, int64(t.Amount), t.Status, t.Scenario, t.NotifyURL, t.CreatedAt)
 	if err != nil {
 		return 0, fmt.Errorf("insert mock_txn: %w", err)
 	}
@@ -279,4 +288,57 @@ WHERE id > ? AND txn_type = ? AND status = 'PROCESSING' ORDER BY id LIMIT ?`, af
 		out = append(out, r.txn())
 	}
 	return out, nil
+}
+
+// RefundLook 在原支付行被 FOR UPDATE 锁住时调用。reject 非空则回滚且不插入。
+type RefundLook func(pay Txn, found bool, activeSum money.Amount) (reject string)
+
+// InsertRefund 在一个事务里锁住原支付、让 look 决定是否拒绝，通过后插入退款行。
+// 1062 原样返回。look 返回的 reject 不是 error。
+func (d *DB) InsertRefund(ctx context.Context, t Txn, look RefundLook) (uint64, string, error) {
+	if look == nil {
+		return 0, "", errors.New("insert refund: nil look")
+	}
+	var id uint64
+	var reject string
+	err := dbx.WithTx(ctx, d.db, func(tx *sqlx.Tx) error {
+		var row txnRow
+		qerr := tx.GetContext(ctx, &row, `SELECT `+txnColumns+` FROM mock_txn WHERE txn_type = ? AND req_no = ? FOR UPDATE`, TxnTypePay, t.OrigReqNo)
+		found := true
+		if errors.Is(qerr, sql.ErrNoRows) {
+			found = false
+		} else if qerr != nil {
+			return fmt.Errorf("lock pay: %w", qerr)
+		}
+		var sum int64
+		if found {
+			if serr := tx.GetContext(ctx, &sum, `SELECT COALESCE(SUM(amount), 0) FROM mock_txn WHERE txn_type = ? AND orig_req_no = ? AND status <> ?`, TxnTypeRefund, t.OrigReqNo, StatusFailed); serr != nil {
+				return fmt.Errorf("sum refunds: %w", serr)
+			}
+		}
+		reject = look(row.txn(), found, money.Amount(sum))
+		if reject != "" {
+			return nil
+		}
+		res, ierr := tx.ExecContext(ctx, `
+INSERT INTO mock_txn (channel_txn_no, txn_type, req_no, orig_req_no, amount, status, scenario, notify_url, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			t.ChannelTxnNo, TxnTypeRefund, t.ReqNo, t.OrigReqNo, int64(t.Amount), t.Status, t.Scenario, t.NotifyURL, t.CreatedAt)
+		if ierr != nil {
+			return fmt.Errorf("insert mock_txn: %w", ierr)
+		}
+		last, lerr := res.LastInsertId()
+		if lerr != nil {
+			return fmt.Errorf("insert mock_txn: last insert id: %w", lerr)
+		}
+		if last <= 0 {
+			return errors.New("insert mock_txn: invalid last insert id")
+		}
+		id = uint64(last)
+		return nil
+	})
+	if err != nil {
+		return 0, "", err
+	}
+	return id, reject, nil
 }

@@ -39,6 +39,17 @@ func ForPay(amount int64) Scenario {
 	return Normal
 }
 
+// ForRefund 只保留 FAIL 与 DROP_NOTIFY。其余末两位，包括 SLOW、ACCEPT_TIMEOUT、NEVER_FINISH，都是 NORMAL。
+func ForRefund(amount int64) Scenario {
+	s := ForPay(amount)
+	switch s {
+	case Fail, DropNotify:
+		return s
+	default:
+		return Normal
+	}
+}
+
 // String 返回列值。
 func (s Scenario) String() string { return string(s) }
 
