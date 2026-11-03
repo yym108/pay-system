@@ -51,3 +51,4 @@
 | GW-02 | 支付与余额路由 | 基础设施 | `5103705` | 2026-11-01 | [GW-02-payment-routes.md](GW-02-payment-routes.md) |
 | GW-06 | 渠道回调入口 | 基础设施 | `34671d0` | 2026-11-02 | [GW-06-channel-callback.md](GW-06-channel-callback.md) |
 | CH-04 | 渠道退款 | 支付 | `6d6f00b` | 2026-11-03 | [CH-04-refund.md](CH-04-refund.md) |
+| REF-01 | 创建退款与额度占用 | 退款 | `e920750` | 2026-11-03 | [REF-01-create-refund.md](REF-01-create-refund.md) |
