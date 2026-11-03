@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 3.3.5 |
+| 文档版本 | 3.3.6 |
 | API 版本 | v1（路径前缀 `/v1`） |
 | 最后修改 | 2026-11-03 |
 | 状态 | 设计基线，实现须与本文一致 |
@@ -72,6 +72,7 @@
 | 3.3.3 | 2026-11-01 | 网关现已提供 §4.1–§4.4 与 §4.7。字段和错误码不变。 | §4.1–§4.4、§4.7 | GW-02 |
 | 3.3.4 | 2026-11-01 | 网关商户端口已注册 `POST /callback/mockpay`。响应正文是 `SUCCESS` 或 `FAIL`，不是 JSON。字段和错误码不变。`HandleChannelNotify` 的 PAY 分支已转发到 `ApplyPayResult`；`txn_type` 不是 PAY 时仍返回已有的 `10003`。 | §7、§10.2 | GW-06 |
 | 3.3.5 | 2026-11-03 | 重复 req_no 先返回已有退款结果；额度校验和插入在同一事务，先锁原支付行。不新增字段。 | §9.5 | CH-04 |
+| 3.3.6 | 2026-11-03 | CreateRefund 现在返回刚插入的 INIT 退款单，尚未冻结，尚未调用渠道。此前该方法返回 10003。不新增字段，不改错误码数字，不改 IDL。 | §4.5 | REF-01 |
 
 ## 1. 接口总览
 
@@ -94,7 +95,7 @@
 | `POST /v1/payments/{pay_no}/pay` 发起支付 | §4.2 | `PaymentService.Pay` | PAY-03、PAY-04 | 1.0.0 | 2026-11-01 |
 | `POST /v1/payments/{pay_no}/close` 关闭支付单 | §4.3 | `PaymentService.ClosePayment` | PAY-06 | 1.0.0 | 2026-11-01 |
 | `GET /v1/payments/{pay_no}`、`GET /v1/payments?out_trade_no=` 查询支付单 | §4.4 | `PaymentService.QueryPayment` | PAY-08 | 1.0.0 | 2026-11-01 |
-| `POST /v1/refunds` 创建退款 | §4.5 | `PaymentService.CreateRefund` | REF-01、REF-02 | 1.0.0 | 2026-10-27 |
+| `POST /v1/refunds` 创建退款 | §4.5 | `PaymentService.CreateRefund` | REF-01、REF-02 | 1.0.0 | 2026-11-03 |
 | `GET /v1/refunds/{refund_no}`、`GET /v1/refunds?out_refund_no=` 查询退款 | §4.6 | `PaymentService.QueryRefund` | REF-05 | 1.0.0 | 2026-10-27 |
 | `GET /v1/balance` 查询余额 | §4.7 | `AccountService.GetAccount` | ACC-02 | 1.0.0 | 2026-11-01 |
 | `POST /v1/transfers` 创建转账 | §4.8 | `PaymentService.CreateTransfer` | TRF-01~03 | 2.0.0 | 2026-10-27 |
@@ -358,6 +359,8 @@ payment 的 `QueryPayment` 直接读 `payment_order`，不缓存，不写行，�
 ### 4.5 创建退款
 
 `POST /v1/refunds` · REF-01、REF-02 · 网关路由 GW-09
+
+本切片返回 INIT，不冻结、不调用渠道；冻结和渠道提交是 REF-02。
 
 请求：
 

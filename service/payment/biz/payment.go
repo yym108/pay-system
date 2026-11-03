@@ -56,6 +56,8 @@ type orderStore interface {
 	casInitToClosed(ctx context.Context, order PaymentOrder, now time.Time) (bool, error)
 	fillChannelTxnNo(ctx context.Context, bizNo, txnNo string) (int64, error)
 	channelTxnByBizNo(ctx context.Context, bizNo string) (channelTxn, bool, error)
+	refundByMerchantOut(ctx context.Context, merchantID, outRefundNo string) (RefundOrder, bool, error)
+	occupyRefund(ctx context.Context, pay PaymentOrder, refund RefundOrder) (affected bool, duplicate bool, err error)
 }
 
 // CreatePaymentInput 是创建支付单的入参。

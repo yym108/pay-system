@@ -100,6 +100,32 @@ func toPaymentOrder(in biz.PaymentOrder) *payment.PaymentOrder {
 	return out
 }
 
+func toRefundOrder(in biz.RefundOrder) *payment.RefundOrder {
+	out := &payment.RefundOrder{
+		RefundNo:    in.RefundNo,
+		OutRefundNo: in.OutRefundNo,
+		PayNo:       in.PayNo,
+		Amount:      int64(in.Amount),
+		Currency:    in.Currency,
+		Reason:      in.Reason,
+		Status:      in.Status,
+		CreatedAt:   formatTimestamp(in.CreatedAt),
+	}
+	if !in.SucceededAt.IsZero() {
+		ts := formatTimestamp(in.SucceededAt)
+		out.SucceededAt = &ts
+	}
+	if in.FailCode != "" {
+		code := in.FailCode
+		out.FailCode = &code
+	}
+	if in.FailMsg != "" {
+		msg := in.FailMsg
+		out.FailMsg = &msg
+	}
+	return out
+}
+
 func formatTimestamp(t time.Time) base.Timestamp {
 	return t.Truncate(time.Millisecond).In(shanghai).Format(timestampLayout)
 }

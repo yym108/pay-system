@@ -384,7 +384,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | PAY-08 | 支付单查询 | P0 | M3 | PAY-02 | DONE |
 | PAY-09 | 立即同步渠道状态 | P0 | M6 | PAY-05 | TODO |
 | PAY-10 | 商户费率变更与订单手续费核对 | P0 | M3 | BASE-03、BASE-04、BASE-08 | DONE |
-| REF-01 | 创建退款与额度占用 | P0 | M4 | PAY-04 | TODO |
+| REF-01 | 创建退款与额度占用 | P0 | M4 | PAY-04 | DONE |
 | REF-02 | 退款冻结与渠道提交 | P0 | M4 | REF-01、ACC-11、CH-04、BASE-15 | TODO |
 | REF-03 | 退款结果推进 | P0 | M4 | REF-02、GW-06 | TODO |
 | REF-04 | 退款卡单恢复 | P0 | M4 | REF-02、REF-03、BASE-15 | TODO |
@@ -1730,11 +1730,13 @@ INIT 表示已受理、尚未提交渠道；PROCESSING 表示已冻结商户资�
 
 5. 事务提交后在同一请求内执行 REF-02，返回 REF-02 结束时的退款单。
 
+本功能点事务提交后返回刚插入的 INIT 退款单；同一请求内冻结和提交渠道是 REF-02，本次不调用 account、不调用渠道、不写 outbox。条件更新影响 0 行或插入 1062 时，事务外再读 (merchant_id, out_refund_no)，一致则返回已有单，避免并发重复请求被报成 30005。
+
 验收：
 
-- [ ] 订单 10000，10 个并发请求各退 3000（不同 out_refund_no），恰好 3 个创建成功，其余 `30005`，`refunded_amount = 9000`。
-- [ ] 相同 `out_refund_no` 重复请求返回同一 `refund_no`；金额不同返回 `10006`。
-- [ ] 对 PAYING 订单退款返回 `30003`。
+- [x] 订单 10000，10 个并发请求各退 3000（不同 out_refund_no），恰好 3 个创建成功，其余 `30005`，`refunded_amount = 9000`。
+- [x] 相同 `out_refund_no` 重复请求返回同一 `refund_no`；金额不同返回 `10006`。
+- [x] 对 PAYING 订单退款返回 `30003`。
 
 #### REF-02 退款冻结与渠道提交
 
@@ -3170,3 +3172,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-02 | v3.0 | GW-06：未知 req_no 与金额不一致在 MySQL 上保持原订单，HTTP 200 正文 SUCCESS，进程内 pay_callback_rejected_total 按 30001 或 50002 加一。Pay 返回 PAYING 后，测试把自动完成延迟固定为 50 毫秒，经 channel_mock 回调在 2 秒内订单变为 SUCCESS，channel_txn 与订单同为 SUCCESS，outbox 恰好 1 条 payment.succeeded。DUP_NOTIFY 十次回调后 notify_count 为 10，订单只推进一次，outbox 仍是 1 条。不新增错误码，不改表，不改 IDL。 |
 | 2026-11-02 | v3.0 | CH-06 M4：SLOW 的首次回调排在 finished_at 之后 30 秒，失败后仍按 CH-05 的 5s/15s/30s/60s 重试，连首次最多 5 次；ACCEPT_TIMEOUT 只在新插入成功的受理上用调度器等到 created_at 之后 5 秒再返回 OK。受理 HTTP 上下文上限改为 8 秒，查单和关单仍是 3 秒。BILL 的账单表现仍在 CH-08，CLOSE_RACE 仍不重做。不新增错误码，不改表，不改 IDL。§3 改为 DONE。PAY-06 说明改为：CH-06 已 DONE，但关单验收仍不使用 SLOW 和 ACCEPT_TIMEOUT，依赖列仍不写 CH-06。 |
 | 2026-11-03 | v3.0 | CH-04：先按 (REFUND, req_no) 返回已有结果；新单在同一事务里 FOR UPDATE 锁原支付，再合计 status 不是 FAILED 的退款。场景只有 01 FAIL 和 02 DROP_NOTIFY，其余 NORMAL。当日账单只断言 bill_date，CSV 仍是 CH-08。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
+| 2026-11-03 | v3.0 | REF-01：本功能点事务提交后返回刚插入的 INIT 退款单；同一请求内冻结和提交渠道是 REF-02，本次不调用 account、不调用渠道、不写 outbox。条件更新影响 0 行或插入 1062 时，事务外再读 (merchant_id, out_refund_no)，一致则返回已有单，避免并发重复请求被报成 30005。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |

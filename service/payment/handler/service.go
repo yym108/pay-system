@@ -14,6 +14,7 @@ type Service interface {
 	Pay(ctx context.Context, in *biz.PayInput) (biz.PaymentOrder, error)
 	ClosePayment(ctx context.Context, in *biz.CloseInput) (biz.PaymentOrder, error)
 	QueryPayment(ctx context.Context, in *biz.QueryInput) (biz.PaymentOrder, error)
+	CreateRefund(ctx context.Context, in *biz.CreateRefundInput) (biz.RefundOrder, error)
 	ApplyChannelNotify(ctx context.Context, in biz.PayResult) (string, error)
 }
 

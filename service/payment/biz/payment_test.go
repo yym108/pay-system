@@ -347,6 +347,7 @@ func (f *fakeMerchants) FeeRateAt(_ context.Context, _ string, at time.Time) (Fe
 type memOrders struct {
 	mu         sync.Mutex
 	rows       []PaymentOrder
+	refunds    []RefundOrder
 	txns       []channelTxn
 	forceDup   bool
 	updates    int
@@ -495,6 +496,45 @@ func (m *memOrders) channelTxnByBizNo(_ context.Context, bizNo string) (channelT
 		}
 	}
 	return channelTxn{}, false, nil
+}
+
+func (m *memOrders) refundByMerchantOut(_ context.Context, merchantID, outRefundNo string) (RefundOrder, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.readErr != nil {
+		return RefundOrder{}, false, m.readErr
+	}
+	for _, ex := range m.refunds {
+		if ex.MerchantID == merchantID && ex.OutRefundNo == outRefundNo {
+			return ex, true, nil
+		}
+	}
+	return RefundOrder{}, false, nil
+}
+
+func (m *memOrders) occupyRefund(_ context.Context, pay PaymentOrder, refund RefundOrder) (bool, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, ex := range m.refunds {
+		if (ex.MerchantID == refund.MerchantID && ex.OutRefundNo == refund.OutRefundNo) || ex.RefundNo == refund.RefundNo {
+			return false, true, nil
+		}
+	}
+	for i := range m.rows {
+		row := &m.rows[i]
+		if row.PayNo != pay.PayNo || row.MerchantID != pay.MerchantID || row.Status != payStatusSuccess {
+			continue
+		}
+		if row.RefundedAmount+refund.Amount > row.Amount {
+			return false, false, nil
+		}
+		row.RefundedAmount += refund.Amount
+		row.Version++
+		row.UpdatedAt = refund.UpdatedAt
+		m.refunds = append(m.refunds, refund)
+		return true, false, nil
+	}
+	return false, false, nil
 }
 
 type stubIDs struct {

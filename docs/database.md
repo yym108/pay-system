@@ -440,7 +440,7 @@
 | `status` | VARCHAR(16) | 否 | — | `idx_status_expire_at` 1、`ck_pay_status` | 状态 | 内部 |
 | `channel` | VARCHAR(16) | 是 | NULL | — | 发起支付时确定 | 内部 |
 | `fee_amount` | BIGINT | 否 | 0 | `ck_pay_fee` | 下单时按当时生效费率固化，0 ≤ fee ≤ amount。核对只报告差异，不改本列 | 财务 |
-| `refunded_amount` | BIGINT | 否 | 0 | `ck_pay_refunded` | 已占用退款额（处理中 + 成功），0–amount | 财务 |
+| `refunded_amount` | BIGINT | 否 | 0 | `ck_pay_refunded` | 已占用退款额（处理中 + 成功），0–amount。REF-01 用条件更新占用，不改支付单 status。 | 财务 |
 | `notify_url` | VARCHAR(512) | 否 | `''` | — | 为空时使用商户默认地址 | 内部 |
 | `expire_at` | DATETIME(3) | 否 | — | `idx_status_expire_at` 2 | 超时关单时间 | 内部 |
 | `paid_at` | DATETIME(3) | 是 | NULL | — | 渠道完成时间，内部对账按此归属账期 | 内部 |
@@ -475,7 +475,7 @@
 ### 4.8 `refund_order` — 退款单
 
 - **Purpose:** 退款状态机（`docs/02-requirements.md` §4.5）。
-- **Lifecycle:** INIT → PROCESSING → SUCCESS / FAILED；INIT → FAILED。
+- **Lifecycle:** INIT → PROCESSING → SUCCESS / FAILED；INIT → FAILED。REF-01 在同一事务里条件更新 payment_order（status = SUCCESS 且 refunded_amount + 本次金额 <= amount，version + 1，WHERE 不含 version，merchant_id 在 WHERE 中）并 INSERT status = INIT。影响 0 行不插入。插入 1062 回滚额度。不写 fail_code、fail_msg、succeeded_at。无 DDL。
 - **Sensitivity:** 内部交易数据。
 - **Authoritative source:** `migrations/payment/000001_init.up.sql`。
 - **Write owners/read consumers:** payment 写；recon 只读。
@@ -973,6 +973,7 @@
 | 2026-10-27 | 无（仅文档，迁移随 REC-01、REC-03 新增） | `recon_batch.retry_count`（新增，计划）、`recon_batch.updated_at`、`recon_batch.started_at`、`recon_batch`（Lifecycle）；`recon_diff.uk_batch_type_biz_no_diff_type`（替换 `uk_batch_type_biz_no`，计划）、`recon_diff.channel_status`、`recon_diff.handle_action`、`idx_status_bill_date`（说明）、`recon_diff`（Lifecycle）；§1 Deletion convention | 用户决定（需求 REC-01、REC-03、REC-05、REC-06、REC-08，2026-10-27）。`BILL_NOT_READY` 重试计数改为持久化到 `recon_batch.retry_count INT NOT NULL DEFAULT 0`（每次 CAS 加一，到 6 置 FAILED，重跑归 0），作废上一行“计数只在进程内、重启从 0 开始”。卡死判定写明满 30 分钟（≥）；`started_at` 接管 CHECKING 时改写，DONE / FAILED 的 CAS 带它。`recon_diff` 唯一键加 `diff_type`；重跑与接管只删 PENDING 且 `handle_action` 为空的差错；插入同键跳过（`ON DUPLICATE KEY UPDATE id = id`）；终态 CAS `WHERE id = ? AND status = 'PENDING'`；`handle_action` 失败时也写；`channel_status` 非空表示严重不一致、不再自动重试。§6 新增两条计划变更，按 REC-05 第 4 条关闭转账差错归属与 TRANSFER_MISMATCH 取值两条问题 | 未执行迁移（迁移未落，计划见 §6） |
 | 2026-11-02 | 无（仅文档） | `mock_txn.notify_sent_count`（说明） | CH-06 M4：SLOW 的首次回调已排在 `finished_at` 后 30 秒，之后按普通回调 `notify_sent_count = ?` 加一，连首次最多 5 次。无 DDL | 未执行迁移 |
 | 2026-11-03 | 无（仅文档） | `mock_txn.orig_req_no`（说明） | CH-04：退款 INSERT 写入 `orig_req_no`，支付仍是 NULL。查询说明补上 `FOR UPDATE` 锁原支付行，以及合计 status 不是 FAILED 的退款。无 DDL | 未执行迁移 |
+| 2026-11-03 | 无（仅文档） | payment_order.refunded_amount、refund_order | REF-01 条件更新加插入，同一事务。无 DDL | 未执行迁移 |
 
 ## 6. Open Questions
 

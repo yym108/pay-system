@@ -1,6 +1,6 @@
 // Package handler 是 payment 的 Kitex 适配。
 // 只做协议转换和错误码转换，不改 biz 的幂等与 CAS。
-// 已实现 GetMerchantCredential（PAY-01）、CreatePayment（PAY-02）、Pay（PAY-03）、ClosePayment（PAY-06）和 QueryPayment（PAY-08）。
+// 已实现 GetMerchantCredential（PAY-01）、CreatePayment（PAY-02）、Pay（PAY-03）、ClosePayment（PAY-06）、QueryPayment（PAY-08）和 CreateRefund（REF-01）。
 // 其余方法属于各自的功能点，实现前调用一律返回 10003，不进 biz。
 package handler
 
@@ -171,9 +171,33 @@ func queryKeysOK(payNo, outTradeNo string) bool {
 	return (payNo != "") != (outTradeNo != "")
 }
 
-// CreateRefund 属于 REF-01、REF-02，未实现，返回 10003。
-func (h *Handler) CreateRefund(_ context.Context, _ *payment.CreateRefundRequest) (*payment.CreateRefundResponse, error) {
-	return nil, notImplemented()
+// CreateRefund 创建退款（REF-01）。请求为 nil 返回 10001，不进 biz。
+// 成功返回刚插入的 INIT 退款单，biz_code 为 0。
+// 30005、30003、30001、10006 走 BizStatusError，不带订单。同一请求内不冻结、不调用渠道。
+func (h *Handler) CreateRefund(ctx context.Context, req *payment.CreateRefundRequest) (r *payment.CreateRefundResponse, err error) {
+	defer recoverBiz(ctx, &err)
+	if err = h.ready(); err != nil {
+		return nil, err
+	}
+	if req == nil {
+		return nil, errno.ToBizStatus(errno.ErrInvalidParam)
+	}
+	reason := ""
+	if req.Reason != nil {
+		reason = *req.Reason
+	}
+	got, callErr := h.svc.CreateRefund(ctx, &biz.CreateRefundInput{
+		MerchantID:  req.MerchantId,
+		PayNo:       req.GetPayNo(),
+		OutTradeNo:  req.GetOutTradeNo(),
+		OutRefundNo: req.OutRefundNo,
+		Amount:      money.Amount(req.Amount),
+		Reason:      reason,
+	})
+	if callErr != nil {
+		return nil, statusErr(ctx, callErr)
+	}
+	return &payment.CreateRefundResponse{BizCode: 0, RefundOrder: toRefundOrder(got)}, nil
 }
 
 // QueryRefund 属于 REF-05，未实现，返回 10003。

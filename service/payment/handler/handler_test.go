@@ -177,8 +177,13 @@ func TestUnimplementedMethodsReturnInternal(t *testing.T) {
 	if n := svc.callCount(); n != 0 {
 		t.Fatalf("nil HandleChannelNotify called biz %d times", n)
 	}
+	if _, err := h.CreateRefund(ctx, nil); !errors.Is(errno.FromBizStatus(err), errno.ErrInvalidParam) {
+		t.Fatal("nil CreateRefund request")
+	}
+	if n := svc.callCount(); n != 0 {
+		t.Fatalf("nil CreateRefund called biz %d times", n)
+	}
 	for name, fn := range map[string]func() error{
-		"CreateRefund":   func() error { _, err := h.CreateRefund(ctx, nil); return err },
 		"QueryRefund":    func() error { _, err := h.QueryRefund(ctx, nil); return err },
 		"CreateTransfer": func() error { _, err := h.CreateTransfer(ctx, nil); return err },
 		"QueryTransfer":  func() error { _, err := h.QueryTransfer(ctx, nil); return err },
@@ -391,10 +396,6 @@ type call struct {
 func unimplementedCalls(cli paymentservice.Client) []call {
 	ctx := context.Background()
 	return []call{
-		{"CreateRefund", func() error {
-			_, err := cli.CreateRefund(ctx, &payment.CreateRefundRequest{MerchantId: "M100001", OutRefundNo: "r1", Amount: 1})
-			return err
-		}},
 		{"QueryRefund", func() error {
 			_, err := cli.QueryRefund(ctx, &payment.QueryRefundRequest{MerchantId: "M100001"})
 			return err
@@ -520,6 +521,7 @@ type scripted struct {
 	mu        sync.Mutex
 	cred      biz.MerchantCredential
 	order     biz.PaymentOrder
+	refund    biz.RefundOrder
 	err       error
 	panicking bool
 	block     func(context.Context) error
@@ -639,6 +641,25 @@ func (s *scripted) Pay(ctx context.Context, _ *biz.PayInput) (biz.PaymentOrder, 
 	return order, nil
 }
 
+func (s *scripted) CreateRefund(ctx context.Context, _ *biz.CreateRefundInput) (biz.RefundOrder, error) {
+	s.mu.Lock()
+	s.calls++
+	refund, err, panicking, block := s.refund, s.err, s.panicking, s.block
+	s.mu.Unlock()
+	if panicking {
+		panic("boom " + testSecret)
+	}
+	if block != nil {
+		if berr := block(ctx); berr != nil {
+			return biz.RefundOrder{}, berr
+		}
+	}
+	if err != nil {
+		return biz.RefundOrder{}, err
+	}
+	return refund, nil
+}
+
 func (s *scripted) CreatePayment(ctx context.Context, in *biz.CreatePaymentInput) (biz.PaymentOrder, error) {
 	s.mu.Lock()
 	s.calls++
@@ -693,6 +714,21 @@ func copyPaymentInput(in *biz.CreatePaymentInput) biz.CreatePaymentInput {
 		out.ExpireMinutes = &v
 	}
 	return out
+}
+
+func TestCreateRefundHandlerReturnsInit(t *testing.T) {
+	refund := biz.RefundOrder{
+		RefundNo: "RF0000000000000000001", OutRefundNo: "R1", PayNo: "PA_REF_1",
+		Amount: 3000, Currency: "CNY", Status: "INIT",
+	}
+	svc := &scripted{refund: refund}
+	payNo := "PA_REF_1"
+	got, err := New(svc).CreateRefund(context.Background(), &payment.CreateRefundRequest{
+		MerchantId: "M100002", PayNo: &payNo, OutRefundNo: "R1", Amount: 3000,
+	})
+	if err != nil || got.GetBizCode() != 0 || got.GetRefundOrder().GetStatus() != "INIT" {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
 }
 
 func TestPayHandlerCarriesChannelRejected(t *testing.T) {
