@@ -15,11 +15,11 @@ import (
 const (
 	// ListenAddr 是 payment 的 Kitex 端口。接口 §10.2 写死 8881，compose 也用这个端口，不另设环境变量。
 	ListenAddr = ":8881"
-	// ServerTimeout 是除 Pay 以外的服务端处理超时。调用方 ctx 更短时，先到期的生效。
+	// ServerTimeout 是除 Pay、CreateRefund 以外的服务端处理超时。调用方 ctx 更短时，先到期的生效。
 	// 截止时间交给 biz；biz 返回的取消或截止时间会变成 Kitex 超时，不是 10003。
 	ServerTimeout = 2 * time.Second
-	// PayServerTimeout 是 Pay 的服务端处理超时，与网关调用 Pay 的 5 秒一致。
-	// 渠道受理总超时 3 秒，必须先于这个上限到期。不另设环境变量。
+	// PayServerTimeout 是 Pay 与 CreateRefund 的服务端处理超时，与网关调用这两个方法的 5 秒一致。
+	// 渠道总超时 3 秒，必须先于这个上限到期。不另设环境变量。
 	PayServerTimeout = 5 * time.Second
 )
 

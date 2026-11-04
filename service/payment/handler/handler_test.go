@@ -360,12 +360,16 @@ func TestListenAddrAndTimeout(t *testing.T) {
 	if PayServerTimeout != 5*time.Second {
 		t.Fatalf("PayServerTimeout = %s", PayServerTimeout)
 	}
-	if (Config{}).timeoutFor("Pay") != PayServerTimeout || (Config{}).timeoutFor("CreatePayment") != ServerTimeout ||
-		(Config{}).timeoutFor("QueryPayment") != ServerTimeout {
+	if (Config{}).timeoutFor("Pay") != PayServerTimeout ||
+		(Config{}).timeoutFor("CreateRefund") != PayServerTimeout ||
+		(Config{}).timeoutFor("CreatePayment") != ServerTimeout ||
+		(Config{}).timeoutFor("QueryPayment") != ServerTimeout ||
+		(Config{}).timeoutFor("ClosePayment") != ServerTimeout {
 		t.Fatal("method timeout split drifted")
 	}
-	if (Config{Timeout: 80 * time.Millisecond}).timeoutFor("Pay") != 80*time.Millisecond {
-		t.Fatal("Config.Timeout must override Pay")
+	if (Config{Timeout: 80 * time.Millisecond}).timeoutFor("Pay") != 80*time.Millisecond ||
+		(Config{Timeout: 80 * time.Millisecond}).timeoutFor("CreateRefund") != 80*time.Millisecond {
+		t.Fatal("Config.Timeout must override Pay and CreateRefund")
 	}
 }
 
@@ -655,6 +659,9 @@ func (s *scripted) CreateRefund(ctx context.Context, _ *biz.CreateRefundInput) (
 		}
 	}
 	if err != nil {
+		if errors.Is(err, errno.ErrInsufficientBalance) || errors.Is(err, errno.ErrChannelRejected) {
+			return refund, err
+		}
 		return biz.RefundOrder{}, err
 	}
 	return refund, nil
@@ -728,6 +735,38 @@ func TestCreateRefundHandlerReturnsInit(t *testing.T) {
 	})
 	if err != nil || got.GetBizCode() != 0 || got.GetRefundOrder().GetStatus() != "INIT" {
 		t.Fatalf("got=%+v err=%v", got, err)
+	}
+}
+
+func TestCreateRefundHandlerCarriesBalanceAndRejected(t *testing.T) {
+	refund := biz.RefundOrder{
+		RefundNo: "RF0000000000000000001", OutRefundNo: "R1", PayNo: "PA_REF_1",
+		Amount: 1000, Currency: "CNY", Status: "FAILED", FailCode: "INSUFFICIENT_BALANCE",
+	}
+	svc := &scripted{refund: refund, err: errno.ErrInsufficientBalance}
+	payNo := "PA_REF_1"
+	req := &payment.CreateRefundRequest{MerchantId: "M100002", PayNo: &payNo, OutRefundNo: "R1", Amount: 1000}
+	got, err := New(svc).CreateRefund(context.Background(), req)
+	if err != nil || got.GetBizCode() != errno.ErrInsufficientBalance.Code || got.GetRefundOrder().GetRefundNo() != refund.RefundNo {
+		t.Fatalf("balance got=%+v err=%v", got, err)
+	}
+	svc.set(func(s *scripted) {
+		s.err = errno.ErrChannelRejected
+		s.refund.FailCode = "CHANNEL_REJECTED"
+		s.refund.Status = "FAILED"
+	})
+	got, err = New(svc).CreateRefund(context.Background(), req)
+	if err != nil || got.GetBizCode() != errno.ErrChannelRejected.Code || got.GetRefundOrder().GetRefundNo() != refund.RefundNo {
+		t.Fatalf("rejected got=%+v err=%v", got, err)
+	}
+	svc.set(func(s *scripted) {
+		s.err = nil
+		s.refund.Status = "PROCESSING"
+		s.refund.FailCode = ""
+	})
+	got, err = New(svc).CreateRefund(context.Background(), req)
+	if err != nil || got.GetBizCode() != 0 || got.GetRefundOrder().GetStatus() != "PROCESSING" {
+		t.Fatalf("processing got=%+v err=%v", got, err)
 	}
 }
 

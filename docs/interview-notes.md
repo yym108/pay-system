@@ -247,3 +247,7 @@
 ## REF-01 创建退款
 
 条件更新影响 0 行时事务会提交空结果，事务里再读看不到另一笔刚提交的相同 out_refund_no，所以必须在事务外按 (merchant_id, out_refund_no) 再读；一致就返回已有 refund_no，否则并发的重复请求会被报成 30005。
+
+## REF-02 退款冻结与渠道提交
+
+未装上冻结客户端时，CreateRefund 仍只返回刚插入的 INIT，已有 REF-01 测试不用改。故障点 `refund.after_freeze` 放在冻结成功之后、PROCESSING 事务之前；杀在这里时退款单还是 INIT，冻结单已经有一张。`channel_txn` 插入 1062 要把错误交回事务，CAS 一起回滚，再按 refund_no 读当前行，这次不调用渠道。冻结超时或不可用同样不插入 `channel_txn`。account 把处理超时写成 TransError、消息仍是 rpc timeout 时，也按不可用返回 INIT；连接拒绝仍是 10003。`CreateRefund` 的服务端处理超时是 5 秒，否则 2 秒截止会在渠道 3 秒总超时之前取消，第 2 秒到第 3 秒的 OK 或 REJECTED 会被当成未知。`ApplyRefundResult` 的落库、释放额度和 outbox 仍是 REF-03；本切片的生产方法返回 10003，不把退款改成 FAILED。

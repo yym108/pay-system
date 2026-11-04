@@ -67,7 +67,8 @@ func (c Config) timeoutFor(method string) time.Duration {
 	if c.Timeout > 0 {
 		return c.Timeout
 	}
-	if method == "Pay" {
+	// CreateRefund 与 Pay 一样要等渠道最多 3 秒，服务端用 5 秒，让渠道超时先到期。
+	if method == "Pay" || method == "CreateRefund" {
 		return PayServerTimeout
 	}
 	return ServerTimeout

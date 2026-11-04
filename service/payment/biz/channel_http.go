@@ -36,6 +36,7 @@ type ChannelClient struct {
 	url         string
 	closeURL    string
 	queryURL    string
+	refundURL   string
 	key         []byte
 	clk         clock.Clock
 	http        *http.Client
@@ -47,6 +48,13 @@ type channelPayBody struct {
 	ReqNo     string `json:"req_no"`
 	Amount    int64  `json:"amount"`
 	Subject   string `json:"subject"`
+	NotifyURL string `json:"notify_url"`
+}
+
+type channelRefundBody struct {
+	ReqNo     string `json:"req_no"`
+	OrigReqNo string `json:"orig_req_no"`
+	Amount    int64  `json:"amount"`
 	NotifyURL string `json:"notify_url"`
 }
 
@@ -71,6 +79,10 @@ func NewChannelClient(cfg ChannelClientConfig) (*ChannelClient, error) {
 	if err != nil {
 		return nil, err
 	}
+	refundURL, err := channelEndpoint(cfg.BaseURL, channelRefundPath)
+	if err != nil {
+		return nil, err
+	}
 	timeout := cfg.Timeout
 	if timeout <= 0 {
 		timeout = PayChannelTimeout
@@ -85,11 +97,12 @@ func NewChannelClient(cfg ChannelClientConfig) (*ChannelClient, error) {
 		DialContext: dialer.DialContext,
 	}
 	return &ChannelClient{
-		url:      payURL,
-		closeURL: closeURL,
-		queryURL: queryURL,
-		key:      bytes.Clone(cfg.Key),
-		clk:      clk,
+		url:       payURL,
+		closeURL:  closeURL,
+		queryURL:  queryURL,
+		refundURL: refundURL,
+		key:       bytes.Clone(cfg.Key),
+		clk:       clk,
 		http: &http.Client{
 			Transport:     transport,
 			CheckRedirect: refuseRedirect,
@@ -184,6 +197,41 @@ func (c *ChannelClient) Accept(ctx context.Context, req ChannelAcceptRequest) (C
 		return ChannelAcceptResult{}, nil
 	}
 }
+
+// Refund 发起一次渠道退款。网络错误、非 200 和验签失败都作为未知结果，error 为 nil。
+// 空密钥和无法编码的请求在发出之前返回错误，由退款提交映射为 10003。
+func (c *ChannelClient) Refund(ctx context.Context, req ChannelRefundRequest) (ChannelAcceptResult, error) {
+	limit := PayChannelTimeout
+	if c != nil && c.timeout > 0 {
+		limit = c.timeout
+	}
+	body, failed, err := c.exchange(ctx, c.refundURL, limit, channelRefundBody{
+		ReqNo:     req.ReqNo,
+		OrigReqNo: req.OrigReqNo,
+		Amount:    int64(req.Amount),
+		NotifyURL: req.NotifyURL,
+	})
+	if err != nil || failed {
+		return ChannelAcceptResult{}, err
+	}
+	var out channelPayResponse
+	if err = json.Unmarshal(body, &out); err != nil {
+		return ChannelAcceptResult{}, nil
+	}
+	switch out.Result {
+	case acceptResultOK:
+		if out.ChannelTxnNo == "" {
+			return ChannelAcceptResult{}, nil
+		}
+		return ChannelAcceptResult{Outcome: acceptOK, ChannelTxnNo: out.ChannelTxnNo}, nil
+	case acceptResultRejected:
+		return ChannelAcceptResult{Outcome: acceptRejected, Reason: out.Reason}, nil
+	default:
+		return ChannelAcceptResult{}, nil
+	}
+}
+
+var _ ChannelRefunder = (*ChannelClient)(nil)
 
 const (
 	acceptResultOK       = "OK"

@@ -2,9 +2,9 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 3.3.6 |
+| 文档版本 | 3.3.7 |
 | API 版本 | v1（路径前缀 `/v1`） |
-| 最后修改 | 2026-11-03 |
+| 最后修改 | 2026-11-04 |
 | 状态 | 设计基线，实现须与本文一致 |
 
 关联文档：需求 `docs/02-requirements.md`（各接口的业务规则以功能点为准）、约定 `docs/03-conventions.md`（错误码、单号、时间格式）。
@@ -73,6 +73,7 @@
 | 3.3.4 | 2026-11-01 | 网关商户端口已注册 `POST /callback/mockpay`。响应正文是 `SUCCESS` 或 `FAIL`，不是 JSON。字段和错误码不变。`HandleChannelNotify` 的 PAY 分支已转发到 `ApplyPayResult`；`txn_type` 不是 PAY 时仍返回已有的 `10003`。 | §7、§10.2 | GW-06 |
 | 3.3.5 | 2026-11-03 | 重复 req_no 先返回已有退款结果；额度校验和插入在同一事务，先锁原支付行。不新增字段。 | §9.5 | CH-04 |
 | 3.3.6 | 2026-11-03 | CreateRefund 现在返回刚插入的 INIT 退款单，尚未冻结，尚未调用渠道。此前该方法返回 10003。不新增字段，不改错误码数字，不改 IDL。 | §4.5 | REF-01 |
+| 3.3.7 | 2026-11-04 | 新插入的退款在冻结成功且渠道返回 OK 或结果未知时返回 PROCESSING。冻结超时或不可用返回 INIT，biz_code 为 0，不写 channel_txn。account 把处理超时包成 TransError（消息仍是 rpc timeout）时同样返回 INIT。连接拒绝仍是 10003。40001 与 40005 保持 INIT 并返回 10003。40002、40004 和渠道 REJECTED 会调用 ApplyRefundResult；该函数的落库仍是 REF-03，当前生产实现返回 10003，不把退款改成 FAILED，不减少 refunded_amount。已有商户退款单号直接返回已有单，不再次冻结。CreateRefund 的服务端处理超时改为 5 秒，与网关调用超时一致。不新增字段，不改错误码数字，不改 IDL。 | §4.5 | REF-02 |
 
 ## 1. 接口总览
 
@@ -95,7 +96,7 @@
 | `POST /v1/payments/{pay_no}/pay` 发起支付 | §4.2 | `PaymentService.Pay` | PAY-03、PAY-04 | 1.0.0 | 2026-11-01 |
 | `POST /v1/payments/{pay_no}/close` 关闭支付单 | §4.3 | `PaymentService.ClosePayment` | PAY-06 | 1.0.0 | 2026-11-01 |
 | `GET /v1/payments/{pay_no}`、`GET /v1/payments?out_trade_no=` 查询支付单 | §4.4 | `PaymentService.QueryPayment` | PAY-08 | 1.0.0 | 2026-11-01 |
-| `POST /v1/refunds` 创建退款 | §4.5 | `PaymentService.CreateRefund` | REF-01、REF-02 | 1.0.0 | 2026-11-03 |
+| `POST /v1/refunds` 创建退款 | §4.5 | `PaymentService.CreateRefund` | REF-01、REF-02 | 1.0.0 | 2026-11-04 |
 | `GET /v1/refunds/{refund_no}`、`GET /v1/refunds?out_refund_no=` 查询退款 | §4.6 | `PaymentService.QueryRefund` | REF-05 | 1.0.0 | 2026-10-27 |
 | `GET /v1/balance` 查询余额 | §4.7 | `AccountService.GetAccount` | ACC-02 | 1.0.0 | 2026-11-01 |
 | `POST /v1/transfers` 创建转账 | §4.8 | `PaymentService.CreateTransfer` | TRF-01~03 | 2.0.0 | 2026-10-27 |
@@ -360,7 +361,7 @@ payment 的 `QueryPayment` 直接读 `payment_order`，不缓存，不写行，�
 
 `POST /v1/refunds` · REF-01、REF-02 · 网关路由 GW-09
 
-本切片返回 INIT，不冻结、不调用渠道；冻结和渠道提交是 REF-02。
+新插入的退款在冻结成功且渠道返回 OK 或结果未知时，接口返回 PROCESSING。冻结超时或不可用返回 INIT，biz_code 为 0，不写 `channel_txn`。account 把处理超时包成远程 TransError（消息仍是 rpc timeout）时同样返回 INIT。连接拒绝仍是 `10003`。`40001` 与 `40005` 保持 INIT 并返回 `10003`。`40002`、`40004` 和渠道 `REJECTED` 调用 `ApplyRefundResult`；该函数的落库仍是 REF-03，当前生产实现返回 `10003`，不把退款改成 FAILED，不减少 `refunded_amount`。已有 `(merchant_id, out_refund_no)` 直接返回已有单，不再次冻结。`CreateRefund` 的服务端处理超时是 5 秒，让渠道退款的 3 秒总超时先到期。
 
 请求：
 
@@ -980,7 +981,7 @@ account RPC 以商户号（或 owner）为入参，由 account 按商户号路�
 
 `GetMerchantCredential` 返回明文密钥，只允许网关调用；调用双方都不得记录响应内容。
 
-`GetMerchantCredential`（PAY-01）：请求为 nil 返回 `10001`。`app_id` 按字节精确匹配，为空、不存在或只是大小写、首尾空格不同都返回 `20004`（`X-App-Id` 不在签名串里，放宽匹配会让同一请求换个写法绕过按 `app_id` 记的 nonce）。`merchant` 表列跟随库默认 `utf8mb4_bin`，区分大小写，但 PAD SPACE 会忽略尾部空格；集成测试临时库为 `utf8mb4_0900_ai_ci`，不区分大小写与重音。两种规则下 SQL 都可能匹配到字节不同的值，所以服务端读回 `app_id` 再逐字节比较。DISABLED 商户照常返回，由网关返回 `20004`。密文解不开是平台内部故障，返回 `10003`。payment 不缓存凭证，网关侧缓存属于 GW-08。除 `GetMerchantCredential`、`CreatePayment`、`Pay`、`ClosePayment`、`QueryPayment` 与 `HandleChannelNotify` 外，PaymentService 其余方法在各自功能点实现前一律返回 `10003`，不是这些方法将来的错误码语义。服务端处理超时：`Pay` 为 5 秒，与需求 §5.4.1、GW-01 第 5 条的网关调用超时一致，使渠道受理的 3 秒总超时先到期并返回 PAYING；其他方法仍为 2 秒。不新增环境变量。
+`GetMerchantCredential`（PAY-01）：请求为 nil 返回 `10001`。`app_id` 按字节精确匹配，为空、不存在或只是大小写、首尾空格不同都返回 `20004`（`X-App-Id` 不在签名串里，放宽匹配会让同一请求换个写法绕过按 `app_id` 记的 nonce）。`merchant` 表列跟随库默认 `utf8mb4_bin`，区分大小写，但 PAD SPACE 会忽略尾部空格；集成测试临时库为 `utf8mb4_0900_ai_ci`，不区分大小写与重音。两种规则下 SQL 都可能匹配到字节不同的值，所以服务端读回 `app_id` 再逐字节比较。DISABLED 商户照常返回，由网关返回 `20004`。密文解不开是平台内部故障，返回 `10003`。payment 不缓存凭证，网关侧缓存属于 GW-08。除 `GetMerchantCredential`、`CreatePayment`、`Pay`、`ClosePayment`、`QueryPayment` 与 `HandleChannelNotify` 外，PaymentService 其余方法在各自功能点实现前一律返回 `10003`，不是这些方法将来的错误码语义。服务端处理超时：`Pay` 与 `CreateRefund` 为 5 秒，与需求 §5.4.1、GW-01 第 5 条的网关调用超时一致，使渠道的 3 秒总超时先到期并返回 PAYING 或 PROCESSING；其余方法仍为 2 秒。不新增环境变量。
 
 `QueryPayment`（PAY-08）已实现。响应类型仍是 `PaymentOrder`，不是带 `biz_code` 的包装。成功时 RPC error 为 nil 并返回订单。请求为 nil，或 `pay_no` 与 `out_trade_no` 两个都空、两个都非空，返回已有的 `10001`（空串算没提供，不 trim），handler 用 `ToBizStatus`，不读库。`10001` 不进上表业务错误列。只提供 `pay_no` 时直接读 `payment_order`：没有行，或 `merchant_id` 与库中逐字节不同（含空商户号），都返回已有的 `30001`。只提供 `out_trade_no` 时按 `(merchant_id, out_trade_no)` 读：没有行返回 `30001`，他人的商户订单号因此也是 `30001`。两种情况同一个错误，走 `BizStatusError`，不带订单，调用方看不出订单是否存在。查到且商户匹配则原样返回该行，状态可以是 `INIT`、`PAYING`、`SUCCESS`、`FAILED`、`CLOSED`，不推进状态，不改 `version`，不调渠道，不写 outbox。不缓存。服务端处理超时仍是 2 秒。`Pay` 仍是 5 秒。nil handler 或 nil service 仍由 `ready` 返回 `10003`。不新增错误码，不改 IDL。
 

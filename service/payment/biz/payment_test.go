@@ -537,6 +537,49 @@ func (m *memOrders) occupyRefund(_ context.Context, pay PaymentOrder, refund Ref
 	return false, false, nil
 }
 
+func (m *memOrders) casRefundProcessing(_ context.Context, row RefundOrder, now time.Time) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.refunds {
+		got := &m.refunds[i]
+		if got.RefundNo != row.RefundNo || got.MerchantID != row.MerchantID {
+			continue
+		}
+		if got.Status != refundStatusInit {
+			return false, nil
+		}
+		for _, txn := range m.txns {
+			if txn.BizNo == row.RefundNo {
+				return false, nil
+			}
+		}
+		got.Status = refundStatusProcessing
+		got.Version++
+		got.UpdatedAt = now
+		m.txns = append(m.txns, channelTxn{
+			Channel: row.Channel, TxnType: txnTypeRefund, BizNo: row.RefundNo,
+			Amount: row.Amount, Status: txnStatusProcessing,
+			NextQueryAt: now.Add(payNextQueryDelay), CreatedAt: now, UpdatedAt: now,
+		})
+		return true, nil
+	}
+	return false, nil
+}
+
+func (m *memOrders) refundByNo(_ context.Context, refundNo string) (RefundOrder, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.readErr != nil {
+		return RefundOrder{}, false, m.readErr
+	}
+	for _, ex := range m.refunds {
+		if ex.RefundNo == refundNo {
+			return ex, true, nil
+		}
+	}
+	return RefundOrder{}, false, nil
+}
+
 type stubIDs struct {
 	mu     sync.Mutex
 	prefix string

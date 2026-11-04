@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/yym108/pay-system/pkg/accountclient"
 	"github.com/yym108/pay-system/pkg/clock"
 	"github.com/yym108/pay-system/pkg/config"
 	"github.com/yym108/pay-system/pkg/dbx"
@@ -97,6 +98,11 @@ func serve(cfg config.Payment, logOut io.Writer) error {
 	}
 	payments.UsePay(channelClient, payments, cfg.ChannelNotifyURL)
 	payments.UseClose(channelClient)
+	accountCli, err := accountclient.Dial("account:8882")
+	if err != nil {
+		return err
+	}
+	payments.UseRefund(biz.NewAccountRefundFreezer(accountCli), channelClient, payments, cfg.ChannelNotifyURL)
 	exit := make(chan error, 1)
 	admin := server.New(server.Config{
 		Addr:         server.AddrPayment,

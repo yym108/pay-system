@@ -56,8 +56,8 @@ func (a *App) CreateRefund(ctx context.Context, in *CreateRefundInput) (RefundOr
 }
 
 // CreateRefund 插入一条 INIT 退款单，并占用原支付单的 refunded_amount。
-// 同一请求内不冻结、不提交渠道。那是 REF-02。
-// 幂等键是 (merchant_id, out_refund_no)。命中且 pay_no、amount 一致时只读，不增加 refunded_amount。
+// 新插入成功且已装上冻结客户端时，同一请求内冻结并提交渠道。未装上时返回刚插入的 INIT。
+// 幂等键是 (merchant_id, out_refund_no)。命中且 pay_no、amount 一致时只读，不增加 refunded_amount，也不再次冻结。
 func (p *Payments) CreateRefund(ctx context.Context, in *CreateRefundInput) (RefundOrder, error) {
 	if p == nil {
 		return RefundOrder{}, errno.ErrInternal
@@ -108,7 +108,7 @@ func (p *Payments) CreateRefund(ctx context.Context, in *CreateRefundInput) (Ref
 		return RefundOrder{}, callErr(err)
 	}
 	if affected {
-		return row, nil
+		return p.submitRefund(ctx, row)
 	}
 	return p.afterRefundMiss(ctx, in, order, duplicate)
 }

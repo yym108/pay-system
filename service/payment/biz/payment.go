@@ -58,6 +58,8 @@ type orderStore interface {
 	channelTxnByBizNo(ctx context.Context, bizNo string) (channelTxn, bool, error)
 	refundByMerchantOut(ctx context.Context, merchantID, outRefundNo string) (RefundOrder, bool, error)
 	occupyRefund(ctx context.Context, pay PaymentOrder, refund RefundOrder) (affected bool, duplicate bool, err error)
+	casRefundProcessing(ctx context.Context, row RefundOrder, now time.Time) (bool, error)
+	refundByNo(ctx context.Context, refundNo string) (RefundOrder, bool, error)
 }
 
 // CreatePaymentInput 是创建支付单的入参。
@@ -110,6 +112,9 @@ type Payments struct {
 	channelNotifyURL string
 	// channelTimeout 大于 0 时替换渠道受理总超时。生产保持 0，用 PayChannelTimeout。
 	channelTimeout time.Duration
+	refundFreezer  RefundFreezer
+	refundChannel  ChannelRefunder
+	refundApplier  RefundResultApplier
 }
 
 // App 把商户读取和支付单创建合成 handler 使用的服务。

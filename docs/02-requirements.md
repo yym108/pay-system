@@ -385,7 +385,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | PAY-09 | 立即同步渠道状态 | P0 | M6 | PAY-05 | TODO |
 | PAY-10 | 商户费率变更与订单手续费核对 | P0 | M3 | BASE-03、BASE-04、BASE-08 | DONE |
 | REF-01 | 创建退款与额度占用 | P0 | M4 | PAY-04 | DONE |
-| REF-02 | 退款冻结与渠道提交 | P0 | M4 | REF-01、ACC-11、CH-04、BASE-15 | TODO |
+| REF-02 | 退款冻结与渠道提交 | P0 | M4 | REF-01、ACC-11、CH-04、BASE-15 | DONE |
 | REF-03 | 退款结果推进 | P0 | M4 | REF-02、GW-06 | TODO |
 | REF-04 | 退款卡单恢复 | P0 | M4 | REF-02、REF-03、BASE-15 | TODO |
 | REF-05 | 退款查询 | P0 | M4 | REF-01 | TODO |
@@ -1482,7 +1482,7 @@ M4：
    - `OK` 且带 `channel_txn_no`：`UPDATE channel_txn SET channel_txn_no=? WHERE biz_no=? AND channel_txn_no IS NULL`（同时写 `updated_at = updated_at`，避免 `ON UPDATE CURRENT_TIMESTAMP` 改成数据库时钟）。然后返回 PAYING 订单，`biz_code = 0`。影响 0 行就再读，不覆盖已有流水号。回填撞上唯一键（1062）返回 `10003`，不猜测该写哪一条。
    - `REJECTED`：调用 `ApplyPayResult`，入参为结构体：`biz_no=pay_no`、结果 `FAILED`、`fail_code=CHANNEL_REJECTED`、`fail_msg` 为渠道 `reason`（可以是空字符串）、`source=SYNC`，不带金额。`SYNC` 只表示渠道受理的同步拒绝。已有来源名是 NOTIFY / QUERY / CLOSE / JOB / ADMIN，没有同义名称，因此新增这个来源名，不是新的错误码。PAY-04 成功把订单写成 FAILED 后，本方法返回该订单和 `30006`。`30006` 放在 `PayResponse.biz_code`，error 为 nil，并携带订单。事务、outbox 和冲突计数属于 PAY-04。
    - 超时、网络错误、5xx、其他非 200（含 400、401），HTTP 200 但验签失败，以及 `OK` 但没有流水号：结果未知。不改订单状态，不回填，返回 PAYING，`biz_code = 0`。
-8. `Pay` 的服务端处理超时是 5 秒，与 §5.4.1、GW-01 第 5 条的网关调用超时一致，让 3 秒的渠道超时先到期并返回 PAYING。其他 PaymentService 方法仍是 2 秒。不新增环境变量。渠道 HTTP 的 3 秒从调用 ctx 派生，父 ctx 先到期时先到期的生效。
+8. `Pay` 的服务端处理超时是 5 秒，与 §5.4.1、GW-01 第 5 条的网关调用超时一致，让 3 秒的渠道超时先到期并返回 PAYING。本功能点只改 `Pay`。`CreateRefund` 的 5 秒在 REF-02，原因相同。其余 PaymentService 方法仍是 2 秒。不新增环境变量。渠道 HTTP 的 3 秒从调用 ctx 派生，父 ctx 先到期时先到期的生效。
 
 验收的归属：`REJECTED` 分支调用 `ApplyPayResult`（PAY-04），在 PAY-04 验收；“2 秒内 SUCCESS”需要回调入口，在 GW-06 验收；Pay 与 Close 并发在 PAY-06 验收；ACCEPT_TIMEOUT 需要 CH-06 的 M4 场景和查单，在 PAY-05 验收。
 
@@ -1757,12 +1757,14 @@ INIT 表示已受理、尚未提交渠道；PROCESSING 表示已冻结商户资�
    - 未知 → 不改状态，由回调或查单完成。
 4. 已知边界：支付成功到商户入账之间有秒级延迟，入账前发起的退款会因余额不足失败，商户可用新的 `out_refund_no` 重试。
 
+新插入的退款提交后才冻结并提交渠道。已有 `(merchant_id, out_refund_no)` 直接返回已有单，不再次冻结。冻结超时或不可用返回 INIT，code 0，不写 `channel_txn`。account 把处理超时包成远程 `TransError`（消息仍是 rpc timeout）时与客户端超时同一口径，也走这条 INIT 路径。连接拒绝仍是 `10003`，不走这条路径。`40001` 与 `40005` 保持 INIT 并返回 `10003`。`40002`、`40004` 和渠道 `REJECTED` 调用 `ApplyRefundResult`；该函数的落库属于 REF-03，本切片生产实现返回 `10003`，不把退款改成 FAILED，不减少 `refunded_amount`。`CreateRefund` 的服务端处理超时是 5 秒，与 `Pay` 和 §5.4.1 的网关调用超时一致，让渠道退款的 3 秒总超时先到期。`ClosePayment` 和其他方法仍是 2 秒。不新增环境变量。
+
 验收的归属：规则 1、3 中置 FAILED 的分支调用 `ApplyRefundResult`（REF-03），在 REF-03 接通并验收；“随后 SUCCESS”经回调推进，在 REF-03 验收；“恢复后完成”是 REF-04 的扫描，在 REF-04 验收；“冻结最终被解冻”是 account 消费 `refund.failed`，在 MQ-04 验收。测试中商户余额用 account biz 夹具直接入账，不依赖 MQ-04。
 
 验收：
 
-- [ ] 正常退款：接口返回 PROCESSING；商户有 1 张 FROZEN 冻结单（金额等于退款金额），`channel_txn(REFUND)` 1 条且为 PROCESSING，渠道受理 1 次。
-- [ ] account 不可用（Freeze 超时）：接口返回 INIT，退款单保持 INIT，没有 `channel_txn`，渠道未收到请求。
+- [x] 正常退款：接口返回 PROCESSING；商户有 1 张 FROZEN 冻结单（金额等于退款金额），`channel_txn(REFUND)` 1 条且为 PROCESSING，渠道受理 1 次。
+- [x] account 不可用（Freeze 超时）：接口返回 INIT，退款单保持 INIT，没有 `channel_txn`，渠道未收到请求。
 
 #### REF-03 退款结果推进
 
@@ -3173,3 +3175,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-02 | v3.0 | CH-06 M4：SLOW 的首次回调排在 finished_at 之后 30 秒，失败后仍按 CH-05 的 5s/15s/30s/60s 重试，连首次最多 5 次；ACCEPT_TIMEOUT 只在新插入成功的受理上用调度器等到 created_at 之后 5 秒再返回 OK。受理 HTTP 上下文上限改为 8 秒，查单和关单仍是 3 秒。BILL 的账单表现仍在 CH-08，CLOSE_RACE 仍不重做。不新增错误码，不改表，不改 IDL。§3 改为 DONE。PAY-06 说明改为：CH-06 已 DONE，但关单验收仍不使用 SLOW 和 ACCEPT_TIMEOUT，依赖列仍不写 CH-06。 |
 | 2026-11-03 | v3.0 | CH-04：先按 (REFUND, req_no) 返回已有结果；新单在同一事务里 FOR UPDATE 锁原支付，再合计 status 不是 FAILED 的退款。场景只有 01 FAIL 和 02 DROP_NOTIFY，其余 NORMAL。当日账单只断言 bill_date，CSV 仍是 CH-08。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
 | 2026-11-03 | v3.0 | REF-01：本功能点事务提交后返回刚插入的 INIT 退款单；同一请求内冻结和提交渠道是 REF-02，本次不调用 account、不调用渠道、不写 outbox。条件更新影响 0 行或插入 1062 时，事务外再读 (merchant_id, out_refund_no)，一致则返回已有单，避免并发重复请求被报成 30005。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
+| 2026-11-04 | v3.0 | REF-02：新插入的退款在额度事务提交后冻结并提交渠道。冻结超时或不可用返回 INIT，code 0，不写 channel_txn。account 把处理超时包成 TransError（消息仍是 rpc timeout）时同样返回 INIT。连接拒绝仍是 10003。40001 与 40005 保持 INIT 并返回 10003。40002、40004 和渠道 REJECTED 调用 ApplyRefundResult；该函数的落库属于 REF-03，本切片生产实现返回 10003，不把退款改成 FAILED，不减少 refunded_amount。已有 (merchant_id, out_refund_no) 直接返回已有单，不再次冻结。CreateRefund 的服务端处理超时改为 5 秒，ClosePayment 和其他方法仍是 2 秒。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |

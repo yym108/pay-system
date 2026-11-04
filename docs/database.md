@@ -475,7 +475,7 @@
 ### 4.8 `refund_order` — 退款单
 
 - **Purpose:** 退款状态机（`docs/02-requirements.md` §4.5）。
-- **Lifecycle:** INIT → PROCESSING → SUCCESS / FAILED；INIT → FAILED。REF-01 在同一事务里条件更新 payment_order（status = SUCCESS 且 refunded_amount + 本次金额 <= amount，version + 1，WHERE 不含 version，merchant_id 在 WHERE 中）并 INSERT status = INIT。影响 0 行不插入。插入 1062 回滚额度。不写 fail_code、fail_msg、succeeded_at。无 DDL。
+- **Lifecycle:** INIT → PROCESSING → SUCCESS / FAILED；INIT → FAILED。REF-01 在同一事务里条件更新 payment_order（status = SUCCESS 且 refunded_amount + 本次金额 <= amount，version + 1，WHERE 不含 version，merchant_id 在 WHERE 中）并 INSERT status = INIT。影响 0 行不插入。插入 1062 回滚额度。不写 fail_code、fail_msg、succeeded_at。REF-02 在额度事务提交后，另开一个事务 CAS `status = INIT` 为 PROCESSING（`version = version + 1`，WHERE 含 refund_no、merchant_id、status，不含 version），并在同一事务插入 `channel_txn`。更新 0 行或插入 1062 时回滚这次 CAS，不调用渠道。无 DDL。
 - **Sensitivity:** 内部交易数据。
 - **Authoritative source:** `migrations/payment/000001_init.up.sql`。
 - **Write owners/read consumers:** payment 写；recon 只读。
@@ -638,7 +638,7 @@
 #### Operational Notes
 
 - **Backfill/migration considerations:** 无。
-- **Compatibility/deprecation notes:** 无。
+- **Compatibility/deprecation notes:** REF-02 插入 `txn_type = REFUND`、`biz_no = refund_no`、`channel_txn_no` 为 NULL、`status = PROCESSING`、`next_query_at = now + 10s`。渠道返回 OK 且带非空流水号后，按 `biz_no` 回填 `channel_txn_no`，`updated_at` 保持原值。插入 1062 回滚同事务里的 INIT→PROCESSING。无 DDL。
 
 ### 4.11 `outbox` — 本地消息表
 
@@ -974,6 +974,7 @@
 | 2026-11-02 | 无（仅文档） | `mock_txn.notify_sent_count`（说明） | CH-06 M4：SLOW 的首次回调已排在 `finished_at` 后 30 秒，之后按普通回调 `notify_sent_count = ?` 加一，连首次最多 5 次。无 DDL | 未执行迁移 |
 | 2026-11-03 | 无（仅文档） | `mock_txn.orig_req_no`（说明） | CH-04：退款 INSERT 写入 `orig_req_no`，支付仍是 NULL。查询说明补上 `FOR UPDATE` 锁原支付行，以及合计 status 不是 FAILED 的退款。无 DDL | 未执行迁移 |
 | 2026-11-03 | 无（仅文档） | payment_order.refunded_amount、refund_order | REF-01 条件更新加插入，同一事务。无 DDL | 未执行迁移 |
+| 2026-11-04 | 无（仅文档） | refund_order、channel_txn | REF-02：CAS INIT→PROCESSING 与插入 REFUND 的 channel_txn 在同一事务。channel_txn_no 先为空，受理 OK 后再回填。无 DDL | 未执行迁移 |
 
 ## 6. Open Questions
 

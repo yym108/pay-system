@@ -79,6 +79,51 @@ func acceptDemo(t *testing.T, client *ChannelClient) (ChannelAcceptResult, error
 	})
 }
 
+func TestChannelClientRefundOK(t *testing.T) {
+	clk := testClock()
+	var seenPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenPath = r.URL.Path
+		raw, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("read body: %v", err)
+			return
+		}
+		ts := r.Header.Get(sign.HeaderMockTimestamp)
+		if err := sign.VerifyChannel([]byte(testChannelKey), sign.ChannelMessage{Timestamp: ts, Body: raw}, r.Header.Get(sign.HeaderMockSignature)); err != nil {
+			t.Errorf("request signature: %v", err)
+		}
+		var got channelRefundBody
+		if err := json.Unmarshal(raw, &got); err != nil {
+			t.Errorf("body: %v", err)
+		}
+		if got.ReqNo != "RF0000000000000000001" || got.OrigReqNo != "PA_REF_1" || got.Amount != 1000 || got.NotifyURL != testChannelNotifyURL {
+			t.Errorf("body fields = %+v", got)
+		}
+		body := []byte(`{"result":"OK","channel_txn_no":"CH_RF_1","status":"PROCESSING"}`)
+		sig, err := sign.SignChannel([]byte(testChannelKey), sign.ChannelMessage{Timestamp: ts, Body: body})
+		if err != nil {
+			t.Errorf("sign response: %v", err)
+			return
+		}
+		w.Header().Set(sign.HeaderMockTimestamp, ts)
+		w.Header().Set(sign.HeaderMockSignature, sig)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	client := newTestClient(t, srv.URL, clk, testChannelKey)
+	if !strings.HasSuffix(client.refundURL, channelRefundPath) {
+		t.Fatalf("refund URL = %s", client.refundURL)
+	}
+	got, err := client.Refund(context.Background(), ChannelRefundRequest{
+		ReqNo: "RF0000000000000000001", OrigReqNo: "PA_REF_1", Amount: 1000, NotifyURL: testChannelNotifyURL,
+	})
+	if err != nil || got.Outcome != acceptOK || got.ChannelTxnNo != "CH_RF_1" || seenPath != channelRefundPath {
+		t.Fatalf("got=%+v err=%v path=%s", got, err, seenPath)
+	}
+}
+
 func TestChannelClientOKAndRejected(t *testing.T) {
 	clk := testClock()
 	okBody := []byte(`{"result":"OK","channel_txn_no":"CH-100","status":"PROCESSING"}`)
