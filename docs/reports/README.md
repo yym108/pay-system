@@ -52,3 +52,4 @@
 | GW-06 | 渠道回调入口 | 基础设施 | `34671d0` | 2026-11-02 | [GW-06-channel-callback.md](GW-06-channel-callback.md) |
 | CH-04 | 渠道退款 | 支付 | `6d6f00b` | 2026-11-03 | [CH-04-refund.md](CH-04-refund.md) |
 | REF-01 | 创建退款与额度占用 | 退款 | `e920750` | 2026-11-03 | [REF-01-create-refund.md](REF-01-create-refund.md) |
+| REF-02 | 退款冻结与渠道提交 | 退款 | `d9c6b6f` | 2026-11-04 | [REF-02-freeze-submit.md](REF-02-freeze-submit.md) |
