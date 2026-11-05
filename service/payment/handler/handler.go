@@ -1,7 +1,7 @@
 // Package handler 是 payment 的 Kitex 适配。
 // 只做协议转换和错误码转换，不改 biz 的幂等与 CAS。
 // 已实现 GetMerchantCredential（PAY-01）、CreatePayment（PAY-02）、Pay（PAY-03）、ClosePayment（PAY-06）、QueryPayment（PAY-08）、
-// CreateRefund（REF-02）和 HandleChannelNotify（PAY 分支 GW-06，REFUND 分支 REF-03）。
+// CreateRefund（REF-02）、QueryRefund（REF-05）和 HandleChannelNotify（PAY 分支 GW-06，REFUND 分支 REF-03）。
 // 其余方法属于各自的功能点，实现前调用一律返回 10003，不进 biz。
 package handler
 
@@ -210,9 +210,26 @@ func (h *Handler) CreateRefund(ctx context.Context, req *payment.CreateRefundReq
 	return &payment.CreateRefundResponse{BizCode: 0, RefundOrder: toRefundOrder(got)}, nil
 }
 
-// QueryRefund 属于 REF-05，未实现，返回 10003。
-func (h *Handler) QueryRefund(_ context.Context, _ *payment.QueryRefundRequest) (*payment.RefundOrder, error) {
-	return nil, notImplemented()
+// QueryRefund 读取当前商户的退款单（REF-05），规则同 QueryPayment。响应是 RefundOrder，不带 biz_code。
+// 请求为 nil，或 refund_no 与 out_refund_no 都空、都非空，返回 10001，不进 biz。空串算没提供，不 trim。
+// 30001 走 BizStatusError，不带退款单。成功时 error 为 nil 并返回退款单。
+func (h *Handler) QueryRefund(ctx context.Context, req *payment.QueryRefundRequest) (r *payment.RefundOrder, err error) {
+	defer recoverBiz(ctx, &err)
+	if err = h.ready(); err != nil {
+		return nil, err
+	}
+	if req == nil || !queryKeysOK(req.GetRefundNo(), req.GetOutRefundNo()) {
+		return nil, errno.ToBizStatus(errno.ErrInvalidParam)
+	}
+	got, callErr := h.svc.QueryRefund(ctx, &biz.RefundQueryInput{
+		MerchantID:  req.MerchantId,
+		RefundNo:    req.GetRefundNo(),
+		OutRefundNo: req.GetOutRefundNo(),
+	})
+	if callErr != nil {
+		return nil, statusErr(ctx, callErr)
+	}
+	return toRefundOrder(got), nil
 }
 
 // CreateTransfer 属于 TRF-01~03，未实现，返回 10003。
