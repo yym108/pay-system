@@ -1,6 +1,6 @@
 # pay-system 需求规格说明书
 
-> 版本：v3.0　最后修改：2026-11-03
+> 版本：v3.0　最后修改：2026-11-05
 > 状态：v3.0 重新聚焦支付、退款、转账三条资金链路（变更见 §8.2），2026-10-13 已确认为开发基线；开发按 §3 功能点总表逐项推进
 > 上游：`PROJECT_GOALS.md`（目标与约束）、`docs/01-tech-decisions.md`（技术选型与版本）
 > 关联：`docs/03-conventions.md`（编号、错误码、命名等全局约定）、`docs/05-api.md`（接口文档）、`docs/database.md`（表结构）、`docs/04-dev-plan.md`（周计划）、`docs/06-flows.md`（流程图）
@@ -386,7 +386,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | PAY-10 | 商户费率变更与订单手续费核对 | P0 | M3 | BASE-03、BASE-04、BASE-08 | DONE |
 | REF-01 | 创建退款与额度占用 | P0 | M4 | PAY-04 | DONE |
 | REF-02 | 退款冻结与渠道提交 | P0 | M4 | REF-01、ACC-11、CH-04、BASE-15 | DONE |
-| REF-03 | 退款结果推进 | P0 | M4 | REF-02、GW-06 | TODO |
+| REF-03 | 退款结果推进 | P0 | M4 | REF-02、GW-06 | DONE |
 | REF-04 | 退款卡单恢复 | P0 | M4 | REF-02、REF-03、BASE-15 | TODO |
 | REF-05 | 退款查询 | P0 | M4 | REF-01 | TODO |
 | TRF-01 | 创建转账单 | P0 | M4 | PAY-01、ACC-13 | TODO |
@@ -1757,7 +1757,7 @@ INIT 表示已受理、尚未提交渠道；PROCESSING 表示已冻结商户资�
    - 未知 → 不改状态，由回调或查单完成。
 4. 已知边界：支付成功到商户入账之间有秒级延迟，入账前发起的退款会因余额不足失败，商户可用新的 `out_refund_no` 重试。
 
-新插入的退款提交后才冻结并提交渠道。已有 `(merchant_id, out_refund_no)` 直接返回已有单，不再次冻结。冻结超时或不可用返回 INIT，code 0，不写 `channel_txn`。account 把处理超时包成远程 `TransError`（消息仍是 rpc timeout）时与客户端超时同一口径，也走这条 INIT 路径。连接拒绝仍是 `10003`，不走这条路径。`40001` 与 `40005` 保持 INIT 并返回 `10003`。`40002`、`40004` 和渠道 `REJECTED` 调用 `ApplyRefundResult`；该函数的落库属于 REF-03，本切片生产实现返回 `10003`，不把退款改成 FAILED，不减少 `refunded_amount`。`CreateRefund` 的服务端处理超时是 5 秒，与 `Pay` 和 §5.4.1 的网关调用超时一致，让渠道退款的 3 秒总超时先到期。`ClosePayment` 和其他方法仍是 2 秒。不新增环境变量。
+新插入的退款提交后才冻结并提交渠道。已有 `(merchant_id, out_refund_no)` 直接返回已有单，不再次冻结。冻结超时或不可用返回 INIT，code 0，不写 `channel_txn`。account 把处理超时包成远程 `TransError`（消息仍是 rpc timeout）时与客户端超时同一口径，也走这条 INIT 路径。连接拒绝仍是 `10003`，不走这条路径。`40001` 与 `40005` 保持 INIT 并返回 `10003`。`40002`、`40004` 和渠道 `REJECTED` 调用 `ApplyRefundResult`，落库规则见 REF-03（2026-11-05 已接通）。`CreateRefund` 的服务端处理超时是 5 秒，与 `Pay` 和 §5.4.1 的网关调用超时一致，让渠道退款的 3 秒总超时先到期。`ClosePayment` 和其他方法仍是 2 秒。不新增环境变量。
 
 验收的归属：规则 1、3 中置 FAILED 的分支调用 `ApplyRefundResult`（REF-03），在 REF-03 接通并验收；“随后 SUCCESS”经回调推进，在 REF-03 验收；“恢复后完成”是 REF-04 的扫描，在 REF-04 验收；“冻结最终被解冻”是 account 消费 `refund.failed`，在 MQ-04 验收。测试中商户余额用 account biz 夹具直接入账，不依赖 MQ-04。
 
@@ -1782,14 +1782,25 @@ INIT 表示已受理、尚未提交渠道；PROCESSING 表示已冻结商户资�
 4. 重复、冲突结果的处理同 PAY-04。
 5. 第 1、2 条释放 `refunded_amount` 的 UPDATE 影响 0 行（`refunded_amount < R`，数据已不一致）时：整个事务回滚，`channel_txn`、`refund_order` 的 CAS 和 outbox 都不提交；返回 `10003`；输出 ERROR 日志（`refund_no`、`pay_no`、R，不含密钥），`pay_refund_quota_inconsistent_total + 1`。退款保持原状态，由回调重试（网关对 `10003` 返回 HTTP 500，见 GW-06 第 4 条，渠道按 CH-05 重试）、查单补偿（PAY-05）或卡单恢复（REF-04）再次调用，每次都再次暴露，直到人工修复数据。（2026-10-27 用户决定）
 
+实现说明（2026-11-05，REF-03 落地时的澄清，不改资金流向、表结构和错误码）：
+
+- 分支按这次结果的意图选，不按库里读到的状态选。FAILED 且 `fail_code` 为 `INSUFFICIENT_BALANCE`、`FREEZE_CONFLICT`、`REFUND_TIMEOUT` 走第 2 条，只 CAS `refund_order INIT → FAILED`，不碰 `channel_txn`。其余结果走第 1 条：SUCCESS，以及 FAILED 且 `fail_code` 为空、`CHANNEL_FAILED` 或 `CHANNEL_REJECTED`。原因：REF-04 判 INIT 超时与 REF-02 把同一笔退款推进为 PROCESSING 可能并发；按意图选时第 2 条的 CAS 未命中并返回 `10003`，不会把已提交渠道的退款判为失败。
+- 第 1 条 FAILED 的 `fail_code` 用调用方传入的值，未传时为 `CHANNEL_FAILED`，`fail_msg` 原样写入。REF-02 的渠道受理拒绝因此写 `CHANNEL_REJECTED`，`fail_msg` 为渠道 `reason`。
+- 第 1 条的渠道 CAS 另加 `txn_type = 'REFUND'`，同号的 PAY 流水不会被改。渠道 CAS 未命中时按 PAY-04 第 3 条处理：读不到或读到的是 PAY 流水为 `30001`；金额不符为 `50002`，ERROR 日志；同一终态返回当前退款单，`source = NOTIFY` 时 `notify_count + 1`；另一终态计 `pay_callback_conflicts_total`（标签 channel）、ERROR 日志并返回当前退款单；仍是 PROCESSING 为 `10003`。渠道 CAS 命中但退款单 CAS 未命中时整个事务回滚，ERROR 日志，返回 `10003`。
+- 第 2 条的 CAS 未命中时，事务外再读退款单：不存在为 `30001`；已 FAILED 视为重复，返回该单；已 SUCCESS 返回该单且 error 为 nil，WARN 日志，不计 `pay_callback_conflicts_total`；仍是 INIT 或 PROCESSING 为 `10003`，WARN 日志。已 SUCCESS 是并发竞争（例如 REF-04 判超时的同时另一路冻结、提交并收到 SUCCESS），不是渠道给出的矛盾结果，所以不算冲突。返回该单而不是 `10003`，是因为退款已到终态，与 PAY-04 “已是终态则返回当前单”一致：REF-02 据此返回 code 0 和 SUCCESS 退款单，REF-04 按返回的状态判断，不必重试。
+- 入参不合法返回 `10001`，不写库：`refund_no` 为空；结果不是 SUCCESS / FAILED；来源不是 NOTIFY / QUERY / JOB / ADMIN / SYNC（退款没有关单，不接受 CLOSE）；SUCCESS 没有渠道完成时间或带了 `fail_code`；`fail_code` 不是空串、`CHANNEL_FAILED`、`CHANNEL_REJECTED`、`INSUFFICIENT_BALANCE`、`FREEZE_CONFLICT`、`REFUND_TIMEOUT` 之一。
+- 回调入口 `ApplyRefundNotify` 只接受 `source = NOTIFY`，且 `fail_code` 不能是第 2 条的三种。提交后调用故障点 `callback.after_commit`，返回 `APPLIED` / `DUPLICATE` / `CONFLICT`，判定与 GW-06 的 PAY 分支相同。GW-06 handler 收到既不是 PAY 也不是 REFUND 的 `txn_type` 时返回 `10001`（原为占位的 `10003`，网关对两者都返回 HTTP 500）。
+- SUCCESS 的 `succeeded_at` 与 `refund.succeeded` 的 `succeeded_at` 都用渠道完成时间；`refund.failed` 的 `fail_code` 用退款单上落库的值。
+- 第 5 条的计数先在进程内累加，由 OPS-03 暴露。ERROR 日志在事务回滚后输出一次，事务重试不会重复记；消息为 `refund quota inconsistent`，字段 `refund_no`、`pay_no`、`amount`（R，int64 分）。生产格式的 `refund_no`、`pay_no` 都是两位前缀加 19 位数字，按约定 §7.5 的兜底扫描会被部分遮盖（数字段只留前 6 位、后 4 位），日志里看不到完整单号。人工修复时先看 `pay_refund_quota_inconsistent_total` 发现问题，再用 SQL 定位：按 `pay_no` 比较 `payment_order.refunded_amount` 与该支付单下 status 不是 FAILED 的 `refund_order.amount` 合计，两者不等的支付单就是数据不一致的那笔。不改 `pkg/logx`。
+
 验收：
 
-- [ ] 正常退款经渠道回调（GW-06 REFUND 分支）推进为 SUCCESS，写 `succeeded_at`，outbox 恰好 1 条 `refund.succeeded`（由 REF-02 移来）。
-- [ ] FAIL 场景（退款金额末两位 01；测试可直接以渠道 FAILED 结果调用 `ApplyRefundResult`）：退款 FAILED，`fail_code = CHANNEL_FAILED`，`refunded_amount` 恢复，outbox 恰好 1 条 `refund.failed`。
-- [ ] 商户余额不足（由 REF-02 移来）：接口返回 `40002`，退款 FAILED（`INSUFFICIENT_BALANCE`），`refunded_amount` 恢复，没有 FROZEN 冻结单，outbox 1 条 `refund.failed`。
-- [ ] 渠道受理拒绝（由 REF-02 移来，用假渠道客户端注入 `REJECTED`）：接口返回 `30006`，退款单 FAILED（`CHANNEL_REJECTED`），`refunded_amount` 恢复，outbox 1 条 `refund.failed`。
-- [ ] 重复回调只推进一次、只产生 1 条事件。
-- [ ] 测试用 SQL 把 `refunded_amount` 改为小于 R：以渠道 FAILED 结果调用 `ApplyRefundResult`（PROCESSING 退款），以及对 INIT 退款执行冻结失败分支，都返回 `10003`；退款单、`channel_txn` 保持原状态，`refunded_amount` 不变，outbox 没有 `refund.failed`，`pay_refund_quota_inconsistent_total` 各 +1，各有一条 ERROR 日志。
+- [x] 正常退款经渠道回调（GW-06 REFUND 分支）推进为 SUCCESS，写 `succeeded_at`，outbox 恰好 1 条 `refund.succeeded`（由 REF-02 移来）。
+- [x] FAIL 场景（退款金额末两位 01；测试可直接以渠道 FAILED 结果调用 `ApplyRefundResult`）：退款 FAILED，`fail_code = CHANNEL_FAILED`，`refunded_amount` 恢复，outbox 恰好 1 条 `refund.failed`。
+- [x] 商户余额不足（由 REF-02 移来）：接口返回 `40002`，退款 FAILED（`INSUFFICIENT_BALANCE`），`refunded_amount` 恢复，没有 FROZEN 冻结单，outbox 1 条 `refund.failed`。
+- [x] 渠道受理拒绝（由 REF-02 移来，用假渠道客户端注入 `REJECTED`）：接口返回 `30006`，退款单 FAILED（`CHANNEL_REJECTED`），`refunded_amount` 恢复，outbox 1 条 `refund.failed`。
+- [x] 重复回调只推进一次、只产生 1 条事件。
+- [x] 测试用 SQL 把 `refunded_amount` 改为小于 R：以渠道 FAILED 结果调用 `ApplyRefundResult`（PROCESSING 退款），以及对 INIT 退款执行冻结失败分支，都返回 `10003`；退款单、`channel_txn` 保持原状态，`refunded_amount` 不变，outbox 没有 `refund.failed`，`pay_refund_quota_inconsistent_total` 各 +1，各有一条 ERROR 日志。
 
 #### REF-04 退款卡单恢复
 
@@ -2249,7 +2260,7 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 
 接口：`POST /callback/mockpay` → `PaymentService.HandleChannelNotify`
 
-说明：第 3 条的 REFUND 分支在 REF-03 接通并验收（REF-03 依赖本功能点）；本功能点验收 PAY 分支。
+说明：第 3 条的 REFUND 分支在 REF-03 接通并验收（REF-03 依赖本功能点，2026-11-05 已接通）；本功能点验收 PAY 分支。
 
 规则：
 
@@ -3176,3 +3187,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-03 | v3.0 | CH-04：先按 (REFUND, req_no) 返回已有结果；新单在同一事务里 FOR UPDATE 锁原支付，再合计 status 不是 FAILED 的退款。场景只有 01 FAIL 和 02 DROP_NOTIFY，其余 NORMAL。当日账单只断言 bill_date，CSV 仍是 CH-08。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
 | 2026-11-03 | v3.0 | REF-01：本功能点事务提交后返回刚插入的 INIT 退款单；同一请求内冻结和提交渠道是 REF-02，本次不调用 account、不调用渠道、不写 outbox。条件更新影响 0 行或插入 1062 时，事务外再读 (merchant_id, out_refund_no)，一致则返回已有单，避免并发重复请求被报成 30005。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
 | 2026-11-04 | v3.0 | REF-02：新插入的退款在额度事务提交后冻结并提交渠道。冻结超时或不可用返回 INIT，code 0，不写 channel_txn。account 把处理超时包成 TransError（消息仍是 rpc timeout）时同样返回 INIT。连接拒绝仍是 10003。40001 与 40005 保持 INIT 并返回 10003。40002、40004 和渠道 REJECTED 调用 ApplyRefundResult；该函数的落库属于 REF-03，本切片生产实现返回 10003，不把退款改成 FAILED，不减少 refunded_amount。已有 (merchant_id, out_refund_no) 直接返回已有单，不再次冻结。CreateRefund 的服务端处理超时改为 5 秒，ClosePayment 和其他方法仍是 2 秒。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
+| 2026-11-05 | v3.0 | REF-03：ApplyRefundResult 落库。分支按结果意图选：FAILED 且 fail_code 为 INSUFFICIENT_BALANCE、FREEZE_CONFLICT、REFUND_TIMEOUT 走第 2 条（只 CAS INIT → FAILED，不碰 channel_txn），其余走第 1 条，REF-04 判超时与推进为 PROCESSING 并发时返回 10003，不把已提交渠道的退款判失败。第 1 条 FAILED 的 fail_code 用传入值，未传为 CHANNEL_FAILED。渠道 CAS 另加 txn_type = REFUND，读到 PAY 流水按 30001 处理。第 2 条 CAS 未命中时已 FAILED 视为重复，已 SUCCESS 是并发竞争、WARN 日志、不计冲突并返回该单，仍 INIT 或 PROCESSING 为 10003。来源不接受 CLOSE。第 5 条的 ERROR 日志与计数在事务回滚后各记一次；日志里的 refund_no、pay_no 被兜底扫描部分遮盖，靠指标加 SQL 定位。GW-06 handler 的 REFUND 分支接到 ApplyRefundNotify，提交后调用 callback.after_commit；未知 txn_type 由 10003 改为 10001，网关表现不变。REF-02 删去“本切片生产实现返回 10003”。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |

@@ -47,21 +47,26 @@ type ChannelRefunder interface {
 	Refund(ctx context.Context, req ChannelRefundRequest) (ChannelAcceptResult, error)
 }
 
-// RefundResult 是交给 ApplyRefundResult 的失败结果。本切片不落库。
+// RefundResult 是交给 ApplyRefundResult 的一次退款终态（REF-03）。
+// Amount 为 nil 表示这次结果没有带金额，不参与比较。ChannelTxnNo、ChannelStatusRaw 为空时写成 SQL NULL。
+// FinishedAt 是渠道完成时间，为零表示调用方没有传；SUCCESS 必须传。
 type RefundResult struct {
-	RefundNo string
-	Result   string
-	FailCode string
-	FailMsg  string
-	Source   string
+	RefundNo         string
+	Result           string
+	FailCode         string
+	FailMsg          string
+	Source           string
+	Amount           *money.Amount
+	ChannelTxnNo     string
+	ChannelStatusRaw string
+	FinishedAt       time.Time
 }
 
-// RefundResultApplier 把退款推进到终态。生产实现要等 REF-03；本切片的方法只返回 10003。
+// RefundResultApplier 把退款推进到终态。生产实现是 *Payments.ApplyRefundResult。
 type RefundResultApplier interface {
 	ApplyRefundResult(ctx context.Context, in RefundResult) (RefundOrder, error)
 }
 
-// *Payments.ApplyRefundResult 是占位实现。REF-03 才会改退款单、释放额度和写 outbox。
 var _ RefundResultApplier = (*Payments)(nil)
 
 // UseRefund 装上冻结、渠道退款和结果推进。
@@ -81,18 +86,6 @@ func (p *Payments) UseRefund(freezer RefundFreezer, refunder ChannelRefunder, ap
 	if notifyURL != "" {
 		p.channelNotifyURL = notifyURL
 	}
-}
-
-// ApplyRefundResult 在 REF-03 之前不写库。
-// 调用方据此知道失败分支还没有把退款改成 FAILED，也没有减少 refunded_amount。
-func (p *Payments) ApplyRefundResult(ctx context.Context, _ RefundResult) (RefundOrder, error) {
-	if p == nil || ctx == nil {
-		return RefundOrder{}, errno.ErrInternal
-	}
-	if err := ctx.Err(); err != nil {
-		return RefundOrder{}, err
-	}
-	return RefundOrder{}, errno.ErrInternal
 }
 
 // submitRefund 在额度事务提交之后冻结并提交渠道。

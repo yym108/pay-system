@@ -244,7 +244,8 @@ func TestCreateRefundApplyDelegates(t *testing.T) {
 	}
 }
 
-func TestCreateRefundProductionApplyStaysInit(t *testing.T) {
+// 内存存储没有事务，生产 ApplyRefundResult 返回 10003：退款保持 INIT，额度不释放，不调用渠道。
+func TestCreateRefundApplyWithoutTxStaysInit(t *testing.T) {
 	orders := newRefundOrders()
 	p, _ := refundSubmitPayments(orders)
 	freezer := &fakeFreezer{err: errno.ErrInsufficientBalance}
@@ -312,20 +313,6 @@ func TestCreateRefundWithoutFreezerStaysInit(t *testing.T) {
 	}
 	if len(copiedTxns(orders)) != 0 {
 		t.Fatalf("txns = %+v", copiedTxns(orders))
-	}
-}
-
-func TestApplyRefundResultStub(t *testing.T) {
-	p, _ := refundSubmitPayments(newRefundOrders())
-	_, err := p.ApplyRefundResult(context.Background(), RefundResult{RefundNo: "RF1", Result: payResultFailed})
-	assertErrno(t, err, errno.ErrInternal)
-	_, err = p.ApplyRefundResult(nil, RefundResult{}) //nolint:staticcheck // 覆盖 nil ctx。
-	assertErrno(t, err, errno.ErrInternal)
-	canceled, cancel := context.WithCancel(context.Background())
-	cancel()
-	_, err = p.ApplyRefundResult(canceled, RefundResult{})
-	if err == nil {
-		t.Fatal("canceled ctx returned nil")
 	}
 }
 

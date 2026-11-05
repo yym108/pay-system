@@ -251,3 +251,7 @@
 ## REF-02 退款冻结与渠道提交
 
 未装上冻结客户端时，CreateRefund 仍只返回刚插入的 INIT，已有 REF-01 测试不用改。故障点 `refund.after_freeze` 放在冻结成功之后、PROCESSING 事务之前；杀在这里时退款单还是 INIT，冻结单已经有一张。`channel_txn` 插入 1062 要把错误交回事务，CAS 一起回滚，再按 refund_no 读当前行，这次不调用渠道。冻结超时或不可用同样不插入 `channel_txn`。account 把处理超时写成 TransError、消息仍是 rpc timeout 时，也按不可用返回 INIT；连接拒绝仍是 10003。`CreateRefund` 的服务端处理超时是 5 秒，否则 2 秒截止会在渠道 3 秒总超时之前取消，第 2 秒到第 3 秒的 OK 或 REJECTED 会被当成未知。`ApplyRefundResult` 的落库、释放额度和 outbox 仍是 REF-03；本切片的生产方法返回 10003，不把退款改成 FAILED。
+
+## REF-03 退款结果推进
+
+`ApplyRefundResult` 按这次结果的意图选分支，不按库里读到的退款状态选。如果按状态选，REF-04 判 INIT 超时的同时 REF-02 已把这笔推进为 PROCESSING 并提交了渠道，读到 PROCESSING 后会走渠道分支，把一笔渠道可能已经成功的退款写成 FAILED 并释放额度，造成资损。按意图选时，`REFUND_TIMEOUT` 只 CAS `INIT → FAILED`，未命中就返回 10003，交给回调或查单推进。释放额度影响 0 行时整个事务回滚，日志和计数放在回滚之后，因为 `dbx.WithTx` 遇到死锁会重试闭包，放在闭包里会记两次。退款单号和支付单号都带 19 位连续数字，日志兜底扫描会把它们当卡号部分遮盖，测试按遮盖后的形态断言，人工修复靠指标加 SQL 定位。INIT 分支 CAS 未命中再读到 SUCCESS 是两路处理的并发竞争，不是渠道给了矛盾结果，不能计入回调冲突指标，否则会把正常竞争报成渠道问题。

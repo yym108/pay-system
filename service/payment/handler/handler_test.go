@@ -533,6 +533,9 @@ type scripted struct {
 	appID     string
 	lastIn    biz.CreatePaymentInput
 	queryIn   biz.QueryInput
+	// refundIn 与 notifyKind 只给 REF-03 的 REFUND 回调分支使用。
+	refundIn   biz.RefundResult
+	notifyKind string
 }
 
 func (s *scripted) set(fn func(*scripted)) {
@@ -700,6 +703,27 @@ func (s *scripted) ApplyChannelNotify(ctx context.Context, in biz.PayResult) (st
 	return "APPLIED", nil
 }
 
+func (s *scripted) ApplyRefundNotify(ctx context.Context, in biz.RefundResult) (string, error) {
+	s.mu.Lock()
+	s.calls++
+	s.refundIn = in
+	kind, err := s.notifyKind, s.err
+	s.mu.Unlock()
+	if err != nil {
+		return "", err
+	}
+	if kind == "" {
+		kind = "APPLIED"
+	}
+	return kind, nil
+}
+
+func (s *scripted) lastRefundResult() biz.RefundResult {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.refundIn
+}
+
 func (s *scripted) lastPaymentInput() biz.CreatePaymentInput {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -767,6 +791,50 @@ func TestCreateRefundHandlerCarriesBalanceAndRejected(t *testing.T) {
 	got, err = New(svc).CreateRefund(context.Background(), req)
 	if err != nil || got.GetBizCode() != 0 || got.GetRefundOrder().GetStatus() != "PROCESSING" {
 		t.Fatalf("processing got=%+v err=%v", got, err)
+	}
+}
+
+// REF-03：HandleChannelNotify 的 REFUND 分支把回调字段原样交给 ApplyRefundNotify（source = NOTIFY），结果与错误码照传。
+func TestHandleChannelNotifyRefund(t *testing.T) {
+	svc := &scripted{notifyKind: "DUPLICATE"}
+	h := New(svc)
+	req := &payment.HandleChannelNotifyRequest{
+		Channel: "mockpay", NotifyId: "CN0000000123456789012", TxnType: "REFUND",
+		ReqNo: "RF0000000000000000001", ChannelTxnNo: "MC0000000000000000001",
+		Amount: 3000, Status: "SUCCESS", FinishedAt: "2026-11-02T03:04:05.123+08:00",
+	}
+	got, err := h.HandleChannelNotify(context.Background(), req)
+	if err != nil || got.GetResult_() != "DUPLICATE" {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+	in := svc.lastRefundResult()
+	want := time.Date(2026, 11, 2, 3, 4, 5, 123000000, time.FixedZone("", 8*60*60))
+	if in.RefundNo != req.ReqNo || in.Result != "SUCCESS" || in.Source != "NOTIFY" || in.ChannelTxnNo != req.ChannelTxnNo ||
+		in.Amount == nil || *in.Amount != 3000 || !in.FinishedAt.Equal(want) || in.FailCode != "" {
+		t.Fatalf("refund input = %+v", in)
+	}
+
+	svc.set(func(s *scripted) { s.err = errno.ErrChannelAmountMismatch })
+	_, err = h.HandleChannelNotify(context.Background(), req)
+	assertBizCode(t, "mismatch", err, errno.ErrChannelAmountMismatch.Code)
+	svc.set(func(s *scripted) { s.err = errno.ErrInternal })
+	_, err = h.HandleChannelNotify(context.Background(), req)
+	assertBizCode(t, "internal", err, errno.ErrInternal.Code)
+
+	before := svc.callCount()
+	for name, bad := range map[string]func(*payment.HandleChannelNotifyRequest){
+		"txn_type":    func(r *payment.HandleChannelNotifyRequest) { r.TxnType = "TRANSFER" },
+		"status":      func(r *payment.HandleChannelNotifyRequest) { r.Status = "PROCESSING" },
+		"req_no":      func(r *payment.HandleChannelNotifyRequest) { r.ReqNo = "" },
+		"finished_at": func(r *payment.HandleChannelNotifyRequest) { r.FinishedAt = "2026-11-02 03:04:05" },
+	} {
+		copied := *req
+		bad(&copied)
+		_, err = h.HandleChannelNotify(context.Background(), &copied)
+		assertBizCode(t, name, err, errno.ErrInvalidParam.Code)
+	}
+	if svc.callCount() != before {
+		t.Fatalf("invalid requests reached biz: %d -> %d", before, svc.callCount())
 	}
 }
 

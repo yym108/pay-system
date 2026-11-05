@@ -1,6 +1,7 @@
 // Package handler 是 payment 的 Kitex 适配。
 // 只做协议转换和错误码转换，不改 biz 的幂等与 CAS。
-// 已实现 GetMerchantCredential（PAY-01）、CreatePayment（PAY-02）、Pay（PAY-03）、ClosePayment（PAY-06）、QueryPayment（PAY-08）和 CreateRefund（REF-02）。
+// 已实现 GetMerchantCredential（PAY-01）、CreatePayment（PAY-02）、Pay（PAY-03）、ClosePayment（PAY-06）、QueryPayment（PAY-08）、
+// CreateRefund（REF-02）和 HandleChannelNotify（PAY 分支 GW-06，REFUND 分支 REF-03）。
 // 其余方法属于各自的功能点，实现前调用一律返回 10003，不进 biz。
 package handler
 
@@ -224,31 +225,44 @@ func (h *Handler) QueryTransfer(_ context.Context, _ *payment.QueryTransferReque
 	return nil, notImplemented()
 }
 
-// HandleChannelNotify 接收渠道回调。PAY 交给 ApplyChannelNotify。REFUND 仍是 10003。
+// HandleChannelNotify 接收渠道回调。PAY 交给 ApplyChannelNotify（GW-06），REFUND 交给 ApplyRefundNotify（REF-03）。
+// txn_type 是其他值、status 不是 SUCCESS / FAILED、req_no 为空或 finished_at 解析失败都是 10001，不进 biz。
 func (h *Handler) HandleChannelNotify(ctx context.Context, req *payment.HandleChannelNotifyRequest) (r *payment.HandleChannelNotifyResponse, err error) {
 	defer recoverBiz(ctx, &err)
 	if err = h.ready(); err != nil {
 		return nil, err
 	}
-	if req == nil || req.TxnType != "PAY" {
-		if req == nil {
-			return nil, errno.ToBizStatus(errno.ErrInvalidParam)
-		}
-		return nil, errno.ToBizStatus(errno.ErrInternal)
+	if req == nil || (req.TxnType != "PAY" && req.TxnType != "REFUND") {
+		return nil, errno.ToBizStatus(errno.ErrInvalidParam)
 	}
 	finished, perr := time.Parse("2006-01-02T15:04:05.000Z07:00", req.FinishedAt)
 	if perr != nil || req.ReqNo == "" || (req.Status != "SUCCESS" && req.Status != "FAILED") {
 		return nil, errno.ToBizStatus(errno.ErrInvalidParam)
 	}
 	amt := money.Amount(req.Amount)
-	kind, callErr := h.svc.ApplyChannelNotify(ctx, biz.PayResult{
-		BizNo:        req.ReqNo,
-		Result:       req.Status,
-		Source:       "NOTIFY",
-		ChannelTxnNo: req.ChannelTxnNo,
-		Amount:       &amt,
-		FinishedAt:   finished,
-	})
+	var (
+		kind    string
+		callErr error
+	)
+	if req.TxnType == "REFUND" {
+		kind, callErr = h.svc.ApplyRefundNotify(ctx, biz.RefundResult{
+			RefundNo:     req.ReqNo,
+			Result:       req.Status,
+			Source:       "NOTIFY",
+			ChannelTxnNo: req.ChannelTxnNo,
+			Amount:       &amt,
+			FinishedAt:   finished,
+		})
+	} else {
+		kind, callErr = h.svc.ApplyChannelNotify(ctx, biz.PayResult{
+			BizNo:        req.ReqNo,
+			Result:       req.Status,
+			Source:       "NOTIFY",
+			ChannelTxnNo: req.ChannelTxnNo,
+			Amount:       &amt,
+			FinishedAt:   finished,
+		})
+	}
 	if callErr != nil {
 		return nil, statusErr(ctx, callErr)
 	}

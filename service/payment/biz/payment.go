@@ -177,6 +177,14 @@ func (a *App) ApplyChannelNotify(ctx context.Context, in PayResult) (string, err
 	return a.payments.ApplyChannelNotify(ctx, in)
 }
 
+// ApplyRefundNotify 转给退款回调。
+func (a *App) ApplyRefundNotify(ctx context.Context, in RefundResult) (string, error) {
+	if a == nil || a.payments == nil {
+		return "", errno.ErrInternal
+	}
+	return a.payments.ApplyRefundNotify(ctx, in)
+}
+
 func newPayments(merchants MerchantLookup, ids Numberer, clk clock.Clock, allowHosts string, orders orderStore) *Payments {
 	return &Payments{
 		merchants: merchants,

@@ -33,33 +33,48 @@ import (
 // gw06FinishedAt 是手写回调里的渠道完成时间，格式与网关解析一致。
 const gw06FinishedAt = "2026-11-02T03:04:05.000+08:00"
 
-// gwNotify 把网关回调接到本进程的 ApplyChannelNotify。
+// gwNotify 把网关回调接到本进程的 ApplyChannelNotify 与 ApplyRefundNotify。
 // payment/biz 不能 import payment/handler，否则与 handler 对 biz 的引用成环。
-// PAY 分支的解析和错误转换与 handler.HandleChannelNotify 一致。
+// PAY、REFUND 分支的解析和错误转换与 handler.HandleChannelNotify 一致。
 type gwNotify struct {
 	p *Payments
 }
 
 func (g gwNotify) HandleChannelNotify(ctx context.Context, req *payment.HandleChannelNotifyRequest, _ ...callopt.Option) (*payment.HandleChannelNotifyResponse, error) {
-	if g.p == nil || req == nil || req.TxnType != "PAY" {
-		if req == nil {
-			return nil, errno.ToBizStatus(errno.ErrInvalidParam)
-		}
+	if g.p == nil {
 		return nil, errno.ToBizStatus(errno.ErrInternal)
+	}
+	if req == nil || (req.TxnType != "PAY" && req.TxnType != "REFUND") {
+		return nil, errno.ToBizStatus(errno.ErrInvalidParam)
 	}
 	finished, err := time.Parse("2006-01-02T15:04:05.000Z07:00", req.FinishedAt)
 	if err != nil || req.ReqNo == "" || (req.Status != "SUCCESS" && req.Status != "FAILED") {
 		return nil, errno.ToBizStatus(errno.ErrInvalidParam)
 	}
 	amt := money.Amount(req.Amount)
-	kind, callErr := g.p.ApplyChannelNotify(ctx, PayResult{
-		BizNo:        req.ReqNo,
-		Result:       req.Status,
-		Source:       paySourceNotify,
-		ChannelTxnNo: req.ChannelTxnNo,
-		Amount:       &amt,
-		FinishedAt:   finished,
-	})
+	var (
+		kind    string
+		callErr error
+	)
+	if req.TxnType == "REFUND" {
+		kind, callErr = g.p.ApplyRefundNotify(ctx, RefundResult{
+			RefundNo:     req.ReqNo,
+			Result:       req.Status,
+			Source:       paySourceNotify,
+			ChannelTxnNo: req.ChannelTxnNo,
+			Amount:       &amt,
+			FinishedAt:   finished,
+		})
+	} else {
+		kind, callErr = g.p.ApplyChannelNotify(ctx, PayResult{
+			BizNo:        req.ReqNo,
+			Result:       req.Status,
+			Source:       paySourceNotify,
+			ChannelTxnNo: req.ChannelTxnNo,
+			Amount:       &amt,
+			FinishedAt:   finished,
+		})
+	}
 	if callErr != nil {
 		_, rpcErr := errno.RPCExit(callErr, false)
 		return nil, rpcErr

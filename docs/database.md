@@ -1,6 +1,6 @@
 # Database Schema
 
-> **Last updated:** 2026-11-02
+> **Last updated:** 2026-11-05
 > **Database engine/version:** MySQL 8.4.11（InnoDB，utf8mb4 / utf8mb4_bin）
 > **Schema sources:** `migrations/account/000001_init.up.sql`（`pay_account_0` 与 `pay_account_1` 各执行一次）、`migrations/payment/000001_init.up.sql`、`migrations/payment/000002_merchant_fee_rate.up.sql`、`migrations/recon/000001_init.up.sql`、`migrations/channel_mock/000001_init.up.sql`。设计稿 `docs/schema/schema_draft.sql` 已在 BASE-03 删除。golang-migrate 还会在每个 schema 创建工具表 `schema_migrations`（`version`、`dirty`），不在业务清单里。
 > **Owner:** pay-system 项目作者
@@ -440,7 +440,7 @@
 | `status` | VARCHAR(16) | 否 | — | `idx_status_expire_at` 1、`ck_pay_status` | 状态 | 内部 |
 | `channel` | VARCHAR(16) | 是 | NULL | — | 发起支付时确定 | 内部 |
 | `fee_amount` | BIGINT | 否 | 0 | `ck_pay_fee` | 下单时按当时生效费率固化，0 ≤ fee ≤ amount。核对只报告差异，不改本列 | 财务 |
-| `refunded_amount` | BIGINT | 否 | 0 | `ck_pay_refunded` | 已占用退款额（处理中 + 成功），0–amount。REF-01 用条件更新占用，不改支付单 status。 | 财务 |
+| `refunded_amount` | BIGINT | 否 | 0 | `ck_pay_refunded` | 已占用退款额（处理中 + 成功），0–amount。REF-01 用条件更新占用，不改支付单 status。REF-03 退款 FAILED 时在同一事务用 `refunded_amount = refunded_amount - R WHERE pay_no = ? AND refunded_amount >= R` 释放（`version + 1`，显式写 `updated_at`）；影响 0 行表示数据已不一致，整个事务回滚。 | 财务 |
 | `notify_url` | VARCHAR(512) | 否 | `''` | — | 为空时使用商户默认地址 | 内部 |
 | `expire_at` | DATETIME(3) | 否 | — | `idx_status_expire_at` 2 | 超时关单时间 | 内部 |
 | `paid_at` | DATETIME(3) | 是 | NULL | — | 渠道完成时间，内部对账按此归属账期 | 内部 |
@@ -475,7 +475,7 @@
 ### 4.8 `refund_order` — 退款单
 
 - **Purpose:** 退款状态机（`docs/02-requirements.md` §4.5）。
-- **Lifecycle:** INIT → PROCESSING → SUCCESS / FAILED；INIT → FAILED。REF-01 在同一事务里条件更新 payment_order（status = SUCCESS 且 refunded_amount + 本次金额 <= amount，version + 1，WHERE 不含 version，merchant_id 在 WHERE 中）并 INSERT status = INIT。影响 0 行不插入。插入 1062 回滚额度。不写 fail_code、fail_msg、succeeded_at。REF-02 在额度事务提交后，另开一个事务 CAS `status = INIT` 为 PROCESSING（`version = version + 1`，WHERE 含 refund_no、merchant_id、status，不含 version），并在同一事务插入 `channel_txn`。更新 0 行或插入 1062 时回滚这次 CAS，不调用渠道。无 DDL。
+- **Lifecycle:** INIT → PROCESSING → SUCCESS / FAILED；INIT → FAILED。REF-01 在同一事务里条件更新 payment_order（status = SUCCESS 且 refunded_amount + 本次金额 <= amount，version + 1，WHERE 不含 version，merchant_id 在 WHERE 中）并 INSERT status = INIT。影响 0 行不插入。插入 1062 回滚额度。不写 fail_code、fail_msg、succeeded_at。REF-02 在额度事务提交后，另开一个事务 CAS `status = INIT` 为 PROCESSING（`version = version + 1`，WHERE 含 refund_no、merchant_id、status，不含 version），并在同一事务插入 `channel_txn`。更新 0 行或插入 1062 时回滚这次 CAS，不调用渠道。REF-03 推进终态，`version = version + 1`，显式写 `updated_at`，WHERE 含 `refund_no` 与原状态，不含 version：渠道结果 CAS `PROCESSING → SUCCESS`（写 `succeeded_at` = 渠道完成时间）或 `PROCESSING → FAILED`（写 `fail_code`、`fail_msg`）；冻结失败或超时失败 CAS `INIT → FAILED`。FAILED 在同一事务释放 `payment_order.refunded_amount`。无 DDL。
 - **Sensitivity:** 内部交易数据。
 - **Authoritative source:** `migrations/payment/000001_init.up.sql`。
 - **Write owners/read consumers:** payment 写；recon 只读。
@@ -638,7 +638,7 @@
 #### Operational Notes
 
 - **Backfill/migration considerations:** 无。
-- **Compatibility/deprecation notes:** REF-02 插入 `txn_type = REFUND`、`biz_no = refund_no`、`channel_txn_no` 为 NULL、`status = PROCESSING`、`next_query_at = now + 10s`。渠道返回 OK 且带非空流水号后，按 `biz_no` 回填 `channel_txn_no`，`updated_at` 保持原值。插入 1062 回滚同事务里的 INIT→PROCESSING。无 DDL。
+- **Compatibility/deprecation notes:** REF-02 插入 `txn_type = REFUND`、`biz_no = refund_no`、`channel_txn_no` 为 NULL、`status = PROCESSING`、`next_query_at = now + 10s`。渠道返回 OK 且带非空流水号后，按 `biz_no` 回填 `channel_txn_no`，`updated_at` 保持原值。插入 1062 回滚同事务里的 INIT→PROCESSING。REF-03 推进 REFUND 流水：`WHERE biz_no = refund_no AND txn_type = 'REFUND' AND status = 'PROCESSING'`（回调带金额时另加 `amount = ?`），写 `status`、`channel_txn_no`（COALESCE，已有值不覆盖）、`channel_status_raw`、`channel_finished_at`，`next_query_at` 置 NULL，`version + 1`；回调时 `notify_count + 1`，重复的同一终态只加 `notify_count`。与 `refund_order` 同一事务。无 DDL。
 
 ### 4.11 `outbox` — 本地消息表
 
@@ -975,6 +975,7 @@
 | 2026-11-03 | 无（仅文档） | `mock_txn.orig_req_no`（说明） | CH-04：退款 INSERT 写入 `orig_req_no`，支付仍是 NULL。查询说明补上 `FOR UPDATE` 锁原支付行，以及合计 status 不是 FAILED 的退款。无 DDL | 未执行迁移 |
 | 2026-11-03 | 无（仅文档） | payment_order.refunded_amount、refund_order | REF-01 条件更新加插入，同一事务。无 DDL | 未执行迁移 |
 | 2026-11-04 | 无（仅文档） | refund_order、channel_txn | REF-02：CAS INIT→PROCESSING 与插入 REFUND 的 channel_txn 在同一事务。channel_txn_no 先为空，受理 OK 后再回填。无 DDL | 未执行迁移 |
+| 2026-11-05 | 无（仅文档） | refund_order（Lifecycle）、payment_order.refunded_amount、channel_txn（兼容说明） | REF-03：退款终态 CAS（PROCESSING → SUCCESS / FAILED，INIT → FAILED），FAILED 同事务释放 refunded_amount（条件 refunded_amount >= R），REFUND 流水 CAS 加 txn_type = REFUND。无 DDL | 未执行迁移 |
 
 ## 6. Open Questions
 

@@ -1,6 +1,6 @@
 # pay-system 流程图（状态机、泳道图、控制流图）
 
-> 版本：v2.32　最后修改：2026-11-04　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐。2026-10-21 按 ACC-14 口径改正 CF-33，CF-33 已对齐。2026-10-21 按 ACC-10 口径改正 CF-17，CF-17 已对齐。2026-10-23 按 BASE-13 规则 8 补 CF-01、CF-02、CF-21 的签名配置故障出口。2026-10-23 按 CH-01 口径改正 CF-22。2026-10-26 CF-23 注明防悬挂 CLOSED 记录 amount = 0。2026-10-26 渠道查单单独画 CF-38，CH-02 的控制流改指 CF-38；SL-02 仍留给以后的补偿。2026-10-26 按 CH-03 口径补全 CF-23 的验签、参数、CAS 与再读出口，六个业务结果不变。2026-10-26 按 CH-05 在 CF-24 图下注明「其他」和 DROP_NOTIFY 不回调已实现；SLOW 与 DUP_NOTIFY 的特殊发送仍未实现，这两种场景现在不发普通回调。图本身不改。2026-10-27 按 CH-06 将 CF-24 图下改为 DUP_NOTIFY 已按「并发 5 次，之后每秒 1 次再 5 次，不论响应」实现；SLOW 仍未实现，现在不发。图本身不改。2026-10-27 文档审查修正与需求不一致的文字：SL-01 延迟范围、CF-05 未知结果分支、SL-14 C13、CF-34 与 CF-35 的 10001 / 10006、§5 R15 与 R16 状态、SL-09 与 CF-26 的定时触发写法、对 03 的版本引用；不改规则。2026-10-27 文档审查第 2 阶段按用户确认的规则修图：outbox 投递改为领取写租约、事务外发送、按租约值 CAS 回写；手续费为 0 省略分录；merchant_notify 与 recon_diff 状态 CAS；批量记账非 ACTIVE 退化逐条，Post 返回 40005 进 DLQ；退款释放额度影响 0 行回滚并返回 10003；对账批次 INIT / DOWNLOADED 超时接管与 BILL_NOT_READY 当天最多重试 6 次；SLOW 只推迟首次回调；覆盖矩阵同步 BASE-15、GW-09、QA-05。2026-10-27 文档审查第 3 阶段按需求 7d08a2c 修对账与批量记账的图：对账批次拆为 CF-26、CF-39、CF-40，差错处理拆为 CF-29、CF-41；`retry_count` 持久化；重跑与接管只删 `handle_action` 为空的 PENDING 差错；差错按 `uk_batch_type_biz_no_diff_type` 同键跳过；跨批次重试窗口与严重不一致；报告加“等待人工处理”；批量记账 F = 0 省略手续费分录。2026-10-27 BASE-15 已提供 `pkg/fault`，图中的故障点标注保持原句。2026-10-28 按 PAY-02 口径改正 CF-04。2026-10-28 按 PAY-03 改正 CF-05：故障点在事务提交之后，同步拒绝的 source 为 SYNC，Pay 服务端处理超时 5 秒。2026-10-28 按 MQ-01 在 CF-18 的 Add 节点写明 occurred_at、next_retry_at 取 Add 时的注入时钟，无有效 span 时 trace_context 为 {}；投递器半边不改。当前环境没有 mmdc，未渲染 SVG。2026-11-01 按 PAY-04 改正 CF-05、CF-06：同步拒绝已把订单推进为 FAILED，Pay 返回 30006 和该订单；ApplyPayResult 不调用 callback.after_commit，该故障点仍由 GW-06 在 CF-02 调用。当前环境没有 mmdc，未渲染 SVG。2026-11-01 按 PAY-06 核对 CF-08：图已对齐，未渲染 SVG。2026-11-01 PAY-06：CF-08 在没有渠道流水号时先查单。图已改该节点，未渲染 SVG。2026-11-01 按 PAY-08 在 CF-01 图下注明 payment 的 QueryPayment 直接读 payment_order，二选一，不缓存，不写。图的节点不改。当前环境没有 mmdc，未渲染 SVG。2026-11-01 按 OPS-01 核对 CF-31：图与实现一致。Redis、Kafka 只留注册口，未注册时不因此让 /readyz 失败；未注册生产者时刷新为空。当前环境没有 mmdc，未渲染 SVG。2026-11-01 按 OPS-05：pprof 只在管理端口，/metrics 仍不提供。CF-31 节点不改。当前环境没有 mmdc，未渲染 SVG。2026-11-02 按 CH-06 M4：SLOW 首次回调与 ACCEPT_TIMEOUT 的 5 秒阻塞已实现；受理上下文 8 秒。图的节点不改。当前环境没有 mmdc，未渲染 SVG，不新增 SVG。2026-11-04 按 REF-02：新插入的退款在额度事务提交后冻结并提交渠道；冻结超时保持 INIT 且不写 channel_txn；置 FAILED 仍是 REF-03。图的节点不改，未渲染 SVG
+> 版本：v2.33　最后修改：2026-11-05　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐。2026-10-21 按 ACC-14 口径改正 CF-33，CF-33 已对齐。2026-10-21 按 ACC-10 口径改正 CF-17，CF-17 已对齐。2026-10-23 按 BASE-13 规则 8 补 CF-01、CF-02、CF-21 的签名配置故障出口。2026-10-23 按 CH-01 口径改正 CF-22。2026-10-26 CF-23 注明防悬挂 CLOSED 记录 amount = 0。2026-10-26 渠道查单单独画 CF-38，CH-02 的控制流改指 CF-38；SL-02 仍留给以后的补偿。2026-10-26 按 CH-03 口径补全 CF-23 的验签、参数、CAS 与再读出口，六个业务结果不变。2026-10-26 按 CH-05 在 CF-24 图下注明「其他」和 DROP_NOTIFY 不回调已实现；SLOW 与 DUP_NOTIFY 的特殊发送仍未实现，这两种场景现在不发普通回调。图本身不改。2026-10-27 按 CH-06 将 CF-24 图下改为 DUP_NOTIFY 已按「并发 5 次，之后每秒 1 次再 5 次，不论响应」实现；SLOW 仍未实现，现在不发。图本身不改。2026-10-27 文档审查修正与需求不一致的文字：SL-01 延迟范围、CF-05 未知结果分支、SL-14 C13、CF-34 与 CF-35 的 10001 / 10006、§5 R15 与 R16 状态、SL-09 与 CF-26 的定时触发写法、对 03 的版本引用；不改规则。2026-10-27 文档审查第 2 阶段按用户确认的规则修图：outbox 投递改为领取写租约、事务外发送、按租约值 CAS 回写；手续费为 0 省略分录；merchant_notify 与 recon_diff 状态 CAS；批量记账非 ACTIVE 退化逐条，Post 返回 40005 进 DLQ；退款释放额度影响 0 行回滚并返回 10003；对账批次 INIT / DOWNLOADED 超时接管与 BILL_NOT_READY 当天最多重试 6 次；SLOW 只推迟首次回调；覆盖矩阵同步 BASE-15、GW-09、QA-05。2026-10-27 文档审查第 3 阶段按需求 7d08a2c 修对账与批量记账的图：对账批次拆为 CF-26、CF-39、CF-40，差错处理拆为 CF-29、CF-41；`retry_count` 持久化；重跑与接管只删 `handle_action` 为空的 PENDING 差错；差错按 `uk_batch_type_biz_no_diff_type` 同键跳过；跨批次重试窗口与严重不一致；报告加“等待人工处理”；批量记账 F = 0 省略手续费分录。2026-10-27 BASE-15 已提供 `pkg/fault`，图中的故障点标注保持原句。2026-10-28 按 PAY-02 口径改正 CF-04。2026-10-28 按 PAY-03 改正 CF-05：故障点在事务提交之后，同步拒绝的 source 为 SYNC，Pay 服务端处理超时 5 秒。2026-10-28 按 MQ-01 在 CF-18 的 Add 节点写明 occurred_at、next_retry_at 取 Add 时的注入时钟，无有效 span 时 trace_context 为 {}；投递器半边不改。当前环境没有 mmdc，未渲染 SVG。2026-11-01 按 PAY-04 改正 CF-05、CF-06：同步拒绝已把订单推进为 FAILED，Pay 返回 30006 和该订单；ApplyPayResult 不调用 callback.after_commit，该故障点仍由 GW-06 在 CF-02 调用。当前环境没有 mmdc，未渲染 SVG。2026-11-01 按 PAY-06 核对 CF-08：图已对齐，未渲染 SVG。2026-11-01 PAY-06：CF-08 在没有渠道流水号时先查单。图已改该节点，未渲染 SVG。2026-11-01 按 PAY-08 在 CF-01 图下注明 payment 的 QueryPayment 直接读 payment_order，二选一，不缓存，不写。图的节点不改。当前环境没有 mmdc，未渲染 SVG。2026-11-01 按 OPS-01 核对 CF-31：图与实现一致。Redis、Kafka 只留注册口，未注册时不因此让 /readyz 失败；未注册生产者时刷新为空。当前环境没有 mmdc，未渲染 SVG。2026-11-01 按 OPS-05：pprof 只在管理端口，/metrics 仍不提供。CF-31 节点不改。当前环境没有 mmdc，未渲染 SVG。2026-11-02 按 CH-06 M4：SLOW 首次回调与 ACCEPT_TIMEOUT 的 5 秒阻塞已实现；受理上下文 8 秒。图的节点不改。当前环境没有 mmdc，未渲染 SVG，不新增 SVG。2026-11-04 按 REF-02：新插入的退款在额度事务提交后冻结并提交渠道；冻结超时保持 INIT 且不写 channel_txn；置 FAILED 仍是 REF-03。图的节点不改，未渲染 SVG。2026-11-05 按 REF-03 改正 CF-11：分支按结果意图选，补齐各 CAS 未命中的出口；CF-02 补 REFUND 分支的故障点与未知 txn_type 的 10001；CF-10 图下改为置 FAILED 已接通。当前环境没有 mmdc，未渲染 SVG
 > 依据：`docs/02-requirements.md` v3.0、`docs/03-conventions.md` v2.23、`docs/01-tech-decisions.md` D17–D21；图与需求冲突处以需求文档为准
 > 用途：以图的形式确认全部功能性设计。图是需求的视图，规则冲突时以需求文档为准；需求变更后同步修改对应的图。
 
@@ -1100,17 +1100,21 @@ flowchart TD
     SG -->|"是"| NN["不做 nonce 检查<br/>Redis 故障不影响回调"]
     NN --> TT{"txn_type"}
     TT -->|"PAY"| AP["ApplyPayResult(source = NOTIFY)（CF-06）"]
-    TT -->|"REFUND"| AR["ApplyRefundResult(source = NOTIFY)（CF-11）"]
+    TT -->|"REFUND"| AR["ApplyRefundNotify → ApplyRefundResult(source = NOTIFY)（CF-11）"]
+    TT -->|"其他"| E10001["10001，不进 biz，HTTP 500"]:::err
     AP --> RC{"payment 返回"}
     AR --> RC
     RC -->|"成功 / 幂等 / 冲突（已告警）"| OK200(["200 SUCCESS"]):::ok
     RC -->|"30001 未知单号 / 50002 金额不一致"| R200(["200 SUCCESS<br/>ERROR 日志，pay_callback_rejected_total+1<br/>差异交给对账"]):::ok
     RC -->|"10003 / 10004"| E500["HTTP 500，渠道按 5s、15s、30s、60s 重试"]:::err
     AP -.- F["故障点 callback.after_commit（C3）"]:::fault
+    AR -.- F
     classDef ok fill:#e3f6e8,stroke:#2e7d32
     classDef err fill:#fde4e4,stroke:#c62828
     classDef fault fill:#fff4d6,stroke:#b8860b
 ```
+
+REF-03 已接通 REFUND 分支：`ApplyRefundNotify` 在 `ApplyRefundResult` 提交后调用 `callback.after_commit`，返回 APPLIED / DUPLICATE / CONFLICT 的判定与 PAY 分支相同。`txn_type` 既不是 PAY 也不是 REFUND 时为 `10001`。当前环境没有 mmdc，未渲染 SVG。
 
 #### CF-03 管理接口
 
@@ -1373,7 +1377,7 @@ flowchart TD
     classDef fault fill:#fff4d6,stroke:#b8860b
 ```
 
-REF-02 在额度事务提交后冻结并提交渠道。置 FAILED 的落库仍是 REF-03。
+REF-02 在额度事务提交后冻结并提交渠道。置 FAILED 的落库见 CF-11（REF-03 已接通）；释放额度时数据不一致，`ApplyRefundResult` 返回 `10003`，CreateRefund 原样返回 `10003`。
 
 #### CF-11 退款结果推进
 
@@ -1381,23 +1385,26 @@ REF-02 在额度事务提交后冻结并提交渠道。置 FAILED 的落库仍�
 
 ```mermaid
 flowchart TD
-    S(["ApplyRefundResult(refund_no, result, source)"]) --> K{"退款单当前状态"}
-    K -->|"PROCESSING（渠道结果）"| A1
+    S(["ApplyRefundResult(refund_no, result, source)"]) --> V{"入参合法"}
+    V -->|"否"| E10001["10001，不写库"]:::err
+    V -->|"是"| K{"结果意图（不按库里状态选）"}
+    K -->|"SUCCESS，或 FAILED 且 fail_code 为空 / CHANNEL_FAILED / CHANNEL_REJECTED（渠道结果）"| A1
     subgraph TXA["事务：渠道结果"]
-        A1["CAS channel_txn PROCESSING→result（规则同 CF-06）"]
+        A1["CAS channel_txn PROCESSING→result<br/>WHERE biz_no = refund_no AND txn_type = REFUND（规则同 CF-06）"]
         A1 -->|"影响 1 行"| A2["CAS refund_order PROCESSING→result"]
         A2 -->|"SUCCESS"| A3["写 succeeded_at（渠道完成时间）<br/>outbox.Add(refund.succeeded)"]
-        A2 -->|"FAILED"| A4["fail_code = CHANNEL_FAILED / CHANNEL_REJECTED<br/>UPDATE payment_order SET refunded_amount = refunded_amount − R<br/>WHERE pay_no = ? AND refunded_amount ≥ R"]
+        A2 -->|"FAILED"| A4["fail_code = 传入值，未传为 CHANNEL_FAILED<br/>UPDATE payment_order SET refunded_amount = refunded_amount − R<br/>WHERE pay_no = ? AND refunded_amount ≥ R"]
         A4 -->|"影响 1 行"| A5["outbox.Add(refund.failed)"]
     end
-    A1 -->|"影响 0 行"| DUP["重复、冲突处理同 CF-06"]
-    K -->|"INIT（冻结失败或超时）"| B1
+    A1 -->|"影响 0 行"| DUP["事务外再读 channel_txn，同 CF-06：<br/>没有行或是 PAY 流水 30001；金额不符 50002<br/>同一终态返回当前退款单（NOTIFY 时 notify_count+1）<br/>另一终态计冲突并返回当前退款单；仍 PROCESSING 10003"]
+    A2 -->|"影响 0 行"| E2["整个事务回滚，ERROR 日志，10003"]:::err
+    K -->|"FAILED 且 fail_code 为 INSUFFICIENT_BALANCE / FREEZE_CONFLICT / REFUND_TIMEOUT（INIT 失败）"| B1
     subgraph TXB["事务：INIT 失败"]
         B1["CAS refund_order INIT→FAILED，写 fail_code"] --> B2["释放 refunded_amount −R<br/>WHERE pay_no = ? AND refunded_amount ≥ R"]
         B2 -->|"影响 1 行"| B3["outbox.Add(refund.failed)"]
     end
-    B1 -->|"影响 0 行"| DUP
-    A4 -->|"影响 0 行（refunded_amount < R）"| QI["整个事务回滚：channel_txn、refund_order 的 CAS 与 outbox 都不提交<br/>返回 10003，ERROR 日志，pay_refund_quota_inconsistent_total+1<br/>退款保持原状态，由回调重试、查单或 REF-04 再次调用"]:::err
+    B1 -->|"影响 0 行"| BR["事务外再读 refund_order：不存在 30001<br/>FAILED 返回该单（重复）<br/>SUCCESS 是并发竞争：WARN，不计冲突，返回该单<br/>INIT / PROCESSING：WARN，返回 10003，不碰 channel_txn"]
+    A4 -->|"影响 0 行（refunded_amount < R）"| QI["整个事务回滚：channel_txn、refund_order 的 CAS 与 outbox 都不提交<br/>返回 10003；回滚后 ERROR 日志与 pay_refund_quota_inconsistent_total+1 各一次<br/>退款保持原状态，由回调重试、查单或 REF-04 再次调用"]:::err
     B2 -->|"影响 0 行（refunded_amount < R）"| QI
     A3 --> EV1["account 消费 refund.succeeded<br/>ConfirmFreeze(REFUND, refund_no, merchant_id, channel)<br/>贷本分片渠道应收子账户 k（CF-16）"]:::ok
     A5 --> EV2["account 消费 refund.failed<br/>ReleaseFreeze(REFUND, refund_no, merchant_id, R)<br/>冻结不存在时空回滚（CF-15）"]:::ok
@@ -1406,6 +1413,8 @@ flowchart TD
     classDef err fill:#fde4e4,stroke:#c62828
     classDef fault fill:#fff4d6,stroke:#b8860b
 ```
+
+REF-03 按结果意图选分支：REF-04 判 INIT 超时与 REF-02 推进为 PROCESSING 并发时，INIT 分支 CAS 未命中并返回 `10003`，不会把已提交渠道的退款判失败。本函数不调用 `fault.Point`。来源不接受 CLOSE。当前环境没有 mmdc，未渲染 SVG。
 
 #### CF-12 退款卡单恢复
 
@@ -2544,3 +2553,4 @@ R1–R14 来自 v1.x 绘图，已落入需求文档 v2.2；R15、R16 来自 v2.0
 | 2026-11-03 | v2.30 | CH-04：CF-22 再读改为按本次 txn_type 与 req_no。图下注明退款在同一事务里锁原支付行再合计非 FAILED 退款。不重画整张图，不跑 mmdc，不新增 SVG。不改资金流向 |
 | 2026-11-03 | v2.31 | REF-01：CF-10 图下注明本切片只返回 INIT，不调用 Freeze。图的节点不改。未跑 mmdc，不新增 SVG。 |
 | 2026-11-04 | v2.32 | REF-02：CF-10 图下改为额度事务提交后冻结并提交渠道，置 FAILED 仍是 REF-03。CreateRefund 服务端处理超时为 5 秒。图的节点不改。未跑 mmdc，不新增 SVG。 |
+| 2026-11-05 | v2.33 | REF-03：CF-11 的分支由“退款单当前状态”改为“结果意图”（INIT 失败原因走 INIT 分支，其余走渠道分支），渠道 CAS 加 txn_type = REFUND，补退款单 CAS 未命中、INIT CAS 未命中的再读出口（再读到 SUCCESS 是并发竞争，不计冲突）与入参 10001；额度不一致的日志与计数在回滚后各记一次。CF-02 的 REFUND 分支改为 ApplyRefundNotify，也调用 callback.after_commit，未知 txn_type 为 10001。CF-10 图下改为置 FAILED 已接通。未跑 mmdc，不新增 SVG。不改资金流向 |

@@ -16,6 +16,7 @@ type Service interface {
 	QueryPayment(ctx context.Context, in *biz.QueryInput) (biz.PaymentOrder, error)
 	CreateRefund(ctx context.Context, in *biz.CreateRefundInput) (biz.RefundOrder, error)
 	ApplyChannelNotify(ctx context.Context, in biz.PayResult) (string, error)
+	ApplyRefundNotify(ctx context.Context, in biz.RefundResult) (string, error)
 }
 
 var _ Service = (*biz.App)(nil)

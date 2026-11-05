@@ -12,6 +12,7 @@ import (
 
 	"github.com/yym108/pay-system/internal/testkit"
 	"github.com/yym108/pay-system/pkg/clock"
+	"github.com/yym108/pay-system/pkg/errno"
 	"github.com/yym108/pay-system/pkg/idgen"
 	"github.com/yym108/pay-system/pkg/money"
 )
@@ -113,5 +114,71 @@ func closeAccountSchema(t *testing.T, schema *testkit.Schema) {
 	defer cancel()
 	if err := schema.Close(ctx); err != nil {
 		t.Errorf("close schema: %s", testkit.Redact(err))
+	}
+}
+
+// REF-03 验收 3：商户余额不足（真实 account 冻结），接口返回 40002，退款 FAILED（INSUFFICIENT_BALANCE），
+// refunded_amount 恢复，没有 FROZEN 冻结单，outbox 1 条 refund.failed。
+func TestCreateRefundInsufficientBalanceMySQL(t *testing.T) {
+	env := openPay(t)
+	const merchantID = "M100002"
+	now := feeAt(10, 0, 0, 0)
+	p := openPayments(t, env, merchantID, 60, 60, now, "merchant-demo")
+	insertRefundPay(t, env, merchantID, ref03PayNo, "OT_REF03_1", payStatusSuccess, now)
+	my, err := testkit.Ready(env.ctx)
+	if err != nil {
+		t.Fatal(testkit.Redact(err))
+	}
+	s0, err := my.OpenSchema(env.ctx, "account")
+	if err != nil {
+		t.Fatal(testkit.Redact(err))
+	}
+	t.Cleanup(func() { closeAccountSchema(t, s0) })
+	s1, err := my.OpenSchema(env.ctx, "account")
+	if err != nil {
+		t.Fatal(testkit.Redact(err))
+	}
+	t.Cleanup(func() { closeAccountSchema(t, s1) })
+	clk := &clock.Fake{}
+	clk.Set(now)
+	ids, err := idgen.New(9, clk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	accounts := accountbiz.New(accountdal.New(s0.DB, s1.DB), ids, 8)
+	if _, err = accounts.OpenAccount(env.ctx, "MERCHANT", merchantID, "MERCHANT_SETTLE", 0, 0); err != nil {
+		t.Fatal(err)
+	}
+	channel := &fakeRefunder{res: ChannelAcceptResult{Outcome: acceptOK, ChannelTxnNo: "CH_REF03_1"}}
+	p.UseRefund(accountBizFreezer{svc: accounts}, channel, nil, testChannelNotifyURL)
+	got, err := p.CreateRefund(env.ctx, &CreateRefundInput{MerchantID: merchantID, PayNo: ref03PayNo, OutRefundNo: "R03_NOBAL", Amount: 1000})
+	assertErrno(t, err, errno.ErrInsufficientBalance)
+	if got.Status != refundStatusFailed || got.FailCode != failCodeInsufficientBalance || got.RefundNo == "" {
+		t.Fatalf("got = %+v", got)
+	}
+	if row := loadRefundRow(t, env, got.RefundNo); row.status != refundStatusFailed || row.failCode.String != failCodeInsufficientBalance {
+		t.Fatalf("refund row = %+v", row)
+	}
+	if payRefundedAmount(t, env, ref03PayNo) != 0 {
+		t.Fatalf("refunded = %d", payRefundedAmount(t, env, ref03PayNo))
+	}
+	var frozen int
+	for _, db := range []*testkit.Schema{s0, s1} {
+		var n int
+		if err = db.DB.QueryRowContext(env.ctx, `SELECT COUNT(*) FROM account_freeze WHERE status = 'FROZEN'`).Scan(&n); err != nil {
+			t.Fatal(testkit.Redact(err))
+		}
+		frozen += n
+	}
+	if frozen != 0 || channel.callCount() != 0 || countBiz(t, env, "channel_txn", "biz_no", got.RefundNo) != 0 {
+		t.Fatalf("frozen=%d channel=%d", frozen, channel.callCount())
+	}
+	rows := loadOutbox(t, env, got.RefundNo)
+	if len(rows) != 1 || rows[0].eventType != "refund.failed" || decodeRefundEvent(t, rows[0].payload).Data.FailCode != failCodeInsufficientBalance {
+		t.Fatalf("outbox = %+v", rows)
+	}
+	check, err := accounts.CheckBalance(env.ctx, merchantID, false)
+	if err != nil || !check.Passed {
+		t.Fatalf("CheckBalance = %+v err=%v", check, err)
 	}
 }
