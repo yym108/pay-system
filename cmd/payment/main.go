@@ -20,6 +20,7 @@ import (
 	"github.com/yym108/pay-system/pkg/server"
 	"github.com/yym108/pay-system/service/payment/biz"
 	"github.com/yym108/pay-system/service/payment/handler"
+	"github.com/yym108/pay-system/service/payment/job"
 )
 
 type closeFunc func() error
@@ -103,6 +104,8 @@ func serve(cfg config.Payment, logOut io.Writer) error {
 		return err
 	}
 	payments.UseRefund(biz.NewAccountRefundFreezer(accountCli), channelClient, payments, cfg.ChannelNotifyURL)
+	payments.UseQuery(channelClient, biz.QueryPolicy{Backoff: cfg.QueryBackoff})
+	queryLoop := job.NewQueryCompensate(payments.RunQueryBatch)
 	exit := make(chan error, 1)
 	admin := server.New(server.Config{
 		Addr:         server.AddrPayment,
@@ -125,5 +128,6 @@ func serve(cfg config.Payment, logOut io.Writer) error {
 			return nil
 		},
 	))
+	admin.RegisterGroup(queryLoop)
 	return admin.Run(context.Background())
 }

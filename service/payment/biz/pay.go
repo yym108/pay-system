@@ -43,6 +43,8 @@ const (
 	PayChannelDialTimeout = 500 * time.Millisecond
 	// CloseChannelTimeout 是关单和随后查单各自的总超时上限。父 ctx 更短时，先到期的生效。
 	CloseChannelTimeout = 1500 * time.Millisecond
+	// QueryChannelTimeout 是查单补偿单次查单的总超时（PAY-05 第 2 条）。
+	QueryChannelTimeout = 3 * time.Second
 )
 
 // PayInput 是发起支付的入参。Channel 必须恰好是 mockpay。

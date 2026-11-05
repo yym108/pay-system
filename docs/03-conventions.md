@@ -1,6 +1,6 @@
 # pay-system 全局约定与编号规范
 
-> 版本：v2.25　最后修改：2026-11-01
+> 版本：v2.28　最后修改：2026-11-06
 > 适用：全部代码、文档、配置。需求见 `docs/02-requirements.md`，接口见 `docs/05-api.md`，表结构见 `docs/database.md`。
 
 本文集中登记会被多个功能点共用的约定：编号体系、业务单号、金额、时间、错误码、幂等与事务规则、命名规范、配置项。新增或修改这些内容时，先改本文并在 §9 记录，再改代码。
@@ -321,7 +321,7 @@ docker-compose 给将来会跑业务进程的 6 个占位服务写死互不相�
 - 根上的 `trace_id`、`span_id`、`request_id` 按原值写入，不参与兜底扫描。span id 是 16 位十六进制，连续数字若按卡号改写，链路就对不上。调用方再传同名的 `service`、`trace_id`、`span_id`、`request_id` 时丢掉，避免盖住这四个字段。
 - `msg` 用简短英文动宾短语，如 `payment status changed`。消息文本同样做兜底扫描。
 
-业务字段名 snake_case，使用固定名称：`pay_no`、`refund_no`、`transfer_no`、`merchant_id`、`app_id`、`shard`、`biz_type`、`biz_no`、`from_status`、`to_status`、`source`（NOTIFY / QUERY / CLOSE / JOB / ADMIN / SYNC）、`err_code`、`elapsed_ms`。`SYNC` 只表示渠道受理的同步拒绝（PAY-03 写入，PAY-04 使用），不是新的错误码。
+业务字段名 snake_case，使用固定名称：`pay_no`、`refund_no`、`transfer_no`、`merchant_id`、`app_id`、`shard`、`biz_type`、`biz_no`、`from_status`、`to_status`、`source`（NOTIFY / QUERY / CLOSE / JOB / ADMIN / SYNC）、`err_code`、`elapsed_ms`、`job`。`job` 是进程内定时任务的名字，snake_case，如 `query_compensate`（PAY-05）；它不是 `source = JOB`，后者是写入结果的来源。`SYNC` 只表示渠道受理的同步拒绝（PAY-03 写入，PAY-04 使用），不是新的错误码。
 
 脱敏按字段名，不区分大小写，名字包含下列片段即匹配。同时命中多条时，整段替换优先；否则按下表从上到下先命中的一条。长度按 Unicode 码点计。
 
@@ -378,7 +378,7 @@ Hertz `hlog` 和 Kitex `klog` 经适配器写入同一个 slog handler。`SetDef
 | `ADMIN_TOKEN` | gateway | 无（必填，secret，≥ 32 字符） | 管理接口 Token |
 | `NOTIFY_URL_ALLOW_HOSTS` | payment | `merchant-demo` | 商户通知地址主机白名单，逗号分隔。解析时 trim 并忽略空段。名单解析后为空时，任何显式 URL 都拒绝。主机与名单大小写不敏感精确比较，不解析 DNS |
 | `RATE_LIMIT_DEFAULT`、`RATE_LIMIT_OVERRIDES` | gateway | `100:200`、空 | 进程内商户限流 `速率:突发`；覆盖格式 `app_id:速率:突发,...`（GW-05） |
-| `QUERY_BACKOFF` | payment | `10s,10s,30s,1m,2m,5m,10m,30m` | 查单退避，之后每小时（PAY-05） |
+| `QUERY_BACKOFF` | payment | `10s,10s,30s,1m,2m,5m,10m,30m` | 查单退避，之后每小时（PAY-05）。第 1 项对应插入流水时的间隔，该间隔在 PAY-03、REF-02 的代码里固定为 10 秒，不读本项；第 n 次查单后用第 n + 1 项。每项不小于 1 秒，否则启动失败：查单任务启动时若抢占写入的 `next_query_at` 已到期就跳过（PAY-05），间隔必须远大于抢占事务和启动任务的耗时，否则后续查单会全部被跳过 |
 | `NOTIFY_RETRY_INTERVAL`、`NOTIFY_MAX_ATTEMPTS` | payment | `30s`、`5` | 商户通知固定间隔重试（NTF-02） |
 | `RECON_RUN_AT` | recon | `10:00` | 每日对账时间 |
 | `MOCK_DELAY_MIN_MS`、`MOCK_DELAY_MAX_MS` | channel-mock | `200`、`2000` | 自动完成延迟范围 |
@@ -444,3 +444,6 @@ BASE-09 只拼 DSN 文本，不连接数据库，也不调用驱动的 `ParseDSN
 | v2.23 | 2026-11-01 | PAY-04：`pay_callback_conflicts_total` 的名字和 channel 标签已在需求 OPS-03 登记，不新登记错误码。计数放在进程内 `sync.Map`，键是 channel，值是 `*atomic.Uint64`，与账户核对的进程内计数同一写法。不起 HTTP `/metrics`，不引入 Prometheus 客户端 |
 | v2.24 | 2026-11-01 | TL-01：§8 登记 paycli 的 `PAYCLI_GATEWAY_URL`、`PAYCLI_APP_ID`、`PAYCLI_APP_SECRET`、`PAYCLI_ADMIN_TOKEN`。后两项为 secret。加载时允许为空，参数覆盖环境变量。不新增错误码 |
 | v2.25 | 2026-11-01 | GW-03：§7.5 登记日志字段 `app_id`。`app_id` 不是密钥，脱敏片段仍是 `secret` / `password` / `token` / `signature` / `master_key`。不新增错误码 |
+| v2.26 | 2026-11-05 | PAY-05：§8 `QUERY_BACKOFF` 写明第 1 项对应插入流水时固定的 10 秒、代码不读该项，第 n 次查单后用第 n + 1 项。不新增配置项、错误码或前缀 |
+| v2.27 | 2026-11-06 | PAY-05 审查修复：§7.5 登记日志字段 `job`（进程内定时任务名，如 `query_compensate`），与 `source = JOB` 区分。不新增错误码、前缀或配置项 |
+| v2.28 | 2026-11-06 | PAY-05 审查修复：§8 `QUERY_BACKOFF` 每项下限 1 秒，小于 1 秒时 `LoadPayment` 返回配置错误（错误文本含变量名），进程不启动；理由是查单任务的跳过检查要求间隔远大于抢占和启动任务的耗时。默认值与 `deploy/.env.example` 都不小于 10 秒，不受影响。不新增配置项、错误码或前缀 |

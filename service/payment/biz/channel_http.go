@@ -264,10 +264,13 @@ const (
 // channelQueryResult 把「没有行」「已有行」「调用失败」分开。
 // OK 只在已有行且 status=SUCCESS、带金额和 finished_at 时为 true。
 // PROCESSING 没有完成时间，Kind 仍是 queryFound，不能当成调用失败。
+// Status 只在 queryFound 时有值。HasAmount 表示响应带了 amount；FinishedAt 为零表示没有或解析不了。
 type channelQueryResult struct {
 	Kind         queryKind
 	OK           bool
+	Status       string
 	Amount       money.Amount
+	HasAmount    bool
 	FinishedAt   time.Time
 	ChannelTxnNo string
 }
@@ -335,7 +338,22 @@ func (c *ChannelClient) ClosePay(ctx context.Context, reqNo string) (channelClos
 // 只有 SUCCESS 同时带金额和可解析的 finished_at 时 OK 为 true。
 // 调用失败的 Kind 是零值 queryCallFailed，error 为 nil。发出之前的配置错误仍返回 error。
 func (c *ChannelClient) QueryPay(ctx context.Context, reqNo string) (channelQueryResult, error) {
-	body, failed, err := c.exchange(ctx, c.queryURL, CloseChannelTimeout, channelQueryBody{TxnType: txnTypePay, ReqNo: reqNo})
+	return c.query(ctx, CloseChannelTimeout, txnTypePay, reqNo)
+}
+
+// QueryTxn 是查单补偿（PAY-05）用的查单，txn_type 为 PAY 或 REFUND，总超时 QueryChannelTimeout。
+// 分类与 QueryPay 相同。
+func (c *ChannelClient) QueryTxn(ctx context.Context, txnType, reqNo string) (channelQueryResult, error) {
+	return c.query(ctx, QueryChannelTimeout, txnType, reqNo)
+}
+
+var _ channelQuerier = (*ChannelClient)(nil)
+
+func (c *ChannelClient) query(ctx context.Context, limit time.Duration, txnType, reqNo string) (channelQueryResult, error) {
+	if c == nil {
+		return channelQueryResult{Kind: queryCallFailed}, errChannelConfig
+	}
+	body, failed, err := c.exchange(ctx, c.queryURL, limit, channelQueryBody{TxnType: txnType, ReqNo: reqNo})
 	if err != nil || failed {
 		return channelQueryResult{Kind: queryCallFailed}, err
 	}
@@ -349,17 +367,17 @@ func (c *ChannelClient) QueryPay(ctx context.Context, reqNo string) (channelQuer
 	if out.Result != acceptResultOK || !knownQueryStatus(out.Status) {
 		return channelQueryResult{Kind: queryCallFailed}, nil
 	}
-	res := channelQueryResult{Kind: queryFound, ChannelTxnNo: out.ChannelTxnNo}
-	if out.Status != payStatusSuccess || out.Amount == nil || out.FinishedAt == "" {
-		return res, nil
+	res := channelQueryResult{Kind: queryFound, Status: out.Status, ChannelTxnNo: out.ChannelTxnNo}
+	if out.Amount != nil {
+		res.HasAmount = true
+		res.Amount = money.Amount(*out.Amount)
 	}
-	finished, err := time.Parse(channelTimeLayout, out.FinishedAt)
-	if err != nil || finished.IsZero() {
-		return res, nil
+	if out.FinishedAt != "" {
+		if finished, perr := time.Parse(channelTimeLayout, out.FinishedAt); perr == nil && !finished.IsZero() {
+			res.FinishedAt = finished
+		}
 	}
-	res.OK = true
-	res.Amount = money.Amount(*out.Amount)
-	res.FinishedAt = finished
+	res.OK = out.Status == payStatusSuccess && res.HasAmount && !res.FinishedAt.IsZero()
 	return res, nil
 }
 

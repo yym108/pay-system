@@ -115,6 +115,8 @@ type Payments struct {
 	refundFreezer  RefundFreezer
 	refundChannel  ChannelRefunder
 	refundApplier  RefundResultApplier
+	querier        channelQuerier
+	queryPolicy    QueryPolicy
 }
 
 // App 把商户读取和支付单创建合成 handler 使用的服务。

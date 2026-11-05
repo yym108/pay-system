@@ -10,6 +10,7 @@ import (
 	"io"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/caarlos0/env/v11"
 )
@@ -21,6 +22,8 @@ const (
 
 	defaultQueryBackoff = "10s,10s,30s,1m,2m,5m,10m,30m"
 	queryBackoffEnv     = "QUERY_BACKOFF"
+	// 查单退避每项的下限，理由见 applyQueryBackoff。
+	minQueryBackoff = time.Second
 
 	// 分片数只能是 2。改动会改变商户路由（D17）。
 	allowedShardCount = 2
@@ -166,10 +169,18 @@ func applyOTEL(values map[string]string, dst *string) {
 	}
 }
 
+// applyQueryBackoff 未设置时填默认计划。设置了就至少一项，且每项不小于 1 秒：
+// 查单任务启动时若抢占写入的 next_query_at 已到期就跳过（PAY-05），间隔若不远大于抢占事务和启动任务的耗时，
+// 后续查单会全部被跳过。
 func applyQueryBackoff(values map[string]string, dst *DurationList) error {
 	if _, ok := values[queryBackoffEnv]; ok {
 		if len(*dst) == 0 {
 			return invalid(queryBackoffEnv, "at least one duration is required")
+		}
+		for _, d := range *dst {
+			if d < minQueryBackoff {
+				return invalid(queryBackoffEnv, "each duration must be at least 1s")
+			}
 		}
 		return nil
 	}
