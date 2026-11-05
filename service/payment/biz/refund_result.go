@@ -123,7 +123,8 @@ func isInitFailure(in RefundResult) bool {
 	}
 }
 
-// quotaMiss 记下释放额度失败的那一行，事务回滚之后才输出日志和计数，事务重试时不会重复记。
+// quotaMiss 记下释放额度失败的那一行。日志和计数在 WithTx 回滚之后输出，记录时这次调用已经没有留下改动。
+// errRefundQuota 不是 MySQL 错误号，不会触发事务重试。
 type quotaMiss struct {
 	refundNo string
 	payNo    string
