@@ -296,8 +296,8 @@ type TransferExecutor interface {
 ### 4.5 同步的文档
 
 - 需求 `docs/02-requirements.md`：TRF-01 第 2、3 条写明新的校验顺序和理由；增加实现说明（执行器可注入、付款商户号格式、`remark` 为空存 NULL、1062 处理、`40002` 的条件）；4 条验收勾上，状态改为 DONE；变更记录增加 2026-11-06 一行。
-- 接口文档 `docs/05-api.md`：版本 3.3.9。创建转账一节写明当前只返回 `TRYING`、已有单号时不再校验收款方、`30008` 只在没有已有单时出现；RPC 一节写明 nil 请求、付款商户号、`10003`、`10004` 和 2 秒超时。
-- 流程文档 `docs/06-flows.md`：版本 v2.34。CF-34（控制流图编号，图名“创建转账单与同分片执行”）把幂等判断挪到收款方校验之前，1062 改为指向新的再读节点；SL-11（泳道时序图编号，图名“同分片转账”）调整图中说明的顺序。
+- 接口文档 `docs/05-api.md`：版本 3.3.10。创建转账一节写明当前只返回 `TRYING`、已有单号时不再校验收款方、`30008` 只在没有已有单时出现；RPC 一节写明 nil 请求、付款商户号、`10003`、`10004` 和 2 秒超时。
+- 流程文档 `docs/06-flows.md`：版本 v2.37。CF-34（控制流图编号，图名“创建转账单与同分片执行”）把幂等判断挪到收款方校验之前，1062 改为指向新的再读节点；SL-11（泳道时序图编号，图名“同分片转账”）调整图中说明的顺序。
 - 表结构文档 `docs/database.md`：`transfer_order` 补插入时各列的取值和 1062 后的再读，`remark` 列说明空串存 NULL；记为仅文档，无 DDL。校验脚本通过。
 - 面试笔记 `docs/interview-notes.md`：增加 TRF-01 一节。
 
@@ -358,8 +358,8 @@ go test -race -count=1 -tags integration ./service/payment/biz/ -run 'TestCreate
 
 - 需求：`docs/02-requirements.md` 的 §4.6 转账、§5.4.1 超时与重试、TRF-01 一节（规则、实现说明、验收），TRF-02 到 TRF-04 的规则，GW-01 第 5 条，PAY-03 第 8 条
 - 约定：`docs/03-conventions.md` 的错误码、单号格式与前缀（§2.1、§2.2）、配置项 `TRANSFER_RECOVER_DELAY`、`MERCHANT_CONFIG_CACHE_TTL`、`NOTIFY_URL_ALLOW_HOSTS`
-- 接口：`docs/05-api.md`（版本 3.3.9）的 §2.5 幂等与重试、§4.8 创建转账、§5.3 `Transfer`、§10.2 `CreateTransfer`
-- 流程图：`docs/06-flows.md`（版本 v2.34）的 CF-34、SL-11
+- 接口：`docs/05-api.md`（版本 3.3.10）的 §2.5 幂等与重试、§4.8 创建转账、§5.3 `Transfer`、§10.2 `CreateTransfer`
+- 流程图：`docs/06-flows.md`（版本 v2.37）的 CF-34、SL-11
 - 表结构：`docs/database.md` 的 `transfer_order`、`merchant`
 - 代码：`service/payment/biz/transfer.go`、`service/payment/biz/transfer_sql.go`、`service/payment/biz/merchant.go`（商户配置缓存）、`service/payment/handler/handler.go`、`service/payment/handler/middleware.go`（服务端超时）、`pkg/idgen/idgen.go`、`internal/bootstrap/bootstrap.go`、`internal/testkit/mysql.go`
 - 退款创建的同类做法：`docs/reports/REF-01-create-refund.md`
@@ -371,3 +371,4 @@ go test -race -count=1 -tags integration ./service/payment/biz/ -run 'TestCreate
 | 2026-11-06 | 与本报告同一次提交 | 首版 |
 | 2026-11-06 | 与本报告同一次提交 | 可读性第 1 轮 29 处已改；另改正 3.3 和第 7 节对事务隔离级别的说法（项目事务用读已提交） |
 | 2026-11-06 | 与本报告同一次提交 | 可读性第 2 轮 11 处已改 |
+| 2026-11-06 | 合入 main 的那次提交 | 合入 main 后文档版本号顺延：接口文档 3.3.9 改为 3.3.10，流程文档 v2.34 改为 v2.37（main 上 REF-05、PAY-05 已占用 3.3.9 与 v2.34–v2.36） |

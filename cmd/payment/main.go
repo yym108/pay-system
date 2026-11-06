@@ -20,6 +20,7 @@ import (
 	"github.com/yym108/pay-system/pkg/server"
 	"github.com/yym108/pay-system/service/payment/biz"
 	"github.com/yym108/pay-system/service/payment/handler"
+	"github.com/yym108/pay-system/service/payment/job"
 )
 
 type closeFunc func() error
@@ -103,8 +104,10 @@ func serve(cfg config.Payment, logOut io.Writer) error {
 		return err
 	}
 	payments.UseRefund(biz.NewAccountRefundFreezer(accountCli), channelClient, payments, cfg.ChannelNotifyURL)
+	payments.UseQuery(channelClient, biz.QueryPolicy{Backoff: cfg.QueryBackoff})
 	// 转账执行是 TRF-02、TRF-03，未接入前 CreateTransfer 返回刚插入的 TRYING。
 	payments.UseTransfer(cfg.TransferRecoverDelay, nil)
+	queryLoop := job.NewQueryCompensate(payments.RunQueryBatch)
 	exit := make(chan error, 1)
 	admin := server.New(server.Config{
 		Addr:         server.AddrPayment,
@@ -127,5 +130,6 @@ func serve(cfg config.Payment, logOut io.Writer) error {
 			return nil
 		},
 	))
+	admin.RegisterGroup(queryLoop)
 	return admin.Run(context.Background())
 }

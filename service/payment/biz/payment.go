@@ -115,6 +115,8 @@ type Payments struct {
 	refundFreezer  RefundFreezer
 	refundChannel  ChannelRefunder
 	refundApplier  RefundResultApplier
+	querier        channelQuerier
+	queryPolicy    QueryPolicy
 	transfers      transferStore
 	transferExec   TransferExecutor
 	// transferRecoverDelay 是 TRANSFER_RECOVER_DELAY，由 UseTransfer 覆盖。

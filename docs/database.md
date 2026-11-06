@@ -1,6 +1,6 @@
 # Database Schema
 
-> **Last updated:** 2026-11-05
+> **Last updated:** 2026-11-06
 > **Database engine/version:** MySQL 8.4.11（InnoDB，utf8mb4 / utf8mb4_bin）
 > **Schema sources:** `migrations/account/000001_init.up.sql`（`pay_account_0` 与 `pay_account_1` 各执行一次）、`migrations/payment/000001_init.up.sql`、`migrations/payment/000002_merchant_fee_rate.up.sql`、`migrations/recon/000001_init.up.sql`、`migrations/channel_mock/000001_init.up.sql`。设计稿 `docs/schema/schema_draft.sql` 已在 BASE-03 删除。golang-migrate 还会在每个 schema 创建工具表 `schema_migrations`（`version`、`dirty`），不在业务清单里。
 > **Owner:** pay-system 项目作者
@@ -612,8 +612,8 @@
 | `channel_status_raw` | VARCHAR(32) | 是 | NULL | — | 渠道原始状态 | 内部 |
 | `channel_finished_at` | DATETIME(3) | 是 | NULL | `idx_channel_finished_at` 2 | 渠道完成时间，外部对账归属账期 | 内部 |
 | `notify_count` | INT | 否 | 0 | — | 收到回调次数，A3 验证依据之一 | 内部 |
-| `query_count` | INT | 否 | 0 | — | 查单次数，决定退避档位 | 内部 |
-| `next_query_at` | DATETIME(3) | 是 | NULL | `idx_status_next_query_at` 2 | 下次查单时间；终态后置 NULL | 内部 |
+| `query_count` | INT | 否 | 0 | — | 抢占次数，决定退避档位；跳过时也加 1，可能多于实际查单次数（PAY-05） | 内部 |
+| `next_query_at` | DATETIME(3) | 是 | NULL | `idx_status_next_query_at` 2 | 下次查单时间；终态后置 NULL；PROCESSING 且创建超过 24 小时后由 PAY-05 置 NULL，交对账 | 内部 |
 | `last_query_at` | DATETIME(3) | 是 | NULL | — | | 内部 |
 | `version` | BIGINT UNSIGNED | 否 | 0 | — | | 内部 |
 | `created_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | — | | 审计 |
@@ -638,7 +638,7 @@
 #### Operational Notes
 
 - **Backfill/migration considerations:** 无。
-- **Compatibility/deprecation notes:** REF-02 插入 `txn_type = REFUND`、`biz_no = refund_no`、`channel_txn_no` 为 NULL、`status = PROCESSING`、`next_query_at = now + 10s`。渠道返回 OK 且带非空流水号后，按 `biz_no` 回填 `channel_txn_no`，`updated_at` 保持原值。插入 1062 回滚同事务里的 INIT→PROCESSING。REF-03 推进 REFUND 流水：`WHERE biz_no = refund_no AND txn_type = 'REFUND' AND status = 'PROCESSING'`（回调带金额时另加 `amount = ?`），写 `status`、`channel_txn_no`（COALESCE，已有值不覆盖）、`channel_status_raw`、`channel_finished_at`，`next_query_at` 置 NULL，`version + 1`；回调时 `notify_count + 1`，重复的同一终态只加 `notify_count`。与 `refund_order` 同一事务。无 DDL。
+- **Compatibility/deprecation notes:** REF-02 插入 `txn_type = REFUND`、`biz_no = refund_no`、`channel_txn_no` 为 NULL、`status = PROCESSING`、`next_query_at = now + 10s`。渠道返回 OK 且带非空流水号后，按 `biz_no` 回填 `channel_txn_no`，`updated_at` 保持原值。插入 1062 回滚同事务里的 INIT→PROCESSING。REF-03 推进 REFUND 流水：`WHERE biz_no = refund_no AND txn_type = 'REFUND' AND status = 'PROCESSING'`（回调带金额时另加 `amount = ?`），写 `status`、`channel_txn_no`（COALESCE，已有值不覆盖）、`channel_status_raw`、`channel_finished_at`，`next_query_at` 置 NULL，`version + 1`；回调时 `notify_count + 1`，重复的同一终态只加 `notify_count`。与 `refund_order` 同一事务。无 DDL。PAY-05 查单补偿每秒一个短事务：`SELECT id, biz_no, txn_type, query_count, created_at ... WHERE status = 'PROCESSING' AND next_query_at <= now ORDER BY next_query_at LIMIT 100 FOR UPDATE SKIP LOCKED`（走 `idx_status_next_query_at`），同一事务里按新的 `query_count` 分组执行 `UPDATE ... SET query_count = query_count + 1, last_query_at = now, next_query_at = now + 退避, updated_at = now WHERE id IN (...) AND status = 'PROCESSING'`；创建超过 24 小时的行改为 `SET next_query_at = NULL, updated_at = now`，`query_count`、`last_query_at` 不变。两条 UPDATE 都不改 `version`，提交后才在事务外查渠道。查得终态时由 PAY-04 / REF-03 的 CAS 推进。无 DDL。
 
 ### 4.11 `outbox` — 本地消息表
 
@@ -976,6 +976,8 @@
 | 2026-11-03 | 无（仅文档） | payment_order.refunded_amount、refund_order | REF-01 条件更新加插入，同一事务。无 DDL | 未执行迁移 |
 | 2026-11-04 | 无（仅文档） | refund_order、channel_txn | REF-02：CAS INIT→PROCESSING 与插入 REFUND 的 channel_txn 在同一事务。channel_txn_no 先为空，受理 OK 后再回填。无 DDL | 未执行迁移 |
 | 2026-11-05 | 无（仅文档） | refund_order（Lifecycle）、payment_order.refunded_amount、channel_txn（兼容说明） | REF-03：退款终态 CAS（PROCESSING → SUCCESS / FAILED，INIT → FAILED），FAILED 同事务释放 refunded_amount（条件 refunded_amount >= R），REFUND 流水 CAS 加 txn_type = REFUND。无 DDL | 未执行迁移 |
+| 2026-11-05 | 无（仅文档） | channel_txn.next_query_at、channel_txn（兼容说明） | PAY-05：查单补偿抢占用 `FOR UPDATE SKIP LOCKED` LIMIT 100，同事务推后 next_query_at、query_count + 1、写 last_query_at 与 updated_at；创建超过 24 小时的行置 next_query_at = NULL。抢占不改 version。无 DDL | 未执行迁移 |
+| 2026-11-06 | 无（仅文档） | channel_txn.query_count（说明） | PAY-05 审查修复：查单任务启动时抢占写入的 next_query_at 已到期则跳过且不写库，该行 query_count 已在抢占时加 1，所以 query_count 是抢占次数，可能多于实际查单次数。无 DDL | 未执行迁移（无 SQL 变更） |
 | 2026-11-06 | 无（仅文档） | transfer_order（Lifecycle）、`transfer_order.remark` | TRF-01：单条 INSERT 写入 TRYING 转账单，`next_retry_at = created_at + TRANSFER_RECOVER_DELAY`；1062 后在插入之外按 `uk_merchant_out_transfer_no` 再读。`remark` 空串存 NULL。无 DDL | 未执行迁移 |
 
 ## 6. Open Questions

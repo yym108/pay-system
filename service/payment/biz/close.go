@@ -119,25 +119,36 @@ func (p *Payments) closePaying(ctx context.Context, order PaymentOrder) (Payment
 			return PaymentOrder{}, errno.ErrUnavailable
 		}
 	}
-	res, err := p.closer.ClosePay(ctx, order.PayNo)
+	return p.closeOnChannel(ctx, order.PayNo, paySourceClose)
+}
+
+// closeOnChannel 调用渠道关单，并按结果调用 ApplyPayResult，source 写入这次结果。
+// 商户关单（PAY-06）传 CLOSE，查单补偿遇到 NOT_FOUND（PAY-05）传 QUERY。
+// CLOSED 成功返回订单且 error 为 nil；ALREADY_PAID 再查单写 SUCCESS，渠道 FAILED 写 FAILED，这两种返回 30003 和当前订单。
+// 调用失败返回 10004，订单保持 PAYING。
+func (p *Payments) closeOnChannel(ctx context.Context, payNo, source string) (PaymentOrder, error) {
+	if p.closer == nil || p.applier == nil {
+		return PaymentOrder{}, errno.ErrInternal
+	}
+	res, err := p.closer.ClosePay(ctx, payNo)
 	if err != nil {
-		return PaymentOrder{}, p.channelCloseErr(ctx, order.PayNo, err)
+		return PaymentOrder{}, p.channelCloseErr(ctx, payNo, err)
 	}
 	switch res.Outcome {
 	case closeClosed:
 		return p.applyClosed(ctx, PayResult{
-			BizNo:  order.PayNo,
+			BizNo:  payNo,
 			Result: payResultClosed,
-			Source: paySourceClose,
+			Source: source,
 		})
 	case closeAlreadyPaid:
-		return p.applyAlreadyPaid(ctx, order.PayNo)
+		return p.applyAlreadyPaid(ctx, payNo, source)
 	case closeTxnFailed:
 		return p.applyTerminal(ctx, PayResult{
-			BizNo:    order.PayNo,
+			BizNo:    payNo,
 			Result:   payResultFailed,
 			FailCode: failCodeChannelFailed,
-			Source:   paySourceClose,
+			Source:   source,
 		})
 	default:
 		return PaymentOrder{}, errno.ErrUnavailable
@@ -176,7 +187,7 @@ func (p *Payments) applyClosed(ctx context.Context, in PayResult) (PaymentOrder,
 	return got, nil
 }
 
-func (p *Payments) applyAlreadyPaid(ctx context.Context, payNo string) (PaymentOrder, error) {
+func (p *Payments) applyAlreadyPaid(ctx context.Context, payNo, source string) (PaymentOrder, error) {
 	q, err := p.closer.QueryPay(ctx, payNo)
 	if err != nil {
 		return PaymentOrder{}, p.channelCloseErr(ctx, payNo, err)
@@ -188,7 +199,7 @@ func (p *Payments) applyAlreadyPaid(ctx context.Context, payNo string) (PaymentO
 	return p.applyTerminal(ctx, PayResult{
 		BizNo:        payNo,
 		Result:       payResultSuccess,
-		Source:       paySourceClose,
+		Source:       source,
 		Amount:       &amount,
 		ChannelTxnNo: q.ChannelTxnNo,
 		FinishedAt:   q.FinishedAt,

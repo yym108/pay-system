@@ -130,7 +130,7 @@ func TestLoadPaymentIgnoresProcessEnv(t *testing.T) {
 func TestLoadPaymentDefaultsAndShorterDurations(t *testing.T) {
 	t.Parallel()
 	env := paymentEnv()
-	env["QUERY_BACKOFF"] = "1ms,2ms"
+	env["QUERY_BACKOFF"] = "1s,2s"
 	env["NOTIFY_RETRY_INTERVAL"] = "1ms"
 	env["TRANSFER_RECOVER_DELAY"] = "1ms"
 	env["TRANSFER_RECOVER_INTERVAL"] = "2ms"
@@ -166,7 +166,8 @@ func TestLoadPaymentDefaultsAndShorterDurations(t *testing.T) {
 	if cfg.NotifyRetryInterval != time.Millisecond || cfg.NotifyMaxAttempts != 1 {
 		t.Fatalf("notify retry = %s attempts %d", cfg.NotifyRetryInterval, cfg.NotifyMaxAttempts)
 	}
-	want := DurationList{time.Millisecond, 2 * time.Millisecond}
+	// QUERY_BACKOFF 的下限是 1 秒，恰好 1 秒合法。
+	want := DurationList{time.Second, 2 * time.Second}
 	if len(cfg.QueryBackoff) != len(want) || cfg.QueryBackoff[0] != want[0] || cfg.QueryBackoff[1] != want[1] {
 		t.Fatalf("backoff = %s", cfg.QueryBackoff)
 	}
@@ -225,6 +226,9 @@ func TestLoadPaymentRejectsInvalid(t *testing.T) {
 		{name: "attempts", key: "NOTIFY_MAX_ATTEMPTS", value: "0"},
 		{name: "backoff", key: "QUERY_BACKOFF", value: "-1s"},
 		{name: "backoff empty", key: "QUERY_BACKOFF", value: ""},
+		{name: "backoff below 1s", key: "QUERY_BACKOFF", value: "999ms"},
+		{name: "backoff later item below 1s", key: "QUERY_BACKOFF", value: "10s,1s,500ms"},
+		{name: "backoff zero", key: "QUERY_BACKOFF", value: "10s,0s"},
 		{name: "delay", key: "TRANSFER_RECOVER_DELAY", value: "-1s"},
 		{name: "mysql dsn empty", key: "MYSQL_DSN", value: ""},
 	}
