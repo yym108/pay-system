@@ -563,7 +563,7 @@
 | Name | Type | Columns/order/predicate | Purpose | Source |
 | --- | --- | --- | --- | --- |
 | `PRIMARY` | PK | `id` | | migrations/payment/000001_init.up.sql |
-| `uk_transfer_no` | UNIQUE | `transfer_no` | | migrations/payment/000001_init.up.sql |
+| `uk_transfer_no` | UNIQUE | `transfer_no` | 按平台单号查询（TRF-05） | migrations/payment/000001_init.up.sql |
 | `uk_merchant_out_transfer_no` | UNIQUE | `merchant_id, out_transfer_no` | 创建幂等兜底（TRF-01 第 3 条），按商户单号查询（TRF-05） | migrations/payment/000001_init.up.sql |
 | `idx_status_next_retry_at` | INDEX | `status, next_retry_at` | 恢复任务扫描（TRF-04，`FOR UPDATE SKIP LOCKED`）；已验证 EXPLAIN 走此索引（覆盖索引） | migrations/payment/000001_init.up.sql |
 | `idx_finished_at` | INDEX | `finished_at` | 内部对账按日扫描终态转账（REC-05） | migrations/payment/000001_init.up.sql |
@@ -979,6 +979,7 @@
 | 2026-11-05 | 无（仅文档） | channel_txn.next_query_at、channel_txn（兼容说明） | PAY-05：查单补偿抢占用 `FOR UPDATE SKIP LOCKED` LIMIT 100，同事务推后 next_query_at、query_count + 1、写 last_query_at 与 updated_at；创建超过 24 小时的行置 next_query_at = NULL。抢占不改 version。无 DDL | 未执行迁移 |
 | 2026-11-06 | 无（仅文档） | channel_txn.query_count（说明） | PAY-05 审查修复：查单任务启动时抢占写入的 next_query_at 已到期则跳过且不写库，该行 query_count 已在抢占时加 1，所以 query_count 是抢占次数，可能多于实际查单次数。无 DDL | 未执行迁移（无 SQL 变更） |
 | 2026-11-06 | 无（仅文档） | transfer_order（Lifecycle）、`transfer_order.remark` | TRF-01：单条 INSERT 写入 TRYING 转账单，`next_retry_at = created_at + TRANSFER_RECOVER_DELAY`；1062 后在插入之外按 `uk_merchant_out_transfer_no` 再读。`remark` 空串存 NULL。无 DDL | 未执行迁移 |
+| 2026-11-06 | 无（仅文档） | `transfer_order.uk_transfer_no`（用途说明） | TRF-05：`QueryTransfer` 按 `uk_transfer_no` 或 `uk_merchant_out_transfer_no` 只读，不写行、不改 `version`。读回后逐字节比较单号与商户号，排序规则放宽匹配到的行按没有行处理。无 DDL | 未执行迁移（无 SQL 变更） |
 | 2026-11-06 | 无（仅文档） | refund_order（Lifecycle、兼容说明） | REF-04：卡单恢复只读扫描 INIT 且 `updated_at <= now − 30s`，按 `(updated_at, id)` 翻页、每页 100 行，走 `idx_status_updated_at`；按 `created_at` 判 1 小时，超过则经 REF-03 CAS `INIT → FAILED`（REFUND_TIMEOUT，source = JOB）。无 DDL | 未执行迁移（无 SQL 变更） |
 
 ## 6. Open Questions
