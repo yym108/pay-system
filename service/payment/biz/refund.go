@@ -178,7 +178,8 @@ func sameRefund(existing RefundOrder, payNo string, amount money.Amount) (Refund
 	return RefundOrder{}, errno.ErrIdempotentConflict
 }
 
-// afterRefundMiss 在事务外再读。0 行更新提交的是空事务，事务内快照看不到另一笔已提交的退款。
+// afterRefundMiss 在额度事务结束后处理 0 行和 1062 两种结局。1062 要先回滚才能撤销额度，
+// 两种结局因此共用这条事务外的普通读。READ COMMITTED 下事务内再读也能看到已提交的退款，这里不靠事务外读保证可见性。
 func (p *Payments) afterRefundMiss(ctx context.Context, in *CreateRefundInput, order PaymentOrder, _ bool) (RefundOrder, error) {
 	existing, ok, err := p.orders.refundByMerchantOut(ctx, in.MerchantID, in.OutRefundNo)
 	if err != nil {
