@@ -189,8 +189,13 @@ func TestUnimplementedMethodsReturnInternal(t *testing.T) {
 	if n := svc.callCount(); n != 0 {
 		t.Fatalf("nil CreateTransfer called biz %d times", n)
 	}
+	if _, err := h.QueryTransfer(ctx, nil); !errors.Is(errno.FromBizStatus(err), errno.ErrInvalidParam) {
+		t.Fatal("nil QueryTransfer request")
+	}
+	if n := svc.callCount(); n != 0 {
+		t.Fatalf("nil QueryTransfer called biz %d times", n)
+	}
 	for name, fn := range map[string]func() error{
-		"QueryTransfer":  func() error { _, err := h.QueryTransfer(ctx, nil); return err },
 		"SyncChannelTxn": func() error { _, err := h.SyncChannelTxn(ctx, nil); return err },
 		"ReplayEvent":    func() error { _, err := h.ReplayEvent(ctx, nil); return err },
 	} {
@@ -369,6 +374,7 @@ func TestListenAddrAndTimeout(t *testing.T) {
 		(Config{}).timeoutFor("CreatePayment") != ServerTimeout ||
 		(Config{}).timeoutFor("QueryPayment") != ServerTimeout ||
 		(Config{}).timeoutFor("QueryRefund") != ServerTimeout ||
+		(Config{}).timeoutFor("QueryTransfer") != ServerTimeout ||
 		(Config{}).timeoutFor("ClosePayment") != ServerTimeout {
 		t.Fatal("method timeout split drifted")
 	}
@@ -405,10 +411,6 @@ type call struct {
 func unimplementedCalls(cli paymentservice.Client) []call {
 	ctx := context.Background()
 	return []call{
-		{"QueryTransfer", func() error {
-			_, err := cli.QueryTransfer(ctx, &payment.QueryTransferRequest{MerchantId: "M100001"})
-			return err
-		}},
 		{"SyncChannelTxn", func() error {
 			_, err := cli.SyncChannelTxn(ctx, &payment.SyncChannelTxnRequest{BizNo: "PA1"})
 			return err
@@ -537,6 +539,8 @@ type scripted struct {
 	refundIn   biz.RefundResult
 	notifyKind string
 	transferIn biz.CreateTransferInput
+	// transferQueryIn 只给 TRF-05 的 QueryTransfer 使用。
+	transferQueryIn biz.TransferQueryInput
 }
 
 func (s *scripted) set(fn func(*scripted)) {
@@ -728,6 +732,34 @@ func (s *scripted) lastTransferInput() biz.CreateTransferInput {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.transferIn
+}
+
+func (s *scripted) QueryTransfer(ctx context.Context, in *biz.TransferQueryInput) (biz.TransferOrder, error) {
+	s.mu.Lock()
+	s.calls++
+	transfer, err, panicking, block := s.transfer, s.err, s.panicking, s.block
+	if in != nil {
+		s.transferQueryIn = *in
+	}
+	s.mu.Unlock()
+	if panicking {
+		panic("boom " + testSecret)
+	}
+	if block != nil {
+		if berr := block(ctx); berr != nil {
+			return biz.TransferOrder{}, berr
+		}
+	}
+	if err != nil {
+		return biz.TransferOrder{}, err
+	}
+	return transfer, nil
+}
+
+func (s *scripted) lastTransferQuery() biz.TransferQueryInput {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.transferQueryIn
 }
 
 func (s *scripted) CreatePayment(ctx context.Context, in *biz.CreatePaymentInput) (biz.PaymentOrder, error) {
@@ -1220,6 +1252,89 @@ func TestQueryRefundRPCOtherMerchant(t *testing.T) {
 		t.Fatalf("access = %+v", rec)
 	}
 	if in := svc.lastRefundQuery(); in.MerchantID != "M100001" || in.RefundNo != refundNo {
+		t.Fatalf("biz input = %+v", in)
+	}
+}
+
+// TRF-05：QueryTransfer 二选一不合法返回 10001，不进 biz；空串算没提供，不 trim。
+// 成功时 error 为 nil 并返回 Transfer；30001 走 BizStatusError，不带转账单。
+func TestQueryTransferHandler(t *testing.T) {
+	created := time.Date(2026, 11, 6, 10, 0, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	finished := created.Add(42 * time.Millisecond)
+	transfer := biz.TransferOrder{
+		TransferNo: "TF0000000000000000001", MerchantID: "M100001", OutTransferNo: "TR1", PayeeMerchantID: "M100002",
+		Amount: 500, Currency: "CNY", Mode: "TCC", Status: "FAILED", FailCode: "INSUFFICIENT_BALANCE",
+		CreatedAt: created, FinishedAt: finished,
+	}
+	svc := &scripted{transfer: transfer}
+	h := New(svc)
+	ctx := context.Background()
+	transferNo := transfer.TransferNo
+	outNo := transfer.OutTransferNo
+	empty := ""
+	spaced := " "
+	for name, req := range map[string]*payment.QueryTransferRequest{
+		"none":   {MerchantId: "M100001"},
+		"empty":  {MerchantId: "M100001", TransferNo: &empty},
+		"both":   {MerchantId: "M100001", TransferNo: &transferNo, OutTransferNo: &outNo},
+		"spaces": {MerchantId: "M100001", TransferNo: &spaced, OutTransferNo: &spaced},
+	} {
+		if _, err := h.QueryTransfer(ctx, req); !errors.Is(errno.FromBizStatus(err), errno.ErrInvalidParam) {
+			t.Fatalf("%s = %v", name, err)
+		}
+	}
+	if n := svc.callCount(); n != 0 {
+		t.Fatalf("invalid query called biz %d times", n)
+	}
+	got, err := h.QueryTransfer(ctx, &payment.QueryTransferRequest{MerchantId: "M100001", TransferNo: &transferNo})
+	if err != nil || got.GetTransferNo() != transfer.TransferNo || got.GetOutTransferNo() != "TR1" ||
+		got.GetMerchantId() != "M100001" || got.GetPayeeMerchantId() != "M100002" || got.GetAmount() != 500 ||
+		got.GetCurrency() != "CNY" || got.GetMode() != "TCC" || got.GetStatus() != "FAILED" ||
+		got.GetFailCode() != "INSUFFICIENT_BALANCE" || got.GetCreatedAt() != "2026-11-06T10:00:00.000+08:00" ||
+		got.GetFinishedAt() != "2026-11-06T10:00:00.042+08:00" {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+	if in := svc.lastTransferQuery(); in.MerchantID != "M100001" || in.TransferNo != transferNo || in.OutTransferNo != "" {
+		t.Fatalf("biz input = %+v", in)
+	}
+	rawOut := " " + outNo
+	if _, err = h.QueryTransfer(ctx, &payment.QueryTransferRequest{MerchantId: "M100001", OutTransferNo: &rawOut}); err != nil {
+		t.Fatal(err)
+	}
+	if in := svc.lastTransferQuery(); in.OutTransferNo != rawOut || in.TransferNo != "" {
+		t.Fatalf("out_transfer_no was trimmed: %+v", in)
+	}
+	svc.set(func(s *scripted) { s.err = errno.ErrOrderNotFound })
+	resp, err := h.QueryTransfer(ctx, &payment.QueryTransferRequest{MerchantId: "M100002", TransferNo: &transferNo})
+	if resp != nil {
+		t.Fatalf("30001 carried a response: %+v", resp)
+	}
+	assertBizCode(t, "not found", err, errno.ErrOrderNotFound.Code)
+	if _, err = New(nil).QueryTransfer(ctx, &payment.QueryTransferRequest{MerchantId: "M100001", TransferNo: &transferNo}); !errors.Is(errno.FromBizStatus(err), errno.ErrInternal) {
+		t.Fatalf("nil service = %v", err)
+	}
+	var nilH *Handler
+	if _, err = nilH.QueryTransfer(ctx, nil); !errors.Is(errno.FromBizStatus(err), errno.ErrInternal) {
+		t.Fatalf("nil handler = %v", err)
+	}
+}
+
+// TRF-05 验收 1（RPC）：经 Kitex 调用，收款商户查询收到业务码 30001，没有转账单；访问日志记 30001。
+func TestQueryTransferRPCPayee(t *testing.T) {
+	svc := &scripted{err: errno.ErrOrderNotFound}
+	access := &accessLog{}
+	addr := startServer(t, svc, Config{Access: access.record})
+	cli := dialKitex(t, addr, time.Second)
+	transferNo := "TF0000000000000000001"
+	resp, err := cli.QueryTransfer(context.Background(), &payment.QueryTransferRequest{MerchantId: "M100002", TransferNo: &transferNo})
+	assertBizCode(t, "QueryTransfer", err, errno.ErrOrderNotFound.Code)
+	if resp != nil && resp.GetTransferNo() != "" {
+		t.Fatalf("30001 carried a transfer: %+v", resp)
+	}
+	if rec := access.last(); rec.path != "QueryTransfer" || rec.errCode != itoa(errno.ErrOrderNotFound.Code) {
+		t.Fatalf("access = %+v", rec)
+	}
+	if in := svc.lastTransferQuery(); in.MerchantID != "M100002" || in.TransferNo != transferNo {
 		t.Fatalf("biz input = %+v", in)
 	}
 }

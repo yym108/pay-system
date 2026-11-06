@@ -32,6 +32,8 @@ linters:
             - "**/service/payment/**/*.go"
             # 这一份集成测试要直接调用 account biz，证明冻结单落在账户库。生产代码仍禁止。
             - "!**/service/payment/**/refund_account_integration_test.go"
+            # REF-04 的崩溃恢复测试同样要用真实 account biz 证明冻结单只有 1 张。
+            - "!**/service/payment/**/refund_recover_integration_test.go"
           allow:
             - github.com/yym108/pay-system/service/payment
           deny:

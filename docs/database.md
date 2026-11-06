@@ -475,7 +475,7 @@
 ### 4.8 `refund_order` — 退款单
 
 - **Purpose:** 退款状态机（`docs/02-requirements.md` §4.5）。
-- **Lifecycle:** INIT → PROCESSING → SUCCESS / FAILED；INIT → FAILED。REF-01 在同一事务里条件更新 payment_order（status = SUCCESS 且 refunded_amount + 本次金额 <= amount，version + 1，WHERE 不含 version，merchant_id 在 WHERE 中）并 INSERT status = INIT。影响 0 行不插入。插入 1062 回滚额度。不写 fail_code、fail_msg、succeeded_at。REF-02 在额度事务提交后，另开一个事务 CAS `status = INIT` 为 PROCESSING（`version = version + 1`，WHERE 含 refund_no、merchant_id、status，不含 version），并在同一事务插入 `channel_txn`。更新 0 行或插入 1062 时回滚这次 CAS，不调用渠道。REF-03 推进终态，`version = version + 1`，显式写 `updated_at`，WHERE 含 `refund_no` 与原状态，不含 version：渠道结果 CAS `PROCESSING → SUCCESS`（写 `succeeded_at` = 渠道完成时间）或 `PROCESSING → FAILED`（写 `fail_code`、`fail_msg`）；冻结失败或超时失败 CAS `INIT → FAILED`。FAILED 在同一事务释放 `payment_order.refunded_amount`。无 DDL。
+- **Lifecycle:** INIT → PROCESSING → SUCCESS / FAILED；INIT → FAILED。REF-01 在同一事务里条件更新 payment_order（status = SUCCESS 且 refunded_amount + 本次金额 <= amount，version + 1，WHERE 不含 version，merchant_id 在 WHERE 中）并 INSERT status = INIT。影响 0 行不插入。插入 1062 回滚额度。不写 fail_code、fail_msg、succeeded_at。REF-02 在额度事务提交后，另开一个事务 CAS `status = INIT` 为 PROCESSING（`version = version + 1`，WHERE 含 refund_no、merchant_id、status，不含 version），并在同一事务插入 `channel_txn`。更新 0 行或插入 1062 时回滚这次 CAS，不调用渠道。REF-03 推进终态，`version = version + 1`，显式写 `updated_at`，WHERE 含 `refund_no` 与原状态，不含 version：渠道结果 CAS `PROCESSING → SUCCESS`（写 `succeeded_at` = 渠道完成时间）或 `PROCESSING → FAILED`（写 `fail_code`、`fail_msg`）；冻结失败或超时失败 CAS `INIT → FAILED`。FAILED 在同一事务释放 `payment_order.refunded_amount`。REF-04 卡单恢复每 10 秒只读扫描（不加锁）`status = INIT AND updated_at <= now − 30s`，按 `(updated_at, id)` 翻页、每页 100 行；创建不超过 1 小时的从 REF-02 冻结重新执行（写法同 REF-02），超过 1 小时的经 REF-03 CAS `INIT → FAILED`（`fail_code = REFUND_TIMEOUT`，source = JOB）。无 DDL。
 - **Sensitivity:** 内部交易数据。
 - **Authoritative source:** `migrations/payment/000001_init.up.sql`。
 - **Write owners/read consumers:** payment 写；recon 只读。
@@ -521,7 +521,7 @@
 #### Operational Notes
 
 - **Backfill/migration considerations:** 无。
-- **Compatibility/deprecation notes:** 卡单恢复按 `updated_at` 判断（使用 `idx_status_updated_at`）。
+- **Compatibility/deprecation notes:** 卡单恢复按 `updated_at` 扫描（使用 `idx_status_updated_at`，翻页按 `(updated_at, id)`，二级索引隐含主键 id，不需要排序），按 `created_at` 判 1 小时。INIT 期间两者相等：插入时写同一时间，INIT 状态下不更新这一行。
 
 ### 4.9 `transfer_order` — 转账单
 
@@ -563,7 +563,7 @@
 | Name | Type | Columns/order/predicate | Purpose | Source |
 | --- | --- | --- | --- | --- |
 | `PRIMARY` | PK | `id` | | migrations/payment/000001_init.up.sql |
-| `uk_transfer_no` | UNIQUE | `transfer_no` | | migrations/payment/000001_init.up.sql |
+| `uk_transfer_no` | UNIQUE | `transfer_no` | 按平台单号查询（TRF-05） | migrations/payment/000001_init.up.sql |
 | `uk_merchant_out_transfer_no` | UNIQUE | `merchant_id, out_transfer_no` | 创建幂等兜底（TRF-01 第 3 条），按商户单号查询（TRF-05） | migrations/payment/000001_init.up.sql |
 | `idx_status_next_retry_at` | INDEX | `status, next_retry_at` | 恢复任务扫描（TRF-04，`FOR UPDATE SKIP LOCKED`）；已验证 EXPLAIN 走此索引（覆盖索引） | migrations/payment/000001_init.up.sql |
 | `idx_finished_at` | INDEX | `finished_at` | 内部对账按日扫描终态转账（REC-05） | migrations/payment/000001_init.up.sql |
@@ -979,6 +979,8 @@
 | 2026-11-05 | 无（仅文档） | channel_txn.next_query_at、channel_txn（兼容说明） | PAY-05：查单补偿抢占用 `FOR UPDATE SKIP LOCKED` LIMIT 100，同事务推后 next_query_at、query_count + 1、写 last_query_at 与 updated_at；创建超过 24 小时的行置 next_query_at = NULL。抢占不改 version。无 DDL | 未执行迁移 |
 | 2026-11-06 | 无（仅文档） | channel_txn.query_count（说明） | PAY-05 审查修复：查单任务启动时抢占写入的 next_query_at 已到期则跳过且不写库，该行 query_count 已在抢占时加 1，所以 query_count 是抢占次数，可能多于实际查单次数。无 DDL | 未执行迁移（无 SQL 变更） |
 | 2026-11-06 | 无（仅文档） | transfer_order（Lifecycle）、`transfer_order.remark` | TRF-01：单条 INSERT 写入 TRYING 转账单，`next_retry_at = created_at + TRANSFER_RECOVER_DELAY`；1062 后在插入之外按 `uk_merchant_out_transfer_no` 再读。`remark` 空串存 NULL。无 DDL | 未执行迁移 |
+| 2026-11-06 | 无（仅文档） | `transfer_order.uk_transfer_no`（用途说明） | TRF-05：`QueryTransfer` 按 `uk_transfer_no` 或 `uk_merchant_out_transfer_no` 只读，不写行、不改 `version`。读回后逐字节比较单号与商户号，排序规则放宽匹配到的行按没有行处理。无 DDL | 未执行迁移（无 SQL 变更） |
+| 2026-11-06 | 无（仅文档） | refund_order（Lifecycle、兼容说明） | REF-04：卡单恢复只读扫描 INIT 且 `updated_at <= now − 30s`，按 `(updated_at, id)` 翻页、每页 100 行，走 `idx_status_updated_at`；按 `created_at` 判 1 小时，超过则经 REF-03 CAS `INIT → FAILED`（REFUND_TIMEOUT，source = JOB）。无 DDL | 未执行迁移（无 SQL 变更） |
 
 ## 6. Open Questions
 

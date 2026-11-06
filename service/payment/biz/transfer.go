@@ -69,9 +69,11 @@ type TransferExecutor interface {
 	ExecuteTransfer(ctx context.Context, row TransferOrder) (TransferOrder, error)
 }
 
-// transferStore 读写转账单。状态推进属于 TRF-02~04，这里只有插入和按幂等键读取。
+// transferStore 读写转账单。状态推进属于 TRF-02~04，这里只有插入和按单号读取。
 type transferStore interface {
 	transferByMerchantOut(ctx context.Context, merchantID, outTransferNo string) (TransferOrder, bool, error)
+	// transferByNo 按 transfer_no 读，不比较商户号；调用方按自己的规则比较（TRF-05）。
+	transferByNo(ctx context.Context, transferNo string) (TransferOrder, bool, error)
 	insertTransfer(ctx context.Context, row TransferOrder) error
 }
 

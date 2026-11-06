@@ -1,6 +1,6 @@
 # pay-system 流程图（状态机、泳道图、控制流图）
 
-> 版本：v2.38　最后修改：2026-11-06　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐。2026-10-21 按 ACC-14 口径改正 CF-33，CF-33 已对齐。2026-10-21 按 ACC-10 口径改正 CF-17，CF-17 已对齐。2026-10-23 按 BASE-13 规则 8 补 CF-01、CF-02、CF-21 的签名配置故障出口。2026-10-23 按 CH-01 口径改正 CF-22。2026-10-26 CF-23 注明防悬挂 CLOSED 记录 amount = 0。2026-10-26 渠道查单单独画 CF-38，CH-02 的控制流改指 CF-38；SL-02 仍留给以后的补偿。2026-10-26 按 CH-03 口径补全 CF-23 的验签、参数、CAS 与再读出口，六个业务结果不变。2026-10-26 按 CH-05 在 CF-24 图下注明「其他」和 DROP_NOTIFY 不回调已实现；SLOW 与 DUP_NOTIFY 的特殊发送仍未实现，这两种场景现在不发普通回调。图本身不改。2026-10-27 按 CH-06 将 CF-24 图下改为 DUP_NOTIFY 已按「并发 5 次，之后每秒 1 次再 5 次，不论响应」实现；SLOW 仍未实现，现在不发。图本身不改。2026-10-27 文档审查修正与需求不一致的文字：SL-01 延迟范围、CF-05 未知结果分支、SL-14 C13、CF-34 与 CF-35 的 10001 / 10006、§5 R15 与 R16 状态、SL-09 与 CF-26 的定时触发写法、对 03 的版本引用；不改规则。2026-10-27 文档审查第 2 阶段按用户确认的规则修图：outbox 投递改为领取写租约、事务外发送、按租约值 CAS 回写；手续费为 0 省略分录；merchant_notify 与 recon_diff 状态 CAS；批量记账非 ACTIVE 退化逐条，Post 返回 40005 进 DLQ；退款释放额度影响 0 行回滚并返回 10003；对账批次 INIT / DOWNLOADED 超时接管与 BILL_NOT_READY 当天最多重试 6 次；SLOW 只推迟首次回调；覆盖矩阵同步 BASE-15、GW-09、QA-05。2026-10-27 文档审查第 3 阶段按需求 7d08a2c 修对账与批量记账的图：对账批次拆为 CF-26、CF-39、CF-40，差错处理拆为 CF-29、CF-41；`retry_count` 持久化；重跑与接管只删 `handle_action` 为空的 PENDING 差错；差错按 `uk_batch_type_biz_no_diff_type` 同键跳过；跨批次重试窗口与严重不一致；报告加“等待人工处理”；批量记账 F = 0 省略手续费分录。2026-10-27 BASE-15 已提供 `pkg/fault`，图中的故障点标注保持原句。2026-10-28 按 PAY-02 口径改正 CF-04。2026-10-28 按 PAY-03 改正 CF-05：故障点在事务提交之后，同步拒绝的 source 为 SYNC，Pay 服务端处理超时 5 秒。2026-10-28 按 MQ-01 在 CF-18 的 Add 节点写明 occurred_at、next_retry_at 取 Add 时的注入时钟，无有效 span 时 trace_context 为 {}；投递器半边不改。当前环境没有 mmdc，未渲染 SVG。2026-11-01 按 PAY-04 改正 CF-05、CF-06：同步拒绝已把订单推进为 FAILED，Pay 返回 30006 和该订单；ApplyPayResult 不调用 callback.after_commit，该故障点仍由 GW-06 在 CF-02 调用。当前环境没有 mmdc，未渲染 SVG。2026-11-01 按 PAY-06 核对 CF-08：图已对齐，未渲染 SVG。2026-11-01 PAY-06：CF-08 在没有渠道流水号时先查单。图已改该节点，未渲染 SVG。2026-11-01 按 PAY-08 在 CF-01 图下注明 payment 的 QueryPayment 直接读 payment_order，二选一，不缓存，不写。图的节点不改。当前环境没有 mmdc，未渲染 SVG。2026-11-01 按 OPS-01 核对 CF-31：图与实现一致。Redis、Kafka 只留注册口，未注册时不因此让 /readyz 失败；未注册生产者时刷新为空。当前环境没有 mmdc，未渲染 SVG。2026-11-01 按 OPS-05：pprof 只在管理端口，/metrics 仍不提供。CF-31 节点不改。当前环境没有 mmdc，未渲染 SVG。2026-11-02 按 CH-06 M4：SLOW 首次回调与 ACCEPT_TIMEOUT 的 5 秒阻塞已实现；受理上下文 8 秒。图的节点不改。当前环境没有 mmdc，未渲染 SVG，不新增 SVG。2026-11-04 按 REF-02：新插入的退款在额度事务提交后冻结并提交渠道；冻结超时保持 INIT 且不写 channel_txn；置 FAILED 仍是 REF-03。图的节点不改，未渲染 SVG。2026-11-05 按 REF-03 改正 CF-11：分支按结果意图选，补齐各 CAS 未命中的出口；CF-02 补 REFUND 分支的故障点与未知 txn_type 的 10001；CF-10 图下改为置 FAILED 已接通。当前环境没有 mmdc，未渲染 SVG。2026-11-05 按 PAY-05 改正 CF-07：超过 24 小时的行单独出口且不查单，抢占不改 version，补渠道 CLOSED、SUCCESS 缺字段、退款重提前检查 PROCESSING 的分支，重提 REJECTED 的 source 为 SYNC；SL-02 图下注明已实现。当前环境没有 mmdc，未渲染 SVG。2026-11-06 按 REF-05 在 CF-01 图下注明 payment 的 QueryRefund 直接读 refund_order，refund_no 与 out_refund_no 二选一，不缓存，不写。图的节点不改，未渲染 SVG。2026-11-06 PAY-05 审查修复：CF-07 补“任务启动时抢占已到期则跳过”的出口，图下改写停止语义（批次 ctx 立即取消）。当前环境没有 mmdc，未渲染 SVG。2026-11-06 按 TRF-01 改正 CF-34 与 SL-11：幂等读挪到收款方校验之前，1062 后再读不校验收款方，读不到为 10003；图下注明执行步骤是可注入的接口，TRF-02、TRF-03 接入前返回刚插入的 TRYING，1062 的输家不执行。用 mermaid-cli 11.17.1（npx）渲染 CF-34、SL-11 通过，未保存 SVG。2026-11-06 按 PAY-07 改 CF-08 的 S2 节点（INIT、PAYING 各 ≤ 100，INIT 逐条，PAYING 并发 ≤ 10），图下注明超时关单的扫描、source = JOB 与停止语义。用 mermaid-cli 11.17.1（npx）渲染 CF-08 通过，未保存 SVG
+> 版本：v2.41　最后修改：2026-11-06　状态：与需求 v3.0 一致（R15、R16 已按建议写入需求），2026-10-13 随需求确认为基线。2026-10-15 按 ACC-03 口径改正 CF-13。2026-10-19 按 ACC-04 口径改正 CF-14。2026-10-20 按 ACC-05 口径改正 CF-15。2026-10-20 按 ACC-06 口径改正 CF-16。2026-10-21 按 ACC-07 口径改正 CF-32，CF-32 已对齐。2026-10-21 按 ACC-14 口径改正 CF-33，CF-33 已对齐。2026-10-21 按 ACC-10 口径改正 CF-17，CF-17 已对齐。2026-10-23 按 BASE-13 规则 8 补 CF-01、CF-02、CF-21 的签名配置故障出口。2026-10-23 按 CH-01 口径改正 CF-22。2026-10-26 CF-23 注明防悬挂 CLOSED 记录 amount = 0。2026-10-26 渠道查单单独画 CF-38，CH-02 的控制流改指 CF-38；SL-02 仍留给以后的补偿。2026-10-26 按 CH-03 口径补全 CF-23 的验签、参数、CAS 与再读出口，六个业务结果不变。2026-10-26 按 CH-05 在 CF-24 图下注明「其他」和 DROP_NOTIFY 不回调已实现；SLOW 与 DUP_NOTIFY 的特殊发送仍未实现，这两种场景现在不发普通回调。图本身不改。2026-10-27 按 CH-06 将 CF-24 图下改为 DUP_NOTIFY 已按「并发 5 次，之后每秒 1 次再 5 次，不论响应」实现；SLOW 仍未实现，现在不发。图本身不改。2026-10-27 文档审查修正与需求不一致的文字：SL-01 延迟范围、CF-05 未知结果分支、SL-14 C13、CF-34 与 CF-35 的 10001 / 10006、§5 R15 与 R16 状态、SL-09 与 CF-26 的定时触发写法、对 03 的版本引用；不改规则。2026-10-27 文档审查第 2 阶段按用户确认的规则修图：outbox 投递改为领取写租约、事务外发送、按租约值 CAS 回写；手续费为 0 省略分录；merchant_notify 与 recon_diff 状态 CAS；批量记账非 ACTIVE 退化逐条，Post 返回 40005 进 DLQ；退款释放额度影响 0 行回滚并返回 10003；对账批次 INIT / DOWNLOADED 超时接管与 BILL_NOT_READY 当天最多重试 6 次；SLOW 只推迟首次回调；覆盖矩阵同步 BASE-15、GW-09、QA-05。2026-10-27 文档审查第 3 阶段按需求 7d08a2c 修对账与批量记账的图：对账批次拆为 CF-26、CF-39、CF-40，差错处理拆为 CF-29、CF-41；`retry_count` 持久化；重跑与接管只删 `handle_action` 为空的 PENDING 差错；差错按 `uk_batch_type_biz_no_diff_type` 同键跳过；跨批次重试窗口与严重不一致；报告加“等待人工处理”；批量记账 F = 0 省略手续费分录。2026-10-27 BASE-15 已提供 `pkg/fault`，图中的故障点标注保持原句。2026-10-28 按 PAY-02 口径改正 CF-04。2026-10-28 按 PAY-03 改正 CF-05：故障点在事务提交之后，同步拒绝的 source 为 SYNC，Pay 服务端处理超时 5 秒。2026-10-28 按 MQ-01 在 CF-18 的 Add 节点写明 occurred_at、next_retry_at 取 Add 时的注入时钟，无有效 span 时 trace_context 为 {}；投递器半边不改。当前环境没有 mmdc，未渲染 SVG。2026-11-01 按 PAY-04 改正 CF-05、CF-06：同步拒绝已把订单推进为 FAILED，Pay 返回 30006 和该订单；ApplyPayResult 不调用 callback.after_commit，该故障点仍由 GW-06 在 CF-02 调用。当前环境没有 mmdc，未渲染 SVG。2026-11-01 按 PAY-06 核对 CF-08：图已对齐，未渲染 SVG。2026-11-01 PAY-06：CF-08 在没有渠道流水号时先查单。图已改该节点，未渲染 SVG。2026-11-01 按 PAY-08 在 CF-01 图下注明 payment 的 QueryPayment 直接读 payment_order，二选一，不缓存，不写。图的节点不改。当前环境没有 mmdc，未渲染 SVG。2026-11-01 按 OPS-01 核对 CF-31：图与实现一致。Redis、Kafka 只留注册口，未注册时不因此让 /readyz 失败；未注册生产者时刷新为空。当前环境没有 mmdc，未渲染 SVG。2026-11-01 按 OPS-05：pprof 只在管理端口，/metrics 仍不提供。CF-31 节点不改。当前环境没有 mmdc，未渲染 SVG。2026-11-02 按 CH-06 M4：SLOW 首次回调与 ACCEPT_TIMEOUT 的 5 秒阻塞已实现；受理上下文 8 秒。图的节点不改。当前环境没有 mmdc，未渲染 SVG，不新增 SVG。2026-11-04 按 REF-02：新插入的退款在额度事务提交后冻结并提交渠道；冻结超时保持 INIT 且不写 channel_txn；置 FAILED 仍是 REF-03。图的节点不改，未渲染 SVG。2026-11-05 按 REF-03 改正 CF-11：分支按结果意图选，补齐各 CAS 未命中的出口；CF-02 补 REFUND 分支的故障点与未知 txn_type 的 10001；CF-10 图下改为置 FAILED 已接通。当前环境没有 mmdc，未渲染 SVG。2026-11-05 按 PAY-05 改正 CF-07：超过 24 小时的行单独出口且不查单，抢占不改 version，补渠道 CLOSED、SUCCESS 缺字段、退款重提前检查 PROCESSING 的分支，重提 REJECTED 的 source 为 SYNC；SL-02 图下注明已实现。当前环境没有 mmdc，未渲染 SVG。2026-11-06 按 REF-05 在 CF-01 图下注明 payment 的 QueryRefund 直接读 refund_order，refund_no 与 out_refund_no 二选一，不缓存，不写。图的节点不改，未渲染 SVG。2026-11-06 PAY-05 审查修复：CF-07 补“任务启动时抢占已到期则跳过”的出口，图下改写停止语义（批次 ctx 立即取消）。当前环境没有 mmdc，未渲染 SVG。2026-11-06 按 TRF-01 改正 CF-34 与 SL-11：幂等读挪到收款方校验之前，1062 后再读不校验收款方，读不到为 10003；图下注明执行步骤是可注入的接口，TRF-02、TRF-03 接入前返回刚插入的 TRYING，1062 的输家不执行。用 mermaid-cli 11.17.1（npx）渲染 CF-34、SL-11 通过，未保存 SVG。2026-11-06 按 TRF-05 在 CF-01 图下注明 payment 的 QueryTransfer 直接读 transfer_order，只有付款商户可查，transfer_no 与 out_transfer_no 二选一，不缓存，不写。图的节点不改，未渲染 SVG。2026-11-06 按 REF-04 改正 CF-12：年龄边界改为“超过 1 小时”（按 created_at，恰好 1 小时仍重试），补扫描上限、并发、超时与各出口；SL-06、CF-10 的“满 1 小时”同步改为“超过 / 不超过”。用 mermaid-cli 11.17.1（npx）渲染 CF-12、SL-06、CF-10 通过，未保存 SVG。2026-11-06 REF-04 审查修复：CF-12 改为按 (updated_at, id) 翻页、每轮 8 秒预算，超时置失败按结果分出口（命中 WARN，另一路已到终态 INFO，10003 重读后已推进为 INFO、仍 INIT 为 ERROR），40001 / 40005 写明两次 ERROR。用 mermaid-cli 11.17.1（npx）渲染 CF-12 通过，未保存 SVG。2026-11-06 按 PAY-07 改 CF-08 的 S2 节点（INIT、PAYING 各 ≤ 100，INIT 逐条，PAYING 并发 ≤ 10），图下注明超时关单的扫描、source = JOB 与停止语义。用 mermaid-cli 11.17.1（npx）渲染 CF-08 通过，未保存 SVG
 > 依据：`docs/02-requirements.md` v3.0、`docs/03-conventions.md` v2.23、`docs/01-tech-decisions.md` D17–D21；图与需求冲突处以需求文档为准
 > 用途：以图的形式确认全部功能性设计。图是需求的视图，规则冲突时以需求文档为准；需求变更后同步修改对应的图。
 
@@ -633,10 +633,10 @@ sequenceDiagram
         A--xP: 超时
         Note over P: 保持 INIT，接口返回 INIT
         loop REF-04 每 10 秒：INIT 且 updated_at ≤ now − 30s
-            alt 创建未满 1 小时
+            alt 创建不超过 1 小时（按 created_at，恰好 1 小时仍重试）
                 P->>A: Freeze（幂等，可能返回已有 FROZEN）
                 Note over P: 成功则从 REF-02 第 2 步继续
-            else 创建满 1 小时
+            else 创建超过 1 小时
                 Note over P: ApplyRefundResult(FAILED, REFUND_TIMEOUT)<br/>渠道一定未收到请求，无资损
                 P->>K: refund.failed
                 K->>A: refund.failed
@@ -1092,6 +1092,8 @@ payment 的 `QueryPayment` 直接读 `payment_order`，`pay_no` 与 `out_trade_n
 
 payment 的 `QueryRefund`（REF-05）直接读 `refund_order`，`refund_no` 与 `out_refund_no` 二选一，不合法为 `10001` 且不读库；他人退款单与不存在都是 `30001`；不缓存，不写。退款查询的网关路由属于 GW-09，尚未实现，上图节点不改。
 
+payment 的 `QueryTransfer`（TRF-05）直接读 `transfer_order`，只有付款商户（行上的 `merchant_id`）可查；`transfer_no` 与 `out_transfer_no` 二选一，不合法为 `10001` 且不读库；收款商户、其他商户与不存在都是 `30001`；不缓存，不写。转账查询的网关路由属于 GW-09，尚未实现，上图节点不改。
+
 #### CF-02 渠道回调入口
 
 覆盖：GW-06。
@@ -1379,7 +1381,7 @@ flowchart TD
     FZ -->|"40004"| AF2["ApplyRefundResult(FAILED, FREEZE_CONFLICT)"]
     AF2 --> OKF(["code 0 + FAILED 退款单"]):::ok
     FZ -->|"超时 / 不可用"| KEEP(["保持 INIT，返回 INIT，由 REF-04 继续（CF-12）"]):::ok
-    FZ -->|"40001 / 40005"| E10003["保持 INIT，返回 10003，ERROR 日志<br/>REF-04 满 1 小时后 REFUND_TIMEOUT"]:::err
+    FZ -->|"40001 / 40005"| E10003["保持 INIT，返回 10003，ERROR 日志<br/>REF-04 超过 1 小时后 REFUND_TIMEOUT"]:::err
     FZ -->|"FROZEN"| F1["故障点 refund.after_freeze（C6）"]:::fault
     F1 --> P1
     subgraph TX2["事务"]
@@ -1442,15 +1444,32 @@ REF-03 按结果意图选分支：REF-04 判 INIT 超时与 REF-02 推进为 PRO
 
 ```mermaid
 flowchart TD
-    S(["每 10 秒"]) --> Q["SELECT refund_order WHERE status = INIT AND updated_at ≤ now − 30s<br/>使用 idx_status_updated_at"]
-    Q --> AGE{"创建满 1 小时"}
-    AGE -->|"否"| RE["从 REF-02 第 1 步（Freeze）重新执行（CF-10）<br/>Freeze 幂等、CAS 互斥、channel_txn.uk_biz_no 唯一"]:::ok
-    AGE -->|"是"| TO["ApplyRefundResult(FAILED, REFUND_TIMEOUT)（CF-11 INIT 分支）<br/>渠道一定未收到请求，无资损"]:::ok
-    TO --> EV["refund.failed：冻结曾成功则解冻，否则写墓碑"]
+    S(["每 10 秒（job = refund_recover）"]) --> Q["SELECT refund_order WHERE status = INIT AND updated_at ≤ now − 30s<br/>首页从头，之后从游标 (updated_at, id) 之后；ORDER BY updated_at, id LIMIT 100<br/>使用 idx_status_updated_at，只读不加锁，每页读库超时 3 秒"]
+    Q -->|"读库失败"| QE(["本轮结束，下一轮再扫"]):::err
+    Q --> T["事务外最多 10 个并发，每笔独立 5 秒超时<br/>停止时不再启动新任务，已开始的跑完"]
+    T --> AGE{"now − created_at > 1 小时<br/>（恰好 1 小时仍重试）"}
+    AGE -->|"否"| RE["从 REF-02 第 1 步（Freeze）重新执行，与 CreateRefund 同一段代码（CF-10）<br/>含故障点 refund.after_freeze<br/>Freeze 幂等、CAS 互斥、channel_txn.uk_biz_no 唯一"]:::ok
+    RE -->|"Freeze 超时 / 不可用"| KEEP(["保持 INIT，下一轮再试"]):::ok
+    RE -->|"40002 / 40004 / 渠道 REJECTED"| RF(["ApplyRefundResult 置 FAILED（CF-11）"]):::ok
+    RE -->|"FROZEN"| PR(["INIT → PROCESSING，INSERT channel_txn，事务外提交渠道"]):::ok
+    RE -->|"40001 / 40005"| RACC(["保持 INIT；submitRefund 先记 ERROR 再映射为 10003，<br/>恢复任务按 10003 再记一次 ERROR；超过 1 小时后走超时出口"]):::err
+    RE -->|"其他 10003"| RERR(["保持 INIT，记 ERROR；其余错误码记 WARN"]):::err
+    AGE -->|"是"| TO["ApplyRefundResult(FAILED, REFUND_TIMEOUT, source = JOB)（CF-11 INIT 分支）<br/>不调用 Freeze；渠道一定未收到请求，无资损"]:::ok
+    TO -->|"CAS INIT → FAILED 命中"| EV["同一事务 refunded_amount −R，outbox refund.failed，WARN 日志<br/>冻结曾成功则解冻，否则写墓碑（MQ-04）"]
+    TO -->|"另一路已到终态：返回该单"| SUP(["已 SUCCESS 或其他原因 FAILED，INFO 日志，不算超时"]):::ok
+    TO -->|"10003"| RR{"重读退款单"}
+    RR -->|"已不是 INIT：另一路已推进"| TE(["正常竞争：ApplyRefundResult 记 WARN，恢复任务记 INFO<br/>退款按另一路的结果继续"]):::ok
+    RR -->|"仍是 INIT（REF-03 第 5 条额度不一致或写库失败），或重读失败"| TERR(["ERROR 日志，保持 INIT，下一轮再试"]):::err
+    T -->|"单笔 panic"| PN(["恢复并计数，其余任务不受影响"]):::err
+    T --> NEXT{"本页满 100 行，且本轮未满 8 秒，且未停止"}
+    NEXT -->|"是：游标 = 本页最后一行"| Q
+    NEXT -->|"否"| END(["本轮结束"])
     classDef ok fill:#e3f6e8,stroke:#2e7d32
     classDef err fill:#fde4e4,stroke:#c62828
     classDef fault fill:#fff4d6,stroke:#b8860b
 ```
+
+多实例不抢占：两个实例可能同时处理同一笔，冻结幂等只留 1 张冻结单，INIT → PROCESSING 的 CAS 只有一方命中并提交渠道。一页处理完（等本页任务全部结束）才取下一页，截止时间整轮固定，同一轮不会重复处理一行；翻页让长期卡住的行每轮只占一次位置。chaos 演练打开 `refund.after_freeze` 时需带 `:once`，否则恢复任务每次重跑都会在同一故障点退出。
 
 ### 4.4 账户
 
@@ -2583,4 +2602,7 @@ R1–R14 来自 v1.x 绘图，已落入需求文档 v2.2；R15、R16 来自 v2.0
 | 2026-11-05 | v2.35 | PAY-05：CF-07 把超过 24 小时的行画成单独出口（置 next_query_at = NULL、不查单、计 exhausted），抢占写 updated_at、不改 version；补 PAY 查得 CLOSED → ApplyPayResult(CLOSED, QUERY)、REFUND 查得 CLOSED 等下一档、SUCCESS 缺金额或完成时间等下一档；NOT_FOUND 关单走 PAY-06 路径，退款仅在 PROCESSING 时重提，REJECTED 的 source 为 SYNC。图下注明第 0 档 10 秒写死、测试配置第一次查单仍在 10 秒后。SL-02 图下注明已实现。未跑 mmdc，不新增 SVG。不改资金流向 |
 | 2026-11-06 | v2.36 | PAY-05 审查修复：CF-07 在抢占与查单之间加判断，任务拿到并发槽时 now ≥ 抢占写入的 next_query_at 则跳过（不查单、不写库、WARN 并计数）。图下改为停止时批次 ctx 立即取消、等槽任务不再启动。未跑 mmdc，不新增 SVG。不改资金流向 |
 | 2026-11-06 | v2.37 | TRF-01：CF-34 的幂等判断挪到收款方校验之前（用户决定：建单后收款方被停用，相同参数重试仍应拿到已有单）；1062 改为指向新的再读节点，不校验收款方，一致返回已有单、不一致 10006、读不到 10003。SL-11 的 Note 同步调整顺序。图下注明执行步骤是可注入接口，TRF-02、TRF-03 接入前返回 TRYING；1062 的输家不执行。用 mermaid-cli 11.17.1（npx）渲染 CF-34、SL-11 通过，未保存 SVG。不改资金流向 |
-| 2026-11-06 | v2.38 | PAY-07：CF-08 的 S2 节点改为“每批 INIT ≤ 100、PAYING ≤ 100，INIT 逐条，PAYING 并发 ≤ 10”；图下注明超时关单的扫描（INIT、PAYING 各一条 `ORDER BY expire_at LIMIT 100`，不加锁，无 filesort）、A1–A3 的 `source = JOB`、`10004` 下一轮重试、每条 10 秒超时与停止语义。用 mermaid-cli 11.17.1（npx）渲染 CF-08 通过，未保存 SVG。不改资金流向 |
+| 2026-11-06 | v2.38 | TRF-05：CF-01 图下注明 payment 的 `QueryTransfer` 直接读 `transfer_order`，只有付款商户可查，`transfer_no` 与 `out_transfer_no` 二选一，不合法为 `10001`，收款商户、其他商户与不存在都是 `30001`，不缓存，不写。网关路由属于 GW-09。CF-01 节点不改。未跑 mmdc，不新增 SVG。不改资金流向 |
+| 2026-11-06 | v2.39 | REF-04：CF-12 的年龄判断由“创建满 1 小时”改为 `now − created_at > 1 小时`，恰好 1 小时仍重新冻结（与 PAY-05 的 24 小时边界口径一致，文字澄清，需求原文即“超过 1 小时”）；补扫描 `ORDER BY updated_at LIMIT 100`、只读不加锁、读库超时 3 秒，事务外 10 并发、每笔 5 秒超时，重新执行的各出口（超时保持 INIT、40002 / 40004 / REJECTED 置 FAILED、FROZEN 推进为 PROCESSING、40001 / 40005 / 10003 记日志），超时置 FAILED 时不调用 Freeze、source = JOB，CAS 未命中为 10003，单笔 panic 恢复并计数；图下注明多实例不抢占与 chaos 需 `:once`。SL-06 的 alt 文字与 CF-10 的 40001 / 40005 节点同步改为“超过 1 小时”。用 mermaid-cli 11.17.1（npx）渲染 CF-12、SL-06、CF-10 通过，未保存 SVG。不改资金流向 |
+| 2026-11-06 | v2.40 | REF-04 审查修复：CF-12 的扫描改为按 `(updated_at, id)` 翻页，每页 100 行，一页处理完再取下一页，不足一页、本轮满 8 秒或停止时结束，长期卡住的行不再挡住后面的行。超时置失败的出口按结果拆开：CAS 命中记 WARN；另一路已到终态（SUCCESS 或其他原因 FAILED）返回该单，记 INFO；返回 10003 时重读，已不是 INIT 是正常竞争（ApplyRefundResult 记 WARN，恢复任务记 INFO），仍是 INIT 或重读失败才记 ERROR。40001 / 40005 节点写明 submitRefund 先记 ERROR 再映射为 10003，恢复任务再记一次。用 mermaid-cli 11.17.1（npx）渲染 CF-12 通过，未保存 SVG。不改资金流向 |
+| 2026-11-06 | v2.41 | PAY-07：CF-08 的 S2 节点改为“每批 INIT ≤ 100、PAYING ≤ 100，INIT 逐条，PAYING 并发 ≤ 10”；图下注明超时关单的扫描（INIT、PAYING 各一条 `ORDER BY expire_at LIMIT 100`，不加锁，无 filesort）、A1–A3 的 `source = JOB`、`10004` 下一轮重试、每条 10 秒超时与停止语义。用 mermaid-cli 11.17.1（npx）渲染 CF-08 通过，未保存 SVG。不改资金流向 |

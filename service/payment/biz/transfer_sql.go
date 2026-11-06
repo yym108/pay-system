@@ -31,6 +31,13 @@ SELECT transfer_no, merchant_id, out_transfer_no, payee_merchant_id, amount, cur
 FROM transfer_order
 WHERE merchant_id = ? AND out_transfer_no = ?`
 
+const transferByNoSQL = `
+SELECT transfer_no, merchant_id, out_transfer_no, payee_merchant_id, amount, currency, remark, notify_url,
+       mode, payer_shard, payee_shard, status, fail_code, txn_no, retry_count, next_retry_at, finished_at,
+       version, created_at, updated_at
+FROM transfer_order
+WHERE transfer_no = ?`
+
 type sqlTransferStore struct {
 	db *sqlx.DB
 }
@@ -59,6 +66,22 @@ func (s sqlTransferStore) transferByMerchantOut(ctx context.Context, merchantID,
 	}
 	// 列排序规则可能命中字节不同的键。只认完全相同的商户号和商户转账单号。
 	if row.MerchantID != merchantID || row.OutTransferNo != outTransferNo {
+		return TransferOrder{}, false, nil
+	}
+	return row, true, nil
+}
+
+// transferByNo 走 uk_transfer_no。不比较商户号，商户号由调用方比较（TRF-05）。
+func (s sqlTransferStore) transferByNo(ctx context.Context, transferNo string) (TransferOrder, bool, error) {
+	row, err := scanTransfer(s.db.QueryRowContext(ctx, transferByNoSQL, transferNo))
+	if errors.Is(err, sql.ErrNoRows) {
+		return TransferOrder{}, false, nil
+	}
+	if err != nil {
+		return TransferOrder{}, false, err
+	}
+	// 列排序规则可能命中字节不同的单号。只认完全相同的 transfer_no。
+	if row.TransferNo != transferNo {
 		return TransferOrder{}, false, nil
 	}
 	return row, true, nil

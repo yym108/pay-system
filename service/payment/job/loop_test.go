@@ -225,3 +225,11 @@ func TestNewQueryCompensate(t *testing.T) {
 		t.Fatalf("loop = %s %s", l.name, l.interval)
 	}
 }
+
+// REF-04 规则 1：退款卡单恢复每 10 秒执行一次，日志字段 job 为 refund_recover。
+func TestNewRefundRecover(t *testing.T) {
+	l := NewRefundRecover(func(context.Context) error { return nil })
+	if l.interval != RefundRecoverInterval || RefundRecoverInterval != 10*time.Second || l.name != "refund_recover" {
+		t.Fatalf("loop = %s %s", l.name, l.interval)
+	}
+}

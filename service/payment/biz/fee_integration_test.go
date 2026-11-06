@@ -22,6 +22,10 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	// REF-04 验收 1 重新执行本测试二进制作为被 kill 的子进程，见 refund_recover_integration_test.go。
+	if os.Getenv(refundCrashChildEnv) != "" {
+		os.Exit(runRefundCrashChild())
+	}
 	code := m.Run()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	err := testkit.Shutdown(ctx)
