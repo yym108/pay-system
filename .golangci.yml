@@ -34,6 +34,8 @@ linters:
             - "!**/service/payment/**/refund_account_integration_test.go"
             # REF-04 的崩溃恢复测试同样要用真实 account biz 证明冻结单只有 1 张。
             - "!**/service/payment/**/refund_recover_integration_test.go"
+            # TRF-02 验收要直接调用 account biz 证明余额与凭证。生产代码仍禁止。
+            - "!**/service/payment/**/transfer_local_integration_test.go"
           allow:
             - github.com/yym108/pay-system/service/payment
           deny:

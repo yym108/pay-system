@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 3.3.11 |
+| 文档版本 | 3.3.12 |
 | API 版本 | v1（路径前缀 `/v1`） |
 | 最后修改 | 2026-11-06 |
 | 状态 | 设计基线，实现须与本文一致 |
@@ -78,6 +78,7 @@
 | 3.3.9 | 2026-11-06 | `QueryRefund` 已实现，规则同 `QueryPayment`。直接读 `refund_order`，不缓存，不写。他人退款单与不存在都是已有的 `30001`。`refund_no` 与 `out_refund_no` 二选一不合法是已有的 `10001`，不进业务错误列。此前该方法返回 `10003`。服务端处理超时 2 秒。网关路由仍属 GW-09，尚未提供。不新增字段，不新增错误码，不改 IDL | §1、§4.6、§10.2 | REF-05 |
 | 3.3.10 | 2026-11-06 | 创建转账已落地。`CreateTransfer` 原先一律返回 `10003`，现在校验参数后先按 `(merchant_id, out_transfer_no)` 查已有单，没有已有单时再校验收款方并插入 TRYING 转账单（`mode` 按双方分片为 LOCAL 或 TCC），返回刚插入的转账单，code 0。同一请求内的执行属于 TRF-02、TRF-03，尚未接入，因此暂时不会返回 SUCCESS、FAILED 或 `40002`，也不移动资金。幂等命中返回已有单，不再校验收款方：建单后收款商户被停用，相同参数重试仍返回已有单，不是 `30008`；参数不同为 `10006`。`10001`、`10006`、`30008` 按 §4.8。付款商户号格式不合法为 `10001`。`remark` 未传或传空串都按未传处理。不新增字段，不新增错误码，不改 IDL。 | §1、§4.8、§10.2 | TRF-01 |
 | 3.3.11 | 2026-11-06 | `QueryTransfer` 已实现，规则同 `QueryRefund`，只有付款商户可以查询。直接读 `transfer_order`，不缓存，不写。收款商户、其他商户与不存在都是已有的 `30001`。`transfer_no` 与 `out_transfer_no` 二选一不合法是已有的 `10001`，不进业务错误列。此前该方法返回 `10003`。服务端处理超时 2 秒。网关路由仍属 GW-09，尚未提供。不新增字段，不新增错误码，不改 IDL | §1、§4.9、§10.2 | TRF-05 |
+| 3.3.12 | 2026-11-06 | `CreateTransfer` 的 LOCAL 现在调用 `TransferLocal`。SUCCESS、FAILED（含 `fail_code = ACCOUNT_INVALID`）与本次执行到余额不足时的 `40002` 都会返回。TCC 仍返回刚插入的 TRYING。超时、`10003`、`10004`、`10001`、`10006` 保持 TRYING 且 code 0。服务端处理超时仍是 2 秒。不新增字段，不新增错误码，不改 IDL | §1、§4.8、§10.2 | TRF-02 |
 
 ## 1. 接口总览
 
@@ -475,7 +476,7 @@ payment 的 `QueryRefund` 直接读 `refund_order`，不缓存，不写行，不
 
 超时、`10003`、`10004` 时可用相同参数重试：返回已有转账单，不会重复转账。
 
-当前实现（TRF-01）：转账单插入后返回 `TRYING`，code 0。同一请求内的执行在 TRF-02（LOCAL）、TRF-03（TCC）完成后接入，在此之前不会移动资金，也不会返回 `40002`。`remark` 传空串按未传处理。
+当前实现（TRF-02）：`mode = LOCAL` 时同一请求内调用 `TransferLocal`。SUCCESS 返回 code 0；本次执行到 `INSUFFICIENT_BALANCE` 返回 `40002` 并携带转账单；`ACCOUNT_INVALID` 等其他 FAILED 返回 code 0。超时、`10003`、`10004`、`10001`、`10006` 保持 TRYING 且 code 0。`mode = TCC` 仍返回刚插入的 TRYING，不移动资金。未装执行器时也返回 TRYING。`remark` 传空串按未传处理。服务端处理超时仍是 2 秒。
 
 示例（`M100001` 在分片 1，`M100002` 在分片 0，跨分片）：
 
@@ -1005,7 +1006,7 @@ account RPC 以商户号（或 owner）为入参，由 account 按商户号路�
 
 `CreateTransfer` 的响应码规则同 §4.8：本次请求执行到 FAILED 且 `fail_code = INSUFFICIENT_BALANCE` → `biz_code = 40002` 并携带转账单；其他 FAILED、SUCCESS、处理中状态与幂等命中 → 成功返回。
 
-`CreateTransfer`（TRF-01）已实现插入部分。请求为 nil 返回 `10001`，不进 biz。付款方 `merchant_id` 格式不合法（不是 `M` + 6 位数字）也返回 `10001`；付款商户状态由网关校验，这里不再读库。先按 `(merchant_id, out_transfer_no)` 读已有单，命中时只按 §4.8 比较，不再校验收款方。没有已有单才校验收款方，可读 `MERCHANT_CONFIG_CACHE_TTL` 内的商户配置缓存。插入遇唯一键冲突后在插入之外按 `(merchant_id, out_transfer_no)` 再读，不校验收款方，一致返回已有单且不再执行；读不到（`transfer_no` 撞号）返回已有的 `10003`。发号时钟回拨返回已有的 `10004`。读商户或读写转账单失败返回 `10003`。`10003`、`10004` 不进上表业务错误列。执行器未接入时返回刚插入的 TRYING 转账单，`biz_code = 0`。服务端处理超时仍是 2 秒；TRF-02、TRF-03 接入 account 调用时再评估是否与 `CreateRefund` 一样改为 5 秒。不新增错误码，不改 IDL。
+`CreateTransfer`（TRF-01）已实现插入部分。请求为 nil 返回 `10001`，不进 biz。付款方 `merchant_id` 格式不合法（不是 `M` + 6 位数字）也返回 `10001`；付款商户状态由网关校验，这里不再读库。先按 `(merchant_id, out_transfer_no)` 读已有单，命中时只按 §4.8 比较，不再校验收款方。没有已有单才校验收款方，可读 `MERCHANT_CONFIG_CACHE_TTL` 内的商户配置缓存。插入遇唯一键冲突后在插入之外按 `(merchant_id, out_transfer_no)` 再读，不校验收款方，一致返回已有单且不再执行；读不到（`transfer_no` 撞号）返回已有的 `10003`。发号时钟回拨返回已有的 `10004`。读商户或读写转账单失败返回 `10003`。`10003`、`10004` 不进上表业务错误列。LOCAL 已接入：事务外调用 `TransferLocal`，成功或失败后再用一个事务 CAS 并写 outbox。本次执行到 `INSUFFICIENT_BALANCE` 时 `biz_code = 40002` 并携带转账单。超时、`10003`、`10004`、`10001`、`10006` 返回 TRYING 且 `biz_code = 0`。`40001`、`40005` 写成 FAILED / `ACCOUNT_INVALID`，`biz_code = 0`。TCC 与未装执行器时仍返回刚插入的 TRYING。服务端处理超时仍是 2 秒，不改为 5 秒。不新增错误码，不改 IDL。
 
 `QueryTransfer`（TRF-05）已实现，规则同 `QueryRefund`，只有付款商户可以查询。响应类型是 `Transfer`，不带 `biz_code`。成功时 RPC error 为 nil 并返回转账单。请求为 nil，或 `transfer_no` 与 `out_transfer_no` 两个都空、两个都非空，返回已有的 `10001`（空串算没提供，不 trim），handler 用 `ToBizStatus`，不读库。`10001` 不进上表业务错误列。只提供 `transfer_no` 时直接读 `transfer_order`：没有行，或 `merchant_id` 与库中逐字节不同（收款商户、其他商户、空商户号），都返回已有的 `30001`。只提供 `out_transfer_no` 时按 `(merchant_id, out_transfer_no)` 读：没有行返回 `30001`。库列排序规则可能放宽匹配，读回后单号和商户号都逐字节比较，不同也是 `30001`。几种情况同一个错误，走 `BizStatusError`，不带转账单。查到且商户匹配则原样返回该行，状态可以是 `TRYING`、`CONFIRMING`、`CANCELLING`、`SUCCESS`、`FAILED`，不推进状态，不改 `version`，不调用 account，不读商户配置，不写 outbox。不缓存。读库失败返回 `10003`。服务端处理超时 2 秒。不新增错误码，不改 IDL。
 

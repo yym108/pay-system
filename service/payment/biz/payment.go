@@ -119,6 +119,8 @@ type Payments struct {
 	queryPolicy    QueryPolicy
 	transfers      transferStore
 	transferExec   TransferExecutor
+	// localTransfer 只执行 mode=LOCAL。TCC 留给 TRF-03。transferExec 非空时优先。
+	localTransfer LocalTransferrer
 	// transferRecoverDelay 是 TRANSFER_RECOVER_DELAY，由 UseTransfer 覆盖。
 	transferRecoverDelay time.Duration
 }

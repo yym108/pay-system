@@ -390,7 +390,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | REF-04 | 退款卡单恢复 | P0 | M4 | REF-02、REF-03、BASE-15 | DONE |
 | REF-05 | 退款查询 | P0 | M4 | REF-01 | DONE |
 | TRF-01 | 创建转账单 | P0 | M4 | PAY-01、ACC-13 | DONE |
-| TRF-02 | 同分片转账执行 | P0 | M4 | TRF-01、ACC-07、ACC-11、MQ-01 | TODO |
+| TRF-02 | 同分片转账执行 | P0 | M4 | TRF-01、ACC-07、ACC-11、MQ-01 | DONE |
 | TRF-03 | 跨分片转账 TCC 协调 | P0 | M4 | TRF-01、ACC-04~06、ACC-14、ACC-11、MQ-01、BASE-15 | TODO |
 | TRF-04 | 转账恢复任务 | P0 | M4 | TRF-02、TRF-03、BASE-15 | TODO |
 | TRF-05 | 转账查询 | P0 | M4 | TRF-01 | DONE |
@@ -1912,7 +1912,7 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 
 实现说明（2026-11-06，TRF-01 落地时的澄清，不改资金流向、表结构和错误码）：
 
-- 第 5 条的执行是可注入的执行器（LOCAL 走 TRF-02，TCC 走 TRF-03）。TRF-02、TRF-03 完成前没有装执行器，提交后返回刚插入的 TRYING 转账单，code 0；本功能点不调用 account、不写 outbox。转账单停在 TRYING，由 TRF-04 按 `next_retry_at` 接管。
+- 第 5 条的执行是可注入的执行器（LOCAL 走 TRF-02，TCC 走 TRF-03）。未调用 `UseTransfer` 的执行器、也未装 `LocalTransferrer` 时，提交后返回刚插入的 TRYING 转账单，code 0，不调用 account、不写 outbox。生产进程对 LOCAL 装上 TRF-02 的账户客户端；TCC 仍返回 TRYING，由 TRF-04 按 `next_retry_at` 接管。
 - 校验顺序：参数（`10001`）→ 按 `(merchant_id, out_transfer_no)` 读已有单（命中按第 3 条返回已有单或 `10006`）→ 收款方（`30008`）→ 插入。已有单号换了不合法的收款方（例如转给自己）也是 `10006`。付款商户号来自验签结果，格式不合法（`shard.Of` 失败）同样返回 `10001`；付款商户的状态由网关校验，这里不再读库。收款商户配置可以来自 `MERCHANT_CONFIG_CACHE_TTL` 内的缓存；读商户失败不是 `30008`，按依赖错误返回。
 - `notify_url` 显式传空串返回 `10001`（同 PAY-02）。`remark` 未传或传空串都存 NULL，不参与第 3 条的幂等比较。
 - 插入遇 1062 时在这条插入之外再读 `(merchant_id, out_transfer_no)`：读到则按第 3 条比较，一致返回已有单且不再执行，执行只由插入成功的那次请求负责；读不到说明冲突的是 `uk_transfer_no`（发号撞号），返回 `10003`。
@@ -1940,8 +1940,16 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 
 验收：
 
-- [ ] A 余额 1000，100 个并发请求各转 20 给同分片的 C（不同 `out_transfer_no`），恰好 50 个 SUCCESS、50 个 FAILED（`40002`），A + C 不变，`CheckBalance` 通过。
-- [ ] account 不可用：接口返回 TRYING，转账单保持 TRYING，没有转账凭证（恢复后的推进由 TRF-04 验收）。
+- [x] A 余额 1000，100 个并发请求各转 20 给同分片的 C（不同 `out_transfer_no`），恰好 50 个 SUCCESS、50 个 FAILED（`40002`），A + C 不变，`CheckBalance` 通过。
+- [x] account 不可用：接口返回 TRYING，转账单保持 TRYING，没有转账凭证（恢复后的推进由 TRF-04 验收）。
+
+实现说明（2026-11-06，TRF-02 落地时的澄清，不改资金流向、表结构和错误码）：
+
+- 只执行 `mode = LOCAL`。`TCC` 即使装了账户客户端也返回刚插入的 TRYING，不调用 `TransferLocal`。生产在 `cmd/payment` 里 `Dial("account:8882")` 后 `UseLocalTransfer`；`UseTransfer` 的执行器仍为 nil。单测注入的 `TransferExecutor` 优先于 local。nil 执行器且未装 local 时行为与 TRF-01 相同。
+- `TransferLocal` 在 payment 事务外调用。返回 SUCCESS 或 FAILED 后，另开一个 `dbx.WithTx`：CAS `WHERE transfer_no AND status = TRYING`，`version = version + 1`，`finished_at` 与 `updated_at` 用注入时钟截断到毫秒，并在同一事务写一条 outbox。SUCCESS 写 `txn_no` 和 `transfer.succeeded`；FAILED 写返回的 `fail_code` 和 `transfer.failed`。账户余额不足是 nil error 加 `INSUFFICIENT_BALANCE`，本次执行的请求再返回已有的 `40002`。
+- 超时、`10003`、`10004` 不 CAS、不写 outbox，接口返回 TRYING 且 code 0。`10001`、`10006` 同样保持 TRYING，只打 ERROR 日志（`transfer_no`、`err_code`）。不增加 `pay_transfer_stuck`，该指标由 TRF-04 在 `retry_count >= 10` 时暴露。不能把这两种码写成 FAILED。
+- `40001`、`40005` 在一个事务里 CAS 为 FAILED，`fail_code = ACCOUNT_INVALID`，写 `transfer.failed`，ERROR 日志，接口 code 0，不是 `40002`。SUCCESS 但 `txn_no` 为空、FAILED 但 `fail_code` 为空、或其他 status：保持 TRYING，ERROR 日志，不 CAS。
+- CAS 影响 0 行：再读当前行并按该行返回，不写第二条 outbox。本库 CAS 或 outbox 失败时事务回滚，行仍是 TRYING，这次请求返回 `10003`，时钟回拨返回 `10004`。相同 `(merchant_id, out_transfer_no)` 的重试不再执行，恢复留给 TRF-04，`TransferLocal` 幂等。服务端处理超时仍是 2 秒。账户调用 500ms、超时重试 1 次，正常成功路径能在 2 秒内返回；服务端截止先到则按规则 4 保持 TRYING。
 
 #### TRF-03 跨分片转账 TCC 协调
 
@@ -3256,3 +3264,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-06 | v3.0 | REF-04 文字更正：实现说明“吞吐有上限”里每笔冻结的最长耗时由 0.5 秒改为约 1 秒（account 客户端调用超时 500ms，超时重试 1 次），account 超时时每页约 10 秒，一轮只处理一页。代码注释同步。规则与行为不变。 |
 | 2026-11-06 | v3.0 | PAY-07：超时关单落地。INIT、PAYING 各一条扫描，`WHERE status = ? AND expire_at <= now ORDER BY expire_at LIMIT 100`，合计每批至多 200 条，走 `idx_status_expire_at` 无 filesort，不加锁，恰好 `expire_at = now` 算过期。每条复用 PAY-06 的关单代码，PAYING 写入结果的 `source = JOB`；`source` 按发起流程取值（NOTIFY / QUERY / CLOSE / JOB / ADMIN / SYNC）。INIT 先逐条关闭，PAYING 再以最多 10 个并发关闭；调用失败不写库，下一轮重试。每条 10 秒超时，不随批次取消，单条 panic 恢复并计数；失败按错误码计入 `pay_timeout_close_failures_total`（OPS-03），`50002` 记 ERROR。成功日志不区分是否本实例写入。定时循环复用 PAY-05 的 job 循环，每 5 秒一次，日志字段 `job = timeout_close`（约定 §7.5）。写明已知限制：持续失败的 PAYING 行超过 100 条时占满 PAYING 配额；`50002` 这类不可重试的失败每 5 秒重试，没有退避。不改资金流向，不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
 | 2026-11-06 | v3.0 | PAY-07 文字更正，不改规则与行为：实现说明已知限制里“直到 PAY-05 在创建 60 秒后按 NOT_FOUND 关单”改为从渠道流水创建计时，PAY-05 约在 110 秒那次查单才关；发起支付最晚在过期前 30 秒，任何过期时长下都可能与超时关单重叠，期间超时关单最多约 16 次 `10004`。 |
+| 2026-11-06 | v3.0 | TRF-02：同分片转账执行落地。只执行 mode=LOCAL；TCC 仍返回 TRYING。TransferLocal 在事务外，CAS TRYING→SUCCESS/FAILED 与一条 outbox 在同一个 WithTx。超时、10003、10004、10001、10006 保持 TRYING。40001、40005 写成 FAILED/ACCOUNT_INVALID。余额不足仍是本次请求的 40002。CAS 影响 0 行再读。本库 CAS 失败返回 10003 或 10004，行仍 TRYING，相同商户单号不再执行。服务端超时仍 2 秒。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |

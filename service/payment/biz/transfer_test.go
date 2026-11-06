@@ -51,13 +51,15 @@ func (m *mapMerchants) callCount() int {
 
 // memTransfers 模拟 transfer_order 的两个唯一键。
 type memTransfers struct {
-	mu       sync.Mutex
-	rows     []TransferOrder
-	inserts  int
-	reads    int
-	failIns  error
-	readErr  error
-	forceDup bool
+	mu        sync.Mutex
+	rows      []TransferOrder
+	inserts   int
+	reads     int
+	failIns   error
+	readErr   error
+	finishErr error
+	forceDup  bool
+	finishes  int
 	// beforeInsert 在插入检查唯一键之前调用，用来让并发请求都越过预读。
 	beforeInsert func()
 }
@@ -97,6 +99,37 @@ func (m *memTransfers) insertTransfer(_ context.Context, row TransferOrder) erro
 	}
 	m.rows = append(m.rows, row)
 	return nil
+}
+
+func (m *memTransfers) finishTransfer(_ context.Context, row TransferOrder, status, failCode, txnNo string, at time.Time, _ *idgen.Generator, _ clock.Clock) (TransferOrder, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.finishes++
+	if m.finishErr != nil {
+		return TransferOrder{}, false, m.finishErr
+	}
+	for i := range m.rows {
+		if m.rows[i].TransferNo != row.TransferNo {
+			continue
+		}
+		if m.rows[i].Status != transferStatusTrying {
+			return m.rows[i], false, nil
+		}
+		m.rows[i].Status = status
+		m.rows[i].FailCode = failCode
+		m.rows[i].TxnNo = txnNo
+		m.rows[i].FinishedAt = at
+		m.rows[i].UpdatedAt = at
+		m.rows[i].Version++
+		return m.rows[i], true, nil
+	}
+	return TransferOrder{}, false, errno.ErrInternal
+}
+
+func (m *memTransfers) finishCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.finishes
 }
 
 func (m *memTransfers) snapshot() []TransferOrder {

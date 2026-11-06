@@ -105,8 +105,9 @@ func serve(cfg config.Payment, logOut io.Writer) error {
 	}
 	payments.UseRefund(biz.NewAccountRefundFreezer(accountCli), channelClient, payments, cfg.ChannelNotifyURL)
 	payments.UseQuery(channelClient, biz.QueryPolicy{Backoff: cfg.QueryBackoff})
-	// 转账执行是 TRF-02、TRF-03，未接入前 CreateTransfer 返回刚插入的 TRYING。
+	// LOCAL 走账户客户端。TCC 仍返回刚插入的 TRYING，执行是 TRF-03。
 	payments.UseTransfer(cfg.TransferRecoverDelay, nil)
+	payments.UseLocalTransfer(biz.NewAccountLocalTransfer(accountCli))
 	queryLoop := job.NewQueryCompensate(payments.RunQueryBatch)
 	refundLoop := job.NewRefundRecover(payments.RunRefundRecoverBatch)
 	closeLoop := job.NewTimeoutClose(payments.RunTimeoutCloseBatch)
