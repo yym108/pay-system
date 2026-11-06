@@ -115,6 +115,10 @@ type Payments struct {
 	refundFreezer  RefundFreezer
 	refundChannel  ChannelRefunder
 	refundApplier  RefundResultApplier
+	transfers      transferStore
+	transferExec   TransferExecutor
+	// transferRecoverDelay 是 TRANSFER_RECOVER_DELAY，由 UseTransfer 覆盖。
+	transferRecoverDelay time.Duration
 }
 
 // App 把商户读取和支付单创建合成 handler 使用的服务。
@@ -187,22 +191,27 @@ func (a *App) ApplyRefundNotify(ctx context.Context, in RefundResult) (string, e
 
 func newPayments(merchants MerchantLookup, ids Numberer, clk clock.Clock, allowHosts string, orders orderStore) *Payments {
 	return &Payments{
-		merchants: merchants,
-		ids:       ids,
-		clk:       clk,
-		hosts:     parseAllowHosts(allowHosts),
-		orders:    orders,
+		merchants:            merchants,
+		ids:                  ids,
+		clk:                  clk,
+		hosts:                parseAllowHosts(allowHosts),
+		orders:               orders,
+		transferRecoverDelay: defaultTransferRecoverDelay,
 	}
 }
 
-// NewPayments 使用调用方传入的库写入支付单。
-// db 为 nil 时创建支付单返回 10003。allowHosts 是逗号分隔的通知主机白名单。
+// NewPayments 使用调用方传入的库写入支付单、退款单和转账单。
+// db 为 nil 时创建支付单、退款单、转账单返回 10003。allowHosts 是逗号分隔的通知主机白名单。
 func NewPayments(merchants MerchantLookup, ids Numberer, clk clock.Clock, allowHosts string, db *sqlx.DB) *Payments {
 	var orders orderStore
 	if db != nil {
 		orders = sqlOrderStore{db: db}
 	}
-	return newPayments(merchants, ids, clk, allowHosts, orders)
+	p := newPayments(merchants, ids, clk, allowHosts, orders)
+	if db != nil {
+		p.transfers = sqlTransferStore{db: db}
+	}
+	return p
 }
 
 func parseAllowHosts(raw string) []string {

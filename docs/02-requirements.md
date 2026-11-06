@@ -389,7 +389,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | REF-03 | 退款结果推进 | P0 | M4 | REF-02、GW-06 | DONE |
 | REF-04 | 退款卡单恢复 | P0 | M4 | REF-02、REF-03、BASE-15 | TODO |
 | REF-05 | 退款查询 | P0 | M4 | REF-01 | TODO |
-| TRF-01 | 创建转账单 | P0 | M4 | PAY-01、ACC-13 | TODO |
+| TRF-01 | 创建转账单 | P0 | M4 | PAY-01、ACC-13 | DONE |
 | TRF-02 | 同分片转账执行 | P0 | M4 | TRF-01、ACC-07、ACC-11、MQ-01 | TODO |
 | TRF-03 | 跨分片转账 TCC 协调 | P0 | M4 | TRF-01、ACC-04~06、ACC-14、ACC-11、MQ-01、BASE-15 | TODO |
 | TRF-04 | 转账恢复任务 | P0 | M4 | TRF-02、TRF-03、BASE-15 | TODO |
@@ -1857,20 +1857,28 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 规则：
 
 1. 入参（`docs/05-api.md` §4.8）：`out_transfer_no`（1–64 位 `[A-Za-z0-9_-]`）、`payee_merchant_id`、`amount`（1–10,000,000）必填；`remark` ≤ 128 字符；`notify_url` 可选，白名单校验同 PAY-02，未传时存空串、通知时取商户默认地址（同支付单）。
-2. 收款商户必须存在、ACTIVE，且不是付款商户本身，否则 `30008`。
-3. 幂等：`(merchant_id, out_transfer_no)` 已存在时，`payee_merchant_id`、`amount`、`notify_url` 全部一致 → 返回已有转账单（不论当前状态，不在本次请求中重新执行）；否则 `10006`。插入遇 1062 同样处理。
+2. 收款商户必须存在、ACTIVE，且不是付款商户本身，否则 `30008`。只对没有已有单的请求校验（见第 3 条）。
+3. 幂等：第 1 条参数校验通过后、第 2 条收款方校验之前，先按 `(merchant_id, out_transfer_no)` 读已有单。已存在时，`payee_merchant_id`、`amount`、`notify_url` 全部一致 → 返回已有转账单（不论当前状态，不在本次请求中重新执行，不再校验收款方）；否则 `10006`。插入遇 1062 同样处理，再读命中时也不校验收款方。理由：建单后收款商户可能被停用，商户用相同参数重试仍应拿到已有单，而不是 `30008`。（2026-11-06 用户决定）
 4. 插入 `transfer_order`：`transfer_no`（`TF` 前缀）；`payer_shard`、`payee_shard` 由 `shard.Of` 计算；两者相同 `mode = LOCAL`，否则 `TCC`；`status = TRYING`；`next_retry_at = now + TRANSFER_RECOVER_DELAY`（默认 10 秒，供 TRF-04 接管）。
 5. 提交后在同一请求内执行 TRF-02 或 TRF-03，返回执行结束时的转账单。
 6. 响应：本次请求执行到 FAILED 且 `fail_code = INSUFFICIENT_BALANCE` 时返回 `40002` 并在 `data` 中携带转账单（与 REF-02 一致）；其他情况（SUCCESS、处理中状态 TRYING / CONFIRMING / CANCELLING、其他 FAILED，以及第 3 条的幂等命中）一律返回 code 0 和转账单。商户应把非终态视为“处理中”，以通知或查询为准。
 
 异常：参数错误 → `10001`；收款方非法 → `30008`；幂等冲突 → `10006`。
 
+实现说明（2026-11-06，TRF-01 落地时的澄清，不改资金流向、表结构和错误码）：
+
+- 第 5 条的执行是可注入的执行器（LOCAL 走 TRF-02，TCC 走 TRF-03）。TRF-02、TRF-03 完成前没有装执行器，提交后返回刚插入的 TRYING 转账单，code 0；本功能点不调用 account、不写 outbox。转账单停在 TRYING，由 TRF-04 按 `next_retry_at` 接管。
+- 校验顺序：参数（`10001`）→ 按 `(merchant_id, out_transfer_no)` 读已有单（命中按第 3 条返回已有单或 `10006`）→ 收款方（`30008`）→ 插入。已有单号换了不合法的收款方（例如转给自己）也是 `10006`。付款商户号来自验签结果，格式不合法（`shard.Of` 失败）同样返回 `10001`；付款商户的状态由网关校验，这里不再读库。收款商户配置可以来自 `MERCHANT_CONFIG_CACHE_TTL` 内的缓存；读商户失败不是 `30008`，按依赖错误返回。
+- `notify_url` 显式传空串返回 `10001`（同 PAY-02）。`remark` 未传或传空串都存 NULL，不参与第 3 条的幂等比较。
+- 插入遇 1062 时在这条插入之外再读 `(merchant_id, out_transfer_no)`：读到则按第 3 条比较，一致返回已有单且不再执行，执行只由插入成功的那次请求负责；读不到说明冲突的是 `uk_transfer_no`（发号撞号），返回 `10003`。
+- 执行器返回错误时按依赖错误返回，转账单已提交，商户用相同参数重试拿到已有单。第 6 条的 `40002` 只在本次请求执行到 FAILED 且 `fail_code = INSUFFICIENT_BALANCE` 时返回；幂等命中这样的单返回 code 0。
+
 验收：
 
-- [ ] 100 个并发相同请求只生成 1 张转账单，全部返回同一 `transfer_no`。
-- [ ] 相同 `out_transfer_no`、不同金额返回 `10006`。
-- [ ] 转给自己、转给不存在或停用的商户返回 `30008`。
-- [ ] `M100001 → M100003` 为 LOCAL，`M100001 → M100002` 为 TCC。
+- [x] 100 个并发相同请求只生成 1 张转账单，全部返回同一 `transfer_no`。
+- [x] 相同 `out_transfer_no`、不同金额返回 `10006`。
+- [x] 转给自己、转给不存在或停用的商户返回 `30008`。
+- [x] `M100001 → M100003` 为 LOCAL，`M100001 → M100002` 为 TCC。
 
 #### TRF-02 同分片转账执行
 
@@ -3189,3 +3197,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-04 | v3.0 | REF-02：新插入的退款在额度事务提交后冻结并提交渠道。冻结超时或不可用返回 INIT，code 0，不写 channel_txn。account 把处理超时包成 TransError（消息仍是 rpc timeout）时同样返回 INIT。连接拒绝仍是 10003。40001 与 40005 保持 INIT 并返回 10003。40002、40004 和渠道 REJECTED 调用 ApplyRefundResult；该函数的落库属于 REF-03，本切片生产实现返回 10003，不把退款改成 FAILED，不减少 refunded_amount。已有 (merchant_id, out_refund_no) 直接返回已有单，不再次冻结。CreateRefund 的服务端处理超时改为 5 秒，ClosePayment 和其他方法仍是 2 秒。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
 | 2026-11-05 | v3.0 | REF-03：ApplyRefundResult 落库。分支按结果意图选：FAILED 且 fail_code 为 INSUFFICIENT_BALANCE、FREEZE_CONFLICT、REFUND_TIMEOUT 走第 2 条（只 CAS INIT → FAILED，不碰 channel_txn），其余走第 1 条，REF-04 判超时与推进为 PROCESSING 并发时返回 10003，不把已提交渠道的退款判失败。第 1 条 FAILED 的 fail_code 用传入值，未传为 CHANNEL_FAILED。渠道 CAS 另加 txn_type = REFUND，读到 PAY 流水按 30001 处理。第 2 条 CAS 未命中时已 FAILED 视为重复，已 SUCCESS 是并发竞争、WARN 日志、不计冲突并返回该单，仍 INIT 或 PROCESSING 为 10003。来源不接受 CLOSE。第 5 条的 ERROR 日志与计数在事务回滚后各记一次；日志里的 refund_no、pay_no 被兜底扫描部分遮盖，靠指标加 SQL 定位。GW-06 handler 的 REFUND 分支接到 ApplyRefundNotify，提交后调用 callback.after_commit；未知 txn_type 由 10003 改为 10001，网关表现不变。REF-02 删去“本切片生产实现返回 10003”。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
 | 2026-11-05 | v3.0 | REF-03 文字澄清：实现说明里“事务重试不会重复记”改为写明真实原因，ERROR 日志在回滚之后输出，记录时回滚已完成；释放额度影响 0 行返回的错误不是 MySQL 错误号，`dbx.WithTx` 不重试。不改规则，不改代码逻辑，不新增错误码，不改表，不改 IDL。 |
+| 2026-11-06 | v3.0 | TRF-01：CreateTransfer 校验参数后先按 (merchant_id, out_transfer_no) 读已有单，命中时按规则 3 返回已有单或 10006，不再校验收款方；没有已有单才校验收款方（30008）并插入 TRYING 转账单（用户决定：建单后收款方被停用，相同参数重试仍应拿到已有单），mode 按两方分片得出，next_retry_at 为 now + TRANSFER_RECOVER_DELAY。同一请求内的执行是可注入的执行器，TRF-02、TRF-03 完成前未装执行器，返回刚插入的 TRYING 单，code 0，不调用 account、不写 outbox。付款商户号格式不合法为 10001；remark 未传或空串存 NULL，不参与幂等比较；1062 时在插入之外再读，一致返回已有单且不再执行，读不到为 10003。40002 只在本次执行到 INSUFFICIENT_BALANCE 时返回。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |

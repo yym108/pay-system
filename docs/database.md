@@ -526,7 +526,7 @@
 ### 4.9 `transfer_order` — 转账单
 
 - **Purpose:** 商户间转账的状态机与跨分片 TCC 协调者的持久化状态（`docs/02-requirements.md` §4.6、D18）。`mode` 在创建时由双方分片决定：同分片 LOCAL，由 account 一个本地事务完成；跨分片 TCC，由 payment 驱动付款方冻结分支与收款方 `transfer_branch` 分支。
-- **Lifecycle:** LOCAL：TRYING → SUCCESS / FAILED。TCC：TRYING → CONFIRMING → SUCCESS；TRYING → CANCELLING → FAILED。TRYING 是唯一可以改变决策的状态；CONFIRMING、CANCELLING 落盘后只能前进，由恢复任务（TRF-04）重试到终态。
+- **Lifecycle:** LOCAL：TRYING → SUCCESS / FAILED。TCC：TRYING → CONFIRMING → SUCCESS；TRYING → CANCELLING → FAILED。TRYING 是唯一可以改变决策的状态；CONFIRMING、CANCELLING 落盘后只能前进，由恢复任务（TRF-04）重试到终态。TRF-01 以自动提交的单条 INSERT 写入 `status = TRYING`、`version = 0`、`retry_count = 0`，`fail_code`、`txn_no`、`finished_at` 为 NULL，`created_at`、`updated_at` 由应用时钟显式写入，`next_retry_at = created_at + TRANSFER_RECOVER_DELAY`。插入前按 `uk_merchant_out_transfer_no` 读已有行；插入 1062 后在插入之外再按同一键读，读不到说明冲突的是 `uk_transfer_no`。TRF-01 不更新行，状态推进属于 TRF-02~04。无 DDL。
 - **Sensitivity:** 内部交易数据，`remark` 不得包含个人信息。
 - **Authoritative source:** `migrations/payment/000001_init.up.sql`。
 - **Write owners/read consumers:** payment 写（TRF-01~04）；recon 只读（REC-05）。
@@ -543,7 +543,7 @@
 | `payee_merchant_id` | VARCHAR(32) | 否 | — | `ck_transfer_self` | 收款商户，创建时校验存在、ACTIVE 且不是付款商户（`30008`） | 内部 |
 | `amount` | BIGINT | 否 | — | `ck_transfer_amount` | > 0，网关限制 ≤ 10,000,000；不收手续费 | 财务 |
 | `currency` | CHAR(3) | 否 | `'CNY'` | `ck_transfer_currency` | | 内部 |
-| `remark` | VARCHAR(128) | 是 | NULL | — | 转账附言，≤ 128 字符 | 内部 |
+| `remark` | VARCHAR(128) | 是 | NULL | — | 转账附言，≤ 128 字符；未传或传空串都存 NULL（TRF-01），不参与幂等比较 | 内部 |
 | `notify_url` | VARCHAR(512) | 否 | `''` | — | 为空时使用付款商户默认地址；参与幂等比较 | 内部 |
 | `mode` | VARCHAR(16) | 否 | — | `ck_transfer_mode`、`ck_transfer_mode_shard` | LOCAL / TCC，创建时确定，不再变化 | 内部 |
 | `payer_shard` | TINYINT UNSIGNED | 否 | — | `ck_transfer_shard`、`ck_transfer_mode_shard` | `shard.Of(merchant_id)`，0 或 1 | 内部 |
@@ -976,6 +976,7 @@
 | 2026-11-03 | 无（仅文档） | payment_order.refunded_amount、refund_order | REF-01 条件更新加插入，同一事务。无 DDL | 未执行迁移 |
 | 2026-11-04 | 无（仅文档） | refund_order、channel_txn | REF-02：CAS INIT→PROCESSING 与插入 REFUND 的 channel_txn 在同一事务。channel_txn_no 先为空，受理 OK 后再回填。无 DDL | 未执行迁移 |
 | 2026-11-05 | 无（仅文档） | refund_order（Lifecycle）、payment_order.refunded_amount、channel_txn（兼容说明） | REF-03：退款终态 CAS（PROCESSING → SUCCESS / FAILED，INIT → FAILED），FAILED 同事务释放 refunded_amount（条件 refunded_amount >= R），REFUND 流水 CAS 加 txn_type = REFUND。无 DDL | 未执行迁移 |
+| 2026-11-06 | 无（仅文档） | transfer_order（Lifecycle）、`transfer_order.remark` | TRF-01：单条 INSERT 写入 TRYING 转账单，`next_retry_at = created_at + TRANSFER_RECOVER_DELAY`；1062 后在插入之外按 `uk_merchant_out_transfer_no` 再读。`remark` 空串存 NULL。无 DDL | 未执行迁移 |
 
 ## 6. Open Questions
 

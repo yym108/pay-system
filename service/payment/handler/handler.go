@@ -1,7 +1,7 @@
 // Package handler 是 payment 的 Kitex 适配。
 // 只做协议转换和错误码转换，不改 biz 的幂等与 CAS。
 // 已实现 GetMerchantCredential（PAY-01）、CreatePayment（PAY-02）、Pay（PAY-03）、ClosePayment（PAY-06）、QueryPayment（PAY-08）、
-// CreateRefund（REF-02）和 HandleChannelNotify（PAY 分支 GW-06，REFUND 分支 REF-03）。
+// CreateRefund（REF-02）、CreateTransfer（TRF-01）和 HandleChannelNotify（PAY 分支 GW-06，REFUND 分支 REF-03）。
 // 其余方法属于各自的功能点，实现前调用一律返回 10003，不进 biz。
 package handler
 
@@ -215,9 +215,37 @@ func (h *Handler) QueryRefund(_ context.Context, _ *payment.QueryRefundRequest) 
 	return nil, notImplemented()
 }
 
-// CreateTransfer 属于 TRF-01~03，未实现，返回 10003。
-func (h *Handler) CreateTransfer(_ context.Context, _ *payment.CreateTransferRequest) (*payment.CreateTransferResponse, error) {
-	return nil, notImplemented()
+// CreateTransfer 创建转账（TRF-01）。请求为 nil 返回 10001，不进 biz。
+// 40002 放在 biz_code，error 为 nil，并携带已失败的转账单。
+// 其他结果（SUCCESS、处理中、其他 FAILED、幂等命中）biz_code 为 0 并携带转账单。
+// 其余业务错误走 BizStatusError，不带转账单。可选字段把指针原样交给 biz。
+func (h *Handler) CreateTransfer(ctx context.Context, req *payment.CreateTransferRequest) (r *payment.CreateTransferResponse, err error) {
+	defer recoverBiz(ctx, &err)
+	if err = h.ready(); err != nil {
+		return nil, err
+	}
+	if req == nil {
+		return nil, errno.ToBizStatus(errno.ErrInvalidParam)
+	}
+	got, callErr := h.svc.CreateTransfer(ctx, &biz.CreateTransferInput{
+		MerchantID:      req.MerchantId,
+		OutTransferNo:   req.OutTransferNo,
+		PayeeMerchantID: req.PayeeMerchantId,
+		Amount:          money.Amount(req.Amount),
+		Remark:          req.Remark,
+		NotifyURL:       req.NotifyUrl,
+	})
+	if errors.Is(callErr, errno.ErrInsufficientBalance) {
+		code, rpcErr := errno.RPCExit(callErr, true)
+		if rpcErr != nil {
+			return nil, rpcErr
+		}
+		return &payment.CreateTransferResponse{BizCode: code, Transfer: toTransfer(got)}, nil
+	}
+	if callErr != nil {
+		return nil, statusErr(ctx, callErr)
+	}
+	return &payment.CreateTransferResponse{BizCode: 0, Transfer: toTransfer(got)}, nil
 }
 
 // QueryTransfer 属于 TRF-05，未实现，返回 10003。

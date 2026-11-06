@@ -126,6 +126,30 @@ func toRefundOrder(in biz.RefundOrder) *payment.RefundOrder {
 	return out
 }
 
+// toTransfer 按接口 §5.3 输出。fail_code、finished_at 只在有值时设置。
+func toTransfer(in biz.TransferOrder) *payment.Transfer {
+	out := &payment.Transfer{
+		TransferNo:      in.TransferNo,
+		OutTransferNo:   in.OutTransferNo,
+		MerchantId:      in.MerchantID,
+		PayeeMerchantId: in.PayeeMerchantID,
+		Amount:          int64(in.Amount),
+		Currency:        in.Currency,
+		Mode:            in.Mode,
+		Status:          in.Status,
+		CreatedAt:       formatTimestamp(in.CreatedAt),
+	}
+	if in.FailCode != "" {
+		code := in.FailCode
+		out.FailCode = &code
+	}
+	if !in.FinishedAt.IsZero() {
+		ts := formatTimestamp(in.FinishedAt)
+		out.FinishedAt = &ts
+	}
+	return out
+}
+
 func formatTimestamp(t time.Time) base.Timestamp {
 	return t.Truncate(time.Millisecond).In(shanghai).Format(timestampLayout)
 }

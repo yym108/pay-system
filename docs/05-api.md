@@ -2,9 +2,9 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 3.3.8 |
+| 文档版本 | 3.3.9 |
 | API 版本 | v1（路径前缀 `/v1`） |
-| 最后修改 | 2026-11-05 |
+| 最后修改 | 2026-11-06 |
 | 状态 | 设计基线，实现须与本文一致 |
 
 关联文档：需求 `docs/02-requirements.md`（各接口的业务规则以功能点为准）、约定 `docs/03-conventions.md`（错误码、单号、时间格式）。
@@ -75,6 +75,7 @@
 | 3.3.6 | 2026-11-03 | CreateRefund 现在返回刚插入的 INIT 退款单，尚未冻结，尚未调用渠道。此前该方法返回 10003。不新增字段，不改错误码数字，不改 IDL。 | §4.5 | REF-01 |
 | 3.3.7 | 2026-11-04 | 新插入的退款在冻结成功且渠道返回 OK 或结果未知时返回 PROCESSING。冻结超时或不可用返回 INIT，biz_code 为 0，不写 channel_txn。account 把处理超时包成 TransError（消息仍是 rpc timeout）时同样返回 INIT。连接拒绝仍是 10003。40001 与 40005 保持 INIT 并返回 10003。40002、40004 和渠道 REJECTED 会调用 ApplyRefundResult；该函数的落库仍是 REF-03，当前生产实现返回 10003，不把退款改成 FAILED，不减少 refunded_amount。已有商户退款单号直接返回已有单，不再次冻结。CreateRefund 的服务端处理超时改为 5 秒，与网关调用超时一致。不新增字段，不改错误码数字，不改 IDL。 | §4.5 | REF-02 |
 | 3.3.8 | 2026-11-05 | 退款结果推进已落地。`CreateRefund` 在 `40002`、`40004` 和渠道 `REJECTED` 时把退款写成 FAILED（`fail_code` 分别为 `INSUFFICIENT_BALANCE`、`FREEZE_CONFLICT`、`CHANNEL_REJECTED`），同一事务释放 `refunded_amount` 并写 `refund.failed`，再按 §4.5 返回 `40002` / `30006` 并携带退款单，冻结冲突为 code 0。删去“当前生产实现返回 `10003`”。释放额度时发现 `refunded_amount` 小于退款金额（数据已不一致）返回已有的 `10003`，退款保持原状态。`HandleChannelNotify` 的 REFUND 分支已转发到 `ApplyRefundNotify`，SUCCESS 写 `succeeded_at` 并写 `refund.succeeded`，FAILED 释放额度并写 `refund.failed`；重复、冲突、未知 `req_no`、金额不一致的处理与 PAY 分支相同。`txn_type` 既不是 PAY 也不是 REFUND 时由 `10003` 改为已有的 `10001`，网关对两者都返回 HTTP 500，渠道侧表现不变。不新增字段，不新增错误码，不改 IDL。 | §1、§4.5、§7、§10.2 | REF-03 |
+| 3.3.9 | 2026-11-06 | 创建转账已落地。`CreateTransfer` 原先一律返回 `10003`，现在校验参数后先按 `(merchant_id, out_transfer_no)` 查已有单，没有已有单时再校验收款方并插入 TRYING 转账单（`mode` 按双方分片为 LOCAL 或 TCC），返回刚插入的转账单，code 0。同一请求内的执行属于 TRF-02、TRF-03，尚未接入，因此暂时不会返回 SUCCESS、FAILED 或 `40002`，也不移动资金。幂等命中返回已有单，不再校验收款方：建单后收款商户被停用，相同参数重试仍返回已有单，不是 `30008`；参数不同为 `10006`。`10001`、`10006`、`30008` 按 §4.8。付款商户号格式不合法为 `10001`。`remark` 未传或传空串都按未传处理。不新增字段，不新增错误码，不改 IDL。 | §1、§4.8、§10.2 | TRF-01 |
 
 ## 1. 接口总览
 
@@ -100,7 +101,7 @@
 | `POST /v1/refunds` 创建退款 | §4.5 | `PaymentService.CreateRefund` | REF-01、REF-02、REF-03 | 1.0.0 | 2026-11-05 |
 | `GET /v1/refunds/{refund_no}`、`GET /v1/refunds?out_refund_no=` 查询退款 | §4.6 | `PaymentService.QueryRefund` | REF-05 | 1.0.0 | 2026-10-27 |
 | `GET /v1/balance` 查询余额 | §4.7 | `AccountService.GetAccount` | ACC-02 | 1.0.0 | 2026-11-01 |
-| `POST /v1/transfers` 创建转账 | §4.8 | `PaymentService.CreateTransfer` | TRF-01~03 | 2.0.0 | 2026-10-27 |
+| `POST /v1/transfers` 创建转账 | §4.8 | `PaymentService.CreateTransfer` | TRF-01~03 | 2.0.0 | 2026-11-06 |
 | `GET /v1/transfers/{transfer_no}`、`GET /v1/transfers?out_transfer_no=` 查询转账 | §4.9 | `PaymentService.QueryTransfer` | TRF-05 | 2.0.0 | 2026-10-27 |
 | 商户异步通知 | §6 | — | NTF-01、NTF-02 | 1.0.0 | 2026-10-12 |
 | `POST /callback/mockpay` 渠道回调入口 | §7 | `PaymentService.HandleChannelNotify` | GW-06、REF-03 | 1.0.0 | 2026-11-05 |
@@ -441,7 +442,7 @@ payment 的 `QueryPayment` 直接读 `payment_order`，不缓存，不写行，�
 | `remark` | string | 否 | ≤ 128 字符 | 备注 |
 | `notify_url` | string | 否 | ≤ 512，http/https，主机在平台白名单内 | 默认使用商户配置的通知地址；只通知付款商户 |
 
-幂等比较字段：`payee_merchant_id`、`amount`、`notify_url`（缺省按默认值填充后比较）。
+幂等比较字段：`payee_merchant_id`、`amount`、`notify_url`（缺省按默认值填充后比较）。`out_transfer_no` 已存在时只做这项比较，不再校验收款商户：一致返回已有转账单，即使收款商户此后已停用；不一致返回 `10006`。
 
 处理：双方在同一账户分片时 `mode = LOCAL`，account 一个本地事务完成；否则 `mode = TCC`，payment 作为协调者驱动两个分片的 Try / Confirm / Cancel。请求内执行到结束或遇到结果未知为止，返回当时的转账单；未终结的转账由平台恢复任务推进（TRF-04）。
 
@@ -463,10 +464,12 @@ payment 的 `QueryPayment` 直接读 `payment_order`，不缓存，不写行，�
 |---|---|---|
 | 10001 | 参数错误，含 `payee_merchant_id` 格式错误 | 空 |
 | 10006 | `out_transfer_no` 已存在但 `payee_merchant_id`、`amount` 或 `notify_url` 不同 | 空 |
-| 30008 | 收款商户不存在、已停用或与付款商户相同 | 空 |
+| 30008 | 收款商户不存在、已停用或与付款商户相同（只在 `out_transfer_no` 尚无转账单时校验） | 空 |
 | 40002 | 付款商户可用余额不足，转账单已为 FAILED（`fail_code = INSUFFICIENT_BALANCE`） | `Transfer` |
 
 超时、`10003`、`10004` 时可用相同参数重试：返回已有转账单，不会重复转账。
+
+当前实现（TRF-01）：转账单插入后返回 `TRYING`，code 0。同一请求内的执行在 TRF-02（LOCAL）、TRF-03（TCC）完成后接入，在此之前不会移动资金，也不会返回 `40002`。`remark` 传空串按未传处理。
 
 示例（`M100001` 在分片 1，`M100002` 在分片 0，跨分片）：
 
@@ -982,7 +985,7 @@ account RPC 以商户号（或 owner）为入参，由 account 按商户号路�
 
 `GetMerchantCredential` 返回明文密钥，只允许网关调用；调用双方都不得记录响应内容。
 
-`GetMerchantCredential`（PAY-01）：请求为 nil 返回 `10001`。`app_id` 按字节精确匹配，为空、不存在或只是大小写、首尾空格不同都返回 `20004`（`X-App-Id` 不在签名串里，放宽匹配会让同一请求换个写法绕过按 `app_id` 记的 nonce）。`merchant` 表列跟随库默认 `utf8mb4_bin`，区分大小写，但 PAD SPACE 会忽略尾部空格；集成测试临时库为 `utf8mb4_0900_ai_ci`，不区分大小写与重音。两种规则下 SQL 都可能匹配到字节不同的值，所以服务端读回 `app_id` 再逐字节比较。DISABLED 商户照常返回，由网关返回 `20004`。密文解不开是平台内部故障，返回 `10003`。payment 不缓存凭证，网关侧缓存属于 GW-08。除 `GetMerchantCredential`、`CreatePayment`、`Pay`、`ClosePayment`、`QueryPayment`、`CreateRefund` 与 `HandleChannelNotify` 外，PaymentService 其余方法在各自功能点实现前一律返回 `10003`，不是这些方法将来的错误码语义。服务端处理超时：`Pay` 与 `CreateRefund` 为 5 秒，与需求 §5.4.1、GW-01 第 5 条的网关调用超时一致，使渠道的 3 秒总超时先到期并返回 PAYING 或 PROCESSING；其余方法仍为 2 秒。不新增环境变量。
+`GetMerchantCredential`（PAY-01）：请求为 nil 返回 `10001`。`app_id` 按字节精确匹配，为空、不存在或只是大小写、首尾空格不同都返回 `20004`（`X-App-Id` 不在签名串里，放宽匹配会让同一请求换个写法绕过按 `app_id` 记的 nonce）。`merchant` 表列跟随库默认 `utf8mb4_bin`，区分大小写，但 PAD SPACE 会忽略尾部空格；集成测试临时库为 `utf8mb4_0900_ai_ci`，不区分大小写与重音。两种规则下 SQL 都可能匹配到字节不同的值，所以服务端读回 `app_id` 再逐字节比较。DISABLED 商户照常返回，由网关返回 `20004`。密文解不开是平台内部故障，返回 `10003`。payment 不缓存凭证，网关侧缓存属于 GW-08。除 `GetMerchantCredential`、`CreatePayment`、`Pay`、`ClosePayment`、`QueryPayment`、`CreateRefund`、`CreateTransfer` 与 `HandleChannelNotify` 外，PaymentService 其余方法在各自功能点实现前一律返回 `10003`，不是这些方法将来的错误码语义。服务端处理超时：`Pay` 与 `CreateRefund` 为 5 秒，与需求 §5.4.1、GW-01 第 5 条的网关调用超时一致，使渠道的 3 秒总超时先到期并返回 PAYING 或 PROCESSING；其余方法仍为 2 秒。不新增环境变量。
 
 `QueryPayment`（PAY-08）已实现。响应类型仍是 `PaymentOrder`，不是带 `biz_code` 的包装。成功时 RPC error 为 nil 并返回订单。请求为 nil，或 `pay_no` 与 `out_trade_no` 两个都空、两个都非空，返回已有的 `10001`（空串算没提供，不 trim），handler 用 `ToBizStatus`，不读库。`10001` 不进上表业务错误列。只提供 `pay_no` 时直接读 `payment_order`：没有行，或 `merchant_id` 与库中逐字节不同（含空商户号），都返回已有的 `30001`。只提供 `out_trade_no` 时按 `(merchant_id, out_trade_no)` 读：没有行返回 `30001`，他人的商户订单号因此也是 `30001`。两种情况同一个错误，走 `BizStatusError`，不带订单，调用方看不出订单是否存在。查到且商户匹配则原样返回该行，状态可以是 `INIT`、`PAYING`、`SUCCESS`、`FAILED`、`CLOSED`，不推进状态，不改 `version`，不调渠道，不写 outbox。不缓存。服务端处理超时仍是 2 秒。`Pay` 仍是 5 秒。nil handler 或 nil service 仍由 `ready` 返回 `10003`。不新增错误码，不改 IDL。
 
@@ -991,6 +994,8 @@ account RPC 以商户号（或 owner）为入参，由 account 按商户号路�
 `HandleChannelNotify`（GW-06 PAY 分支，REF-03 REFUND 分支）：请求为 nil、`txn_type` 不是 PAY / REFUND、`status` 不是 SUCCESS / FAILED、`req_no` 为空或 `finished_at` 不是毫秒 RFC3339，返回已有的 `10001`，不进 biz。PAY 交给 `ApplyChannelNotify`。REFUND 交给 `ApplyRefundNotify`，以 `source = NOTIFY`、回调金额、`channel_txn_no`、`finished_at` 调用 `ApplyRefundResult`：渠道流水按 `(biz_no = refund_no, txn_type = REFUND, status = PROCESSING)` CAS，同号的 PAY 流水不参与；SUCCESS 写 `succeeded_at`（渠道完成时间）和 `refund.succeeded`；FAILED 写 `fail_code = CHANNEL_FAILED`、释放 `refunded_amount` 并写 `refund.failed`。重复同一终态返回 `DUPLICATE` 并把 `notify_count` 加 1；与已有终态冲突返回 `CONFLICT`，计 `pay_callback_conflicts_total`；未知 `req_no` 为 `30001`；金额不一致为 `50002`；释放额度时数据不一致为 `10003`。提交后调用故障点 `callback.after_commit`，与 PAY 分支相同。`10001`、`10003` 不进上表业务错误列。
 
 `CreateTransfer` 的响应码规则同 §4.8：本次请求执行到 FAILED 且 `fail_code = INSUFFICIENT_BALANCE` → `biz_code = 40002` 并携带转账单；其他 FAILED、SUCCESS、处理中状态与幂等命中 → 成功返回。
+
+`CreateTransfer`（TRF-01）已实现插入部分。请求为 nil 返回 `10001`，不进 biz。付款方 `merchant_id` 格式不合法（不是 `M` + 6 位数字）也返回 `10001`；付款商户状态由网关校验，这里不再读库。先按 `(merchant_id, out_transfer_no)` 读已有单，命中时只按 §4.8 比较，不再校验收款方。没有已有单才校验收款方，可读 `MERCHANT_CONFIG_CACHE_TTL` 内的商户配置缓存。插入遇唯一键冲突后在插入之外按 `(merchant_id, out_transfer_no)` 再读，不校验收款方，一致返回已有单且不再执行；读不到（`transfer_no` 撞号）返回已有的 `10003`。发号时钟回拨返回已有的 `10004`。读商户或读写转账单失败返回 `10003`。`10003`、`10004` 不进上表业务错误列。执行器未接入时返回刚插入的 TRYING 转账单，`biz_code = 0`。服务端处理超时仍是 2 秒；TRF-02、TRF-03 接入 account 调用时再评估是否与 `CreateRefund` 一样改为 5 秒。不新增错误码，不改 IDL。
 
 ### 10.3 ReconService（:8883）
 

@@ -183,9 +183,14 @@ func TestUnimplementedMethodsReturnInternal(t *testing.T) {
 	if n := svc.callCount(); n != 0 {
 		t.Fatalf("nil CreateRefund called biz %d times", n)
 	}
+	if _, err := h.CreateTransfer(ctx, nil); !errors.Is(errno.FromBizStatus(err), errno.ErrInvalidParam) {
+		t.Fatal("nil CreateTransfer request")
+	}
+	if n := svc.callCount(); n != 0 {
+		t.Fatalf("nil CreateTransfer called biz %d times", n)
+	}
 	for name, fn := range map[string]func() error{
 		"QueryRefund":    func() error { _, err := h.QueryRefund(ctx, nil); return err },
-		"CreateTransfer": func() error { _, err := h.CreateTransfer(ctx, nil); return err },
 		"QueryTransfer":  func() error { _, err := h.QueryTransfer(ctx, nil); return err },
 		"SyncChannelTxn": func() error { _, err := h.SyncChannelTxn(ctx, nil); return err },
 		"ReplayEvent":    func() error { _, err := h.ReplayEvent(ctx, nil); return err },
@@ -404,10 +409,6 @@ func unimplementedCalls(cli paymentservice.Client) []call {
 			_, err := cli.QueryRefund(ctx, &payment.QueryRefundRequest{MerchantId: "M100001"})
 			return err
 		}},
-		{"CreateTransfer", func() error {
-			_, err := cli.CreateTransfer(ctx, &payment.CreateTransferRequest{MerchantId: "M100001", OutTransferNo: "t1", PayeeMerchantId: "M100002", Amount: 1})
-			return err
-		}},
 		{"QueryTransfer", func() error {
 			_, err := cli.QueryTransfer(ctx, &payment.QueryTransferRequest{MerchantId: "M100001"})
 			return err
@@ -526,6 +527,7 @@ type scripted struct {
 	cred      biz.MerchantCredential
 	order     biz.PaymentOrder
 	refund    biz.RefundOrder
+	transfer  biz.TransferOrder
 	err       error
 	panicking bool
 	block     func(context.Context) error
@@ -536,6 +538,7 @@ type scripted struct {
 	// refundIn 与 notifyKind 只给 REF-03 的 REFUND 回调分支使用。
 	refundIn   biz.RefundResult
 	notifyKind string
+	transferIn biz.CreateTransferInput
 }
 
 func (s *scripted) set(fn func(*scripted)) {
@@ -668,6 +671,37 @@ func (s *scripted) CreateRefund(ctx context.Context, _ *biz.CreateRefundInput) (
 		return biz.RefundOrder{}, err
 	}
 	return refund, nil
+}
+
+func (s *scripted) CreateTransfer(ctx context.Context, in *biz.CreateTransferInput) (biz.TransferOrder, error) {
+	s.mu.Lock()
+	s.calls++
+	transfer, err, panicking, block := s.transfer, s.err, s.panicking, s.block
+	if in != nil {
+		s.transferIn = *in
+	}
+	s.mu.Unlock()
+	if panicking {
+		panic("boom " + testSecret)
+	}
+	if block != nil {
+		if berr := block(ctx); berr != nil {
+			return biz.TransferOrder{}, berr
+		}
+	}
+	if err != nil {
+		if errors.Is(err, errno.ErrInsufficientBalance) {
+			return transfer, err
+		}
+		return biz.TransferOrder{}, err
+	}
+	return transfer, nil
+}
+
+func (s *scripted) lastTransferInput() biz.CreateTransferInput {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.transferIn
 }
 
 func (s *scripted) CreatePayment(ctx context.Context, in *biz.CreatePaymentInput) (biz.PaymentOrder, error) {
@@ -980,4 +1014,103 @@ type metricsFunc func(string, int32, time.Duration)
 
 func (f metricsFunc) Observe(method string, bizCode int32, elapsed time.Duration) {
 	f(method, bizCode, elapsed)
+}
+
+// TRF-01 规则 6：TRYING 与其他非 40002 结果 biz_code 为 0 并携带转账单；字段按 §5.3 转换，可选字段只在有值时设置。
+func TestCreateTransferHandler(t *testing.T) {
+	created := time.Date(2026, 11, 6, 10, 0, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	svc := &scripted{transfer: biz.TransferOrder{
+		TransferNo: "TF0000000000000000001", OutTransferNo: "TR1", MerchantID: "M100001", PayeeMerchantID: "M100002",
+		Amount: 500, Currency: "CNY", Mode: "TCC", Status: "TRYING", CreatedAt: created,
+	}}
+	h := New(svc)
+	remark := "货款结算"
+	notify := "http://merchant-demo:9100/notify"
+	got, err := h.CreateTransfer(context.Background(), &payment.CreateTransferRequest{
+		MerchantId: "M100001", OutTransferNo: "TR1", PayeeMerchantId: "M100002", Amount: 500,
+		Remark: &remark, NotifyUrl: &notify,
+	})
+	if err != nil || got.GetBizCode() != 0 {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+	tr := got.GetTransfer()
+	if tr.GetTransferNo() != "TF0000000000000000001" || tr.GetOutTransferNo() != "TR1" || tr.GetMerchantId() != "M100001" ||
+		tr.GetPayeeMerchantId() != "M100002" || tr.GetAmount() != 500 || tr.GetCurrency() != "CNY" ||
+		tr.GetMode() != "TCC" || tr.GetStatus() != "TRYING" || tr.IsSetFailCode() || tr.IsSetFinishedAt() {
+		t.Fatalf("transfer = %+v", tr)
+	}
+	if tr.GetCreatedAt() != "2026-11-06T10:00:00.000+08:00" {
+		t.Fatalf("created_at = %s", tr.GetCreatedAt())
+	}
+	in := svc.lastTransferInput()
+	if in.MerchantID != "M100001" || in.OutTransferNo != "TR1" || in.PayeeMerchantID != "M100002" || in.Amount != 500 ||
+		in.Remark == nil || *in.Remark != remark || in.NotifyURL == nil || *in.NotifyURL != notify {
+		t.Fatalf("input = %+v", in)
+	}
+	// 未传的可选字段保持 nil，不变成空串。
+	if _, err := h.CreateTransfer(context.Background(), &payment.CreateTransferRequest{
+		MerchantId: "M100001", OutTransferNo: "TR2", PayeeMerchantId: "M100002", Amount: 1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if in := svc.lastTransferInput(); in.Remark != nil || in.NotifyURL != nil {
+		t.Fatalf("optionals = %+v", in)
+	}
+	// 其他 FAILED（TRY_TIMEOUT）也是 biz_code 0，并带 fail_code、finished_at。
+	finished := created.Add(42 * time.Millisecond)
+	svc.set(func(s *scripted) {
+		s.transfer.Status = "FAILED"
+		s.transfer.FailCode = "TRY_TIMEOUT"
+		s.transfer.FinishedAt = finished
+	})
+	got, err = h.CreateTransfer(context.Background(), &payment.CreateTransferRequest{
+		MerchantId: "M100001", OutTransferNo: "TR1", PayeeMerchantId: "M100002", Amount: 500,
+	})
+	if err != nil || got.GetBizCode() != 0 || got.GetTransfer().GetFailCode() != "TRY_TIMEOUT" ||
+		got.GetTransfer().GetFinishedAt() != "2026-11-06T10:00:00.042+08:00" {
+		t.Fatalf("failed got=%+v err=%v", got, err)
+	}
+}
+
+// TRF-01 规则 6：40002 放在 biz_code，error 为 nil，并携带已失败的转账单；其他业务错误走 BizStatusError，不带转账单。
+func TestCreateTransferHandlerErrors(t *testing.T) {
+	failed := biz.TransferOrder{
+		TransferNo: "TF0000000000000000002", OutTransferNo: "TR2", MerchantID: "M100001", PayeeMerchantID: "M100002",
+		Amount: 9000000, Currency: "CNY", Mode: "TCC", Status: "FAILED", FailCode: "INSUFFICIENT_BALANCE",
+	}
+	svc := &scripted{transfer: failed, err: errno.ErrInsufficientBalance}
+	req := &payment.CreateTransferRequest{MerchantId: "M100001", OutTransferNo: "TR2", PayeeMerchantId: "M100002", Amount: 9000000}
+	got, err := New(svc).CreateTransfer(context.Background(), req)
+	if err != nil || got.GetBizCode() != errno.ErrInsufficientBalance.Code ||
+		got.GetTransfer().GetTransferNo() != failed.TransferNo || got.GetTransfer().GetFailCode() != "INSUFFICIENT_BALANCE" {
+		t.Fatalf("40002 got=%+v err=%v", got, err)
+	}
+	for _, want := range []*errno.Error{errno.ErrInvalidParam, errno.ErrIdempotentConflict, errno.ErrPayeeInvalid, errno.ErrInternal} {
+		svc.set(func(s *scripted) { s.err = want })
+		got, err := New(svc).CreateTransfer(context.Background(), req)
+		if got != nil || !errors.Is(errno.FromBizStatus(err), want) {
+			t.Fatalf("%d: got=%+v err=%v", want.Code, got, err)
+		}
+	}
+	if _, err := New(nil).CreateTransfer(context.Background(), req); !errors.Is(errno.FromBizStatus(err), errno.ErrInternal) {
+		t.Fatalf("nil service = %v", err)
+	}
+}
+
+// CreateTransfer 经 Kitex：30008 是 BizStatusError；40002 在 biz_code 里并携带转账单，error 为 nil。
+func TestKitexCreateTransfer(t *testing.T) {
+	svc := &scripted{err: errno.ErrPayeeInvalid}
+	addr := startServer(t, svc, Config{})
+	cli := dialKitex(t, addr, time.Second)
+	req := &payment.CreateTransferRequest{MerchantId: "M100001", OutTransferNo: "TR1", PayeeMerchantId: "M100001", Amount: 1}
+	_, err := cli.CreateTransfer(context.Background(), req)
+	assertBizCode(t, "payee invalid", err, errno.ErrPayeeInvalid.Code)
+	svc.set(func(s *scripted) {
+		s.err = errno.ErrInsufficientBalance
+		s.transfer = biz.TransferOrder{TransferNo: "TF1", Status: "FAILED", FailCode: "INSUFFICIENT_BALANCE", Mode: "TCC"}
+	})
+	got, err := cli.CreateTransfer(context.Background(), req)
+	if err != nil || got.GetBizCode() != errno.ErrInsufficientBalance.Code || got.GetTransfer().GetTransferNo() != "TF1" {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
 }

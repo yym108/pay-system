@@ -103,6 +103,8 @@ func serve(cfg config.Payment, logOut io.Writer) error {
 		return err
 	}
 	payments.UseRefund(biz.NewAccountRefundFreezer(accountCli), channelClient, payments, cfg.ChannelNotifyURL)
+	// 转账执行是 TRF-02、TRF-03，未接入前 CreateTransfer 返回刚插入的 TRYING。
+	payments.UseTransfer(cfg.TransferRecoverDelay, nil)
 	exit := make(chan error, 1)
 	admin := server.New(server.Config{
 		Addr:         server.AddrPayment,
