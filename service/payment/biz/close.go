@@ -46,32 +46,34 @@ func (p *Payments) ClosePayment(ctx context.Context, in *CloseInput) (PaymentOrd
 	if !ok || order.PayNo != in.PayNo || order.MerchantID != in.MerchantID {
 		return PaymentOrder{}, errno.ErrOrderNotFound
 	}
-	return p.closeStatus(ctx, in, order)
+	return p.closeStatus(ctx, in, order, paySourceClose)
 }
 
-func (p *Payments) closeStatus(ctx context.Context, in *CloseInput, order PaymentOrder) (PaymentOrder, error) {
+// closeStatus 按 order 的状态关单。source 是 PAYING 经渠道关单后写入 ApplyPayResult 的来源：
+// 商户关单（PAY-06）传 CLOSE，超时关单（PAY-07）传 JOB。INIT 只做本地 CAS，不经过 ApplyPayResult。
+func (p *Payments) closeStatus(ctx context.Context, in *CloseInput, order PaymentOrder, source string) (PaymentOrder, error) {
 	switch order.Status {
 	case payStatusInit:
-		return p.closeInit(ctx, in, order)
+		return p.closeInit(ctx, in, order, source)
 	case payStatusClosed:
 		return order, nil
 	case payStatusSuccess, payStatusFailed:
 		return order, errno.ErrOrderStatusConflict
 	case payStatusPaying:
-		return p.closePaying(ctx, order)
+		return p.closePaying(ctx, order, source)
 	default:
 		return PaymentOrder{}, errno.ErrInternal
 	}
 }
 
-func (p *Payments) closeInit(ctx context.Context, in *CloseInput, order PaymentOrder) (PaymentOrder, error) {
+func (p *Payments) closeInit(ctx context.Context, in *CloseInput, order PaymentOrder, source string) (PaymentOrder, error) {
 	now := p.clk.Now().Truncate(time.Millisecond)
 	won, err := p.orders.casInitToClosed(ctx, order, now)
 	if err != nil {
 		return PaymentOrder{}, callErr(err)
 	}
 	if !won {
-		return p.afterInitMiss(ctx, in)
+		return p.afterInitMiss(ctx, in, source)
 	}
 	order.Status = payStatusClosed
 	order.ClosedAt = now
@@ -80,7 +82,7 @@ func (p *Payments) closeInit(ctx context.Context, in *CloseInput, order PaymentO
 	return order, nil
 }
 
-func (p *Payments) afterInitMiss(ctx context.Context, in *CloseInput) (PaymentOrder, error) {
+func (p *Payments) afterInitMiss(ctx context.Context, in *CloseInput, source string) (PaymentOrder, error) {
 	order, ok, err := p.orders.paymentByPayNo(ctx, in.PayNo)
 	if err != nil {
 		return PaymentOrder{}, callErr(err)
@@ -92,7 +94,7 @@ func (p *Payments) afterInitMiss(ctx context.Context, in *CloseInput) (PaymentOr
 	case payStatusClosed:
 		return order, nil
 	case payStatusPaying:
-		return p.closePaying(ctx, order)
+		return p.closePaying(ctx, order, source)
 	case payStatusSuccess, payStatusFailed:
 		return order, errno.ErrOrderStatusConflict
 	default:
@@ -100,7 +102,7 @@ func (p *Payments) afterInitMiss(ctx context.Context, in *CloseInput) (PaymentOr
 	}
 }
 
-func (p *Payments) closePaying(ctx context.Context, order PaymentOrder) (PaymentOrder, error) {
+func (p *Payments) closePaying(ctx context.Context, order PaymentOrder, source string) (PaymentOrder, error) {
 	if p.closer == nil || p.applier == nil {
 		return PaymentOrder{}, errno.ErrInternal
 	}
@@ -119,11 +121,11 @@ func (p *Payments) closePaying(ctx context.Context, order PaymentOrder) (Payment
 			return PaymentOrder{}, errno.ErrUnavailable
 		}
 	}
-	return p.closeOnChannel(ctx, order.PayNo, paySourceClose)
+	return p.closeOnChannel(ctx, order.PayNo, source)
 }
 
 // closeOnChannel 调用渠道关单，并按结果调用 ApplyPayResult，source 写入这次结果。
-// 商户关单（PAY-06）传 CLOSE，查单补偿遇到 NOT_FOUND（PAY-05）传 QUERY。
+// 商户关单（PAY-06）传 CLOSE，查单补偿遇到 NOT_FOUND（PAY-05）传 QUERY，超时关单（PAY-07）传 JOB。
 // CLOSED 成功返回订单且 error 为 nil；ALREADY_PAID 再查单写 SUCCESS，渠道 FAILED 写 FAILED，这两种返回 30003 和当前订单。
 // 调用失败返回 10004，订单保持 PAYING。
 func (p *Payments) closeOnChannel(ctx context.Context, payNo, source string) (PaymentOrder, error) {

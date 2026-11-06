@@ -380,7 +380,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | PAY-04 | 支付结果推进 | P0 | M3 | PAY-03、MQ-01 | DONE |
 | PAY-05 | 查单补偿 | P0 | M4 | PAY-04、CH-02、CH-06、GW-06、REF-03、BASE-15 | DONE |
 | PAY-06 | 商户关单 | P0 | M3 | PAY-04、CH-03 | DONE |
-| PAY-07 | 超时关单 | P0 | M4 | PAY-06 | TODO |
+| PAY-07 | 超时关单 | P0 | M4 | PAY-06 | DONE |
 | PAY-08 | 支付单查询 | P0 | M3 | PAY-02 | DONE |
 | PAY-09 | 立即同步渠道状态 | P0 | M6 | PAY-05 | TODO |
 | PAY-10 | 商户费率变更与订单手续费核对 | P0 | M3 | BASE-03、BASE-04、BASE-08 | DONE |
@@ -1647,10 +1647,25 @@ PAYING 状态必须等渠道确认关闭后才能 CLOSED，避免“本地已关
 1. 每 5 秒扫描 `status IN ('INIT', 'PAYING') AND expire_at <= now`，每批最多 200 条（使用 `idx_status_expire_at`）。
 2. 对每条执行 PAY-06 的同一逻辑；多实例同时执行时由 CAS 和渠道关单幂等保证正确。
 
+实现说明（2026-11-06，PAY-07 落地时的澄清，不改资金流向、表结构和错误码）：
+
+- 扫描：INIT、PAYING 各一条查询，`WHERE status = ? AND expire_at <= now ORDER BY expire_at LIMIT 100`，不加锁，每批合计至多 200 条（规则 1）。status 等值后按 `expire_at` 排序就是 `idx_status_expire_at` 的索引顺序，读够 100 条就停，不做 filesort。分开配额是为了过期 INIT 积压超过 200 条时，过期 PAYING 仍在每批被扫到；单个状态不足 100 条时，剩下的配额不借给另一个状态。`now` 是注入时钟截到毫秒，`expire_at` 恰好等于 `now` 算过期。每条扫描读库超时 3 秒，失败按 `callErr` 结束本批。
+- 执行顺序：先扫 INIT 并逐条关闭，再扫 PAYING 并发关闭。INIT 只做本地 CAS，每条毫秒级，串行执行不同时占用多个连接；PAYING 要调用渠道，以最多 10 个并发执行（与 PAY-05 查单补偿同一种信号量写法），渠道挂起时一批 100 条 PAYING 最多约 10 轮单条超时，不再是 100 条依次等待。PAYING 在 INIT 之后才扫描，扫到的是关完 INIT 那一刻仍为 PAYING 的行。
+- 每条调用 PAY-06 的同一段代码：INIT 本地 CAS 为 CLOSED，`closed_at` 用本次注入时钟，不调用渠道；PAYING 按 PAY-06 先看本地流水号或查单，再在事务外调用渠道关单，结果经 `ApplyPayResult` 写入，`source = JOB`。渠道返回 ALREADY_PAID（含 CLOSE_RACE）时推进为 SUCCESS 并写 1 条 `payment.succeeded`，渠道交易已失败时推进为 FAILED，与 PAY-06 相同。调用失败（`10004`）不写库，下一轮再扫到时重试。
+- `source` 按发起这次写入的流程取值，与结果是谁判定的无关：NOTIFY = 渠道回调（GW-06），QUERY = 查单补偿（PAY-05，含它在 NOT_FOUND 时走的关单），CLOSE = 商户关单（PAY-06），JOB = 超时关单（PAY-07），ADMIN = 管理操作，SYNC = 渠道受理时的同步拒绝（PAY-03、REF-02，含 PAY-05 退款重提被拒）。超时关单里关单返回 ALREADY_PAID 后查单写入的 SUCCESS 也是 JOB。
+- 每条有自己的 10 秒超时（查单、关单、再查单各 1.5 秒，加上写库），不随批次取消。单条 panic 在该条内恢复并在进程内计数（由 OPS-03 暴露），不影响同批其他行。
+- 日志只记 `pay_no`、`from_status`、`to_status` 或 `err_code`、`source`，不记错误文本。成功日志 `timeout close settled` 的 `from_status` 是扫描时读到的状态，`to_status` 是关单路径返回时订单的当前状态，不表示本实例写入了这次变化：CAS 未命中后重读到别的实例写的 CLOSED，以及 `ApplyPayResult` 对相同终态的幂等返回，日志相同。谁推进了状态以 outbox 事件和 `version` 为准。
+- 失败（返回 `30003` 以外的错误）按错误码计入进程内计数 `pay_timeout_close_failures_total{err_code}`，由 OPS-03 暴露。`10003`（内部错误）和 `50002`（渠道金额与订单不符）记 ERROR，其余记 WARN。
+- 定时循环复用 PAY-05 的 `service/payment/job` 循环，每 5 秒一次，日志字段 `job` 为 `timeout_close`，随 payment 进程启停。停止语义与 PAY-05 相同：批次 ctx 立即取消，INIT 不再开始下一条，PAYING 等并发槽的行不再启动，已开始的行按自己的超时跑完后批次才返回。批次中途发现取消时返回 nil，正常停机不记 `job batch failed`；批次开始时 ctx 已取消则返回 ctx 的错误，与 PAY-05 相同。
+- 已知限制：
+  - 关单失败的 PAYING 行不推后，每轮都会再扫到。超过 100 条 PAYING 行持续失败（例如渠道长时间不可用）时会占满 PAYING 配额，排在后面的过期 PAYING 行要等渠道恢复后才轮到；INIT 有自己的配额，不受影响。
+  - 不可重试的失败没有退避：例如关单返回 ALREADY_PAID 后查得金额与订单不符（`50002`），订单保持 PAYING，每 5 秒重试一次，每次一条 ERROR 日志和一次失败计数；多实例时次数乘以实例数。需要人工核对（REC-07）。不在进程内按单号跳过：跳过的行仍占扫描配额，还要多维护一份各实例各自的状态。观测见 OPS-03 的 `pay_timeout_close_failures_total{err_code="50002"}`。
+  - 受理请求没到渠道的 PAYING 行查单得到 NOT_FOUND，本任务每轮返回 `10004`，直到 PAY-05 在创建 60 秒后按 NOT_FOUND 关单。
+
 验收：
 
-- [ ] 使用 Fake 时钟推进到过期后，INIT 订单在下一轮变为 CLOSED。
-- [ ] 过期的 NEVER_FINISH 订单被关闭，渠道侧同为 CLOSED。
+- [x] 使用 Fake 时钟推进到过期后，INIT 订单在下一轮变为 CLOSED。
+- [x] 过期的 NEVER_FINISH 订单被关闭，渠道侧同为 CLOSED。
 
 #### PAY-08 支付单查询
 
@@ -2578,6 +2593,7 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 | `pay_channel_requests_total`、`pay_channel_request_duration_seconds` | counter、histogram | api、result |
 | `pay_channel_query_total`、`pay_channel_query_exhausted_total` | counter | result |
 | `pay_callback_conflicts_total` | counter | channel |
+| `pay_timeout_close_failures_total` | counter | err_code（PAY-07；`50002` 持续增长表示有订单需人工核对） |
 | `pay_callback_rejected_total` | counter | channel、code |
 | `pay_notify_attempts_total` | counter | result |
 | `pay_ledger_check_failures_total` | counter | — |
@@ -3217,3 +3233,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-06 | v3.0 | PAY-05 审查修复：任务启动时抢占写入的 next_query_at 已到期则跳过，不查单、不写库，WARN 日志并计数，避免批次慢于退避间隔时同一档重复查单、重复关单或重提；每批仍取 100 行。进程停止时批次 ctx 立即取消，等并发槽的任务不再启动，已开始的任务按自己的超时跑完。日志字段 job 登记到约定 §7.5。QUERY_BACKOFF 每项下限 1 秒，小于 1 秒时启动失败（约定 §8）。不改资金流向，不新增错误码，不改表，不改 IDL。 |
 | 2026-11-06 | v3.0 | PAY-05 文字澄清：实现说明里“可能已被另一个实例或下一批抢占”改为只由另一个实例接手。同一实例一次只跑一个批次，`RunQueryBatch` 要等本批任务全部结束（`wg.Wait`）才返回，下一批不会接手在途行。规则与行为不变。 |
 | 2026-11-06 | v3.0 | TRF-01：CreateTransfer 校验参数后先按 (merchant_id, out_transfer_no) 读已有单，命中时按规则 3 返回已有单或 10006，不再校验收款方；没有已有单才校验收款方（30008）并插入 TRYING 转账单（用户决定：建单后收款方被停用，相同参数重试仍应拿到已有单），mode 按两方分片得出，next_retry_at 为 now + TRANSFER_RECOVER_DELAY。同一请求内的执行是可注入的执行器，TRF-02、TRF-03 完成前未装执行器，返回刚插入的 TRYING 单，code 0，不调用 account、不写 outbox。付款商户号格式不合法为 10001；remark 未传或空串存 NULL，不参与幂等比较；1062 时在插入之外再读，一致返回已有单且不再执行，读不到为 10003。40002 只在本次执行到 INSUFFICIENT_BALANCE 时返回。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
+| 2026-11-06 | v3.0 | PAY-07：超时关单落地。INIT、PAYING 各一条扫描，`WHERE status = ? AND expire_at <= now ORDER BY expire_at LIMIT 100`，合计每批至多 200 条，走 `idx_status_expire_at` 无 filesort，不加锁，恰好 `expire_at = now` 算过期。每条复用 PAY-06 的关单代码，PAYING 写入结果的 `source = JOB`；`source` 按发起流程取值（NOTIFY / QUERY / CLOSE / JOB / ADMIN / SYNC）。INIT 先逐条关闭，PAYING 再以最多 10 个并发关闭；调用失败不写库，下一轮重试。每条 10 秒超时，不随批次取消，单条 panic 恢复并计数；失败按错误码计入 `pay_timeout_close_failures_total`（OPS-03），`50002` 记 ERROR。成功日志不区分是否本实例写入。定时循环复用 PAY-05 的 job 循环，每 5 秒一次，日志字段 `job = timeout_close`（约定 §7.5）。写明已知限制：持续失败的 PAYING 行超过 100 条时占满 PAYING 配额；`50002` 这类不可重试的失败每 5 秒重试，没有退避。不改资金流向，不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |

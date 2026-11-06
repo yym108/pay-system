@@ -260,6 +260,10 @@
 
 抢占和查渠道拆成两步：短事务里 `FOR UPDATE SKIP LOCKED` 取到期行并推后 `next_query_at`，提交后再在事务外查渠道，持锁期间不发外部请求。两个实例同时跑时，SKIP LOCKED 让各自拿到不同的行；把它去掉做变异检查，两实例用例里同一条流水在同一档被查了 4 次，测试失败。抢占不改 `version`，因为它不是状态变化，终态 CAS 也不比较 version。每个任务用 `context.WithoutCancel` 派生自己的 10 秒超时：进程停止时批次 ctx 立即取消，等并发槽的任务不再启动，已经发出的关单或重提退款等到结果再写库。并发槽用带 `select ctx.Done()` 的信号量，而不是 `errgroup.SetLimit`：后者的 `Go` 在槽满时阻塞且看不到取消，槽一空就会再启动一个。审查发现的另一处：批次慢于退避间隔时，排在后面的行已经到期，会被另一个实例抢走进入下一档，本实例再查就是同一档查两次。本实例的下一批不会抢：同一实例一次只跑一个批次，`RunQueryBatch` 要等 `wg.Wait` 结束才返回。修法是任务带上抢占时写入的 `next_query_at`，启动时已到期就跳过，这一档交给接手的一方。即使中途被杀，“渠道已关、本地未写”的行下一档会查得 CLOSED 并补写，只是多等一档。定时循环放在 `service/payment/job`，但 depguard 禁止 job 目录 import `service/`，所以 job 只接收一个 `func(context.Context) error`，由 `cmd/payment` 传入 `RunQueryBatch`。插入流水时的 10 秒写死在 PAY-03、REF-02，测试配置把 `QUERY_BACKOFF` 全设成 2 秒也不影响第一次查单。
 
+## PAY-07 超时关单
+
+第一版扫描是一条 `status IN ('INIT', 'PAYING') AND expire_at <= now ORDER BY status, expire_at LIMIT 200`。`IN` 让 `idx_status_expire_at` 变成两段范围，只写 `ORDER BY expire_at` 会 filesort，加上 `status` 后按索引顺序读够就停。审查指出这样 INIT 永远排在前面：过期 INIT 超过 200 条时 PAYING 一条都扫不到。改成 INIT、PAYING 各一条 `status = ? ... ORDER BY expire_at LIMIT 100`，等值条件下按 `expire_at` 排序就是索引顺序，两条都没有 filesort，合计仍是每批 200 条。第一版还是逐条执行，渠道挂起时一批 PAYING 要依次等每条的超时，5 秒一轮名存实亡；改为 INIT 串行（只是本地 CAS），PAYING 复用 PAY-05 带 `select ctx.Done()` 的信号量，并发 10。成功日志原来写成“本实例完成了关单”，但 CAS 未命中后重读到别人写的 CLOSED、`ApplyPayResult` 对相同终态的幂等返回，拿到的订单完全一样，要区分得改 PAY-04 的返回值，所以只把日志改成中性的“已是该状态”，谁写的以 outbox 和 version 为准。关单逻辑没有另写，只给 PAY-06 的 `closeStatus` 加了一个 `source` 参数，超时关单传 JOB。两实例用例第一次出现 `10003`，原因是测试里第二个实例没装发号器，`ApplyPayResult` 的就绪检查拒绝了它；单行失败只记日志、最终状态仍正确，所以只看终态的断言发现不了这类装配问题，要同时看日志。
+
 ## TRF-01 创建转账单
 
 插入是单条自动提交的 INSERT。1062 之后另起一次读才能看见已提交的赢者，按 `(merchant_id, out_transfer_no)` 读到且参数一致就返回它，不再执行；执行只由插入成功的那次请求负责，否则 100 个并发相同请求会各自调一次 account。读不到说明撞的是 `uk_transfer_no`（发号撞号），返回 10003，不当作幂等命中。执行器做成接口注入，TRF-02、TRF-03 完成前不装，CreateTransfer 返回刚插入的 TRYING，由 TRF-04 按 `next_retry_at` 接管。幂等读放在收款方校验之前。最初按需求的书写顺序先校验收款方，问题是建单后收款商户被停用，商户用相同参数重试会得到 30008，看不到那张已经存在、可能已经成功的转账单，违背“超时重试拿已有单”的承诺。改为先读已有单：命中只比较 payee、amount、notify_url，一致就返回，不一致是 10006；没有已有单才校验收款方。1062 后的再读同样不校验收款方。
