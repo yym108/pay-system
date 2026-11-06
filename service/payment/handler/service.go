@@ -17,6 +17,7 @@ type Service interface {
 	CreateRefund(ctx context.Context, in *biz.CreateRefundInput) (biz.RefundOrder, error)
 	QueryRefund(ctx context.Context, in *biz.RefundQueryInput) (biz.RefundOrder, error)
 	CreateTransfer(ctx context.Context, in *biz.CreateTransferInput) (biz.TransferOrder, error)
+	QueryTransfer(ctx context.Context, in *biz.TransferQueryInput) (biz.TransferOrder, error)
 	ApplyChannelNotify(ctx context.Context, in biz.PayResult) (string, error)
 	ApplyRefundNotify(ctx context.Context, in biz.RefundResult) (string, error)
 }

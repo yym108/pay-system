@@ -1,7 +1,7 @@
 // Package handler 是 payment 的 Kitex 适配。
 // 只做协议转换和错误码转换，不改 biz 的幂等与 CAS。
 // 已实现 GetMerchantCredential（PAY-01）、CreatePayment（PAY-02）、Pay（PAY-03）、ClosePayment（PAY-06）、QueryPayment（PAY-08）、
-// CreateRefund（REF-02）、QueryRefund（REF-05）、CreateTransfer（TRF-01）和 HandleChannelNotify（PAY 分支 GW-06，REFUND 分支 REF-03）。
+// CreateRefund（REF-02）、QueryRefund（REF-05）、CreateTransfer（TRF-01）、QueryTransfer（TRF-05）和 HandleChannelNotify（PAY 分支 GW-06，REFUND 分支 REF-03）。
 // 其余方法属于各自的功能点，实现前调用一律返回 10003，不进 biz。
 package handler
 
@@ -265,9 +265,26 @@ func (h *Handler) CreateTransfer(ctx context.Context, req *payment.CreateTransfe
 	return &payment.CreateTransferResponse{BizCode: 0, Transfer: toTransfer(got)}, nil
 }
 
-// QueryTransfer 属于 TRF-05，未实现，返回 10003。
-func (h *Handler) QueryTransfer(_ context.Context, _ *payment.QueryTransferRequest) (*payment.Transfer, error) {
-	return nil, notImplemented()
+// QueryTransfer 读取转账单（TRF-05），只有付款商户可以查询，规则同 QueryRefund。响应是 Transfer，不带 biz_code。
+// 请求为 nil，或 transfer_no 与 out_transfer_no 都空、都非空，返回 10001，不进 biz。空串算没提供，不 trim。
+// 收款商户、其他商户与不存在都是 30001，走 BizStatusError，不带转账单。成功时 error 为 nil 并返回转账单。
+func (h *Handler) QueryTransfer(ctx context.Context, req *payment.QueryTransferRequest) (r *payment.Transfer, err error) {
+	defer recoverBiz(ctx, &err)
+	if err = h.ready(); err != nil {
+		return nil, err
+	}
+	if req == nil || !queryKeysOK(req.GetTransferNo(), req.GetOutTransferNo()) {
+		return nil, errno.ToBizStatus(errno.ErrInvalidParam)
+	}
+	got, callErr := h.svc.QueryTransfer(ctx, &biz.TransferQueryInput{
+		MerchantID:    req.MerchantId,
+		TransferNo:    req.GetTransferNo(),
+		OutTransferNo: req.GetOutTransferNo(),
+	})
+	if callErr != nil {
+		return nil, statusErr(ctx, callErr)
+	}
+	return toTransfer(got), nil
 }
 
 // HandleChannelNotify 接收渠道回调。PAY 交给 ApplyChannelNotify（GW-06），REFUND 交给 ApplyRefundNotify（REF-03）。
