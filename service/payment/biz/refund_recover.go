@@ -25,7 +25,7 @@ const (
 	// refundRecoverConcurrency 是事务外并发恢复的上限，与查单补偿相同。
 	refundRecoverConcurrency = 10
 	// refundRecoverTaskTimeout 限制单个任务的冻结、写库和渠道调用，与 CreateRefund 的服务端处理超时相同：
-	// 冻结 0.5 秒，渠道退款 3 秒，其余是写库。
+	// 冻结最长约 1 秒（调用 500ms，超时重试 1 次），渠道退款 3 秒，其余是写库。
 	refundRecoverTaskTimeout = 5 * time.Second
 	// refundRecoverScanTimeout 限制每页扫描的读库。
 	refundRecoverScanTimeout = 3 * time.Second

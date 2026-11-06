@@ -1836,7 +1836,7 @@ INIT 表示已受理、尚未提交渠道；PROCESSING 表示已冻结商户资�
 - 规则 2 的日志按结果区分：CAS 命中、退款已是 FAILED（`REFUND_TIMEOUT`）记一条 WARN（`refund_no`、`status`、`fail_code`）；另一路已到终态（已 SUCCESS，或因其他原因 FAILED）时 `ApplyRefundResult` 返回该单，只记 INFO，不算超时。返回 `10003` 时重读一次退款单：已不是 INIT 说明另一路已推进为 PROCESSING 或到了终态，是正常竞争（`ApplyRefundResult` 已记 WARN），恢复任务只记 INFO；仍是 INIT（REF-03 第 5 条额度不一致或写库失败）或重读失败才记 ERROR。
 - 定时循环在 `service/payment/job`，每 10 秒一次，日志字段 `job` 为 `refund_recover`（约定 §7.5），与 PAY-05 一样作为 admin 的生命周期组随 payment 进程启停，由 `cmd/payment` 把 `RunRefundRecoverBatch` 传入。
 - 已知风险：
-  - 吞吐有上限。一轮最多翻到 8 秒，每笔冻结最长 0.5 秒（account 不可用时每页约 5 秒），account 长时间不可用后积压的 INIT 退款可能排不到就已超过 1 小时，被判 `REFUND_TIMEOUT`。这些退款渠道都没有收到请求，不造成资损，商户需要重新发起。长期卡住的行超过一轮的处理能力时仍会挡住后面的行。列为 OPS 观测项：INIT 退款数量与最老一笔的年龄，指标名与告警由 OPS-03 定，本功能点不新增指标。
+  - 吞吐有上限。一轮最多翻到 8 秒，每笔冻结最长约 1 秒（account 客户端调用超时 500ms，超时重试 1 次；account 超时时 100 笔 ÷ 10 并发，每页约 10 秒，超过预算，一轮只处理一页），account 长时间不可用后积压的 INIT 退款可能排不到就已超过 1 小时，被判 `REFUND_TIMEOUT`。这些退款渠道都没有收到请求，不造成资损，商户需要重新发起。长期卡住的行超过一轮的处理能力时仍会挡住后面的行。列为 OPS 观测项：INIT 退款数量与最老一笔的年龄，指标名与告警由 OPS-03 定，本功能点不新增指标。
   - MQ-04 上线前，冻结已在 account 成功（例如响应丢失）、之后被判 `REFUND_TIMEOUT` 的退款，冻结单保持 FROZEN，资金不会释放；额度已经释放，商户换 `out_refund_no` 重新退款会再冻结一次。MQ-04 消费 `refund.failed` 后释放（验收在 MQ-04）。
 
 验收：
@@ -3234,3 +3234,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-06 | v3.0 | TRF-01：CreateTransfer 校验参数后先按 (merchant_id, out_transfer_no) 读已有单，命中时按规则 3 返回已有单或 10006，不再校验收款方；没有已有单才校验收款方（30008）并插入 TRYING 转账单（用户决定：建单后收款方被停用，相同参数重试仍应拿到已有单），mode 按两方分片得出，next_retry_at 为 now + TRANSFER_RECOVER_DELAY。同一请求内的执行是可注入的执行器，TRF-02、TRF-03 完成前未装执行器，返回刚插入的 TRYING 单，code 0，不调用 account、不写 outbox。付款商户号格式不合法为 10001；remark 未传或空串存 NULL，不参与幂等比较；1062 时在插入之外再读，一致返回已有单且不再执行，读不到为 10003。40002 只在本次执行到 INSUFFICIENT_BALANCE 时返回。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
 | 2026-11-06 | v3.0 | REF-04：退款卡单恢复落地。每 10 秒按 `updated_at` 升序读至多 100 行 INIT 且 `updated_at <= now − 30s` 的退款，只读不加锁；事务外 10 并发，每笔 5 秒超时，不随批次取消。年龄按 `created_at`，严格超过 1 小时才置 FAILED（`REFUND_TIMEOUT`，source = JOB，不调用 Freeze），恰好 1 小时仍重新冻结；REF-02 规则 1 的“满 1 小时后”改为“超过 1 小时后”（文字澄清，与规则原文“超过 1 小时”一致）。重新执行与 CreateRefund 同一段代码，含故障点，chaos 需 `:once`。多实例靠冻结幂等、CAS 与 `uk_biz_no` 互斥。单笔 panic 进程内计数，由 OPS-03 暴露。日志字段 job 为 refund_recover。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
 | 2026-11-06 | v3.0 | REF-04 审查修复：扫描改为按 `(updated_at, id)` 翻页，每页 100 行，一页处理完再取下一页，不足一页、本轮满 8 秒或停止时结束，长期卡住的行不再挡住后面的行。规则 2 的日志按结果区分：置为 REFUND_TIMEOUT 记 WARN，另一路已到终态记 INFO；返回 10003 时重读，已不是 INIT 记 INFO，仍是 INIT 或重读失败才记 ERROR。写明 40001 / 40005 每轮两条 ERROR。实现说明补已知风险：吞吐上限（列为 OPS 观测项，不新增指标）、MQ-04 上线前已冻结后超时的退款冻结不释放。不改规则和资金流向，不新增错误码，不改表，不改 IDL。 |
+| 2026-11-06 | v3.0 | REF-04 文字更正：实现说明“吞吐有上限”里每笔冻结的最长耗时由 0.5 秒改为约 1 秒（account 客户端调用超时 500ms，超时重试 1 次），account 超时时每页约 10 秒，一轮只处理一页。代码注释同步。规则与行为不变。 |
