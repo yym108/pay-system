@@ -321,7 +321,7 @@ docker-compose 给将来会跑业务进程的 6 个占位服务写死互不相�
 - 根上的 `trace_id`、`span_id`、`request_id` 按原值写入，不参与兜底扫描。span id 是 16 位十六进制，连续数字若按卡号改写，链路就对不上。调用方再传同名的 `service`、`trace_id`、`span_id`、`request_id` 时丢掉，避免盖住这四个字段。
 - `msg` 用简短英文动宾短语，如 `payment status changed`。消息文本同样做兜底扫描。
 
-业务字段名 snake_case，使用固定名称：`pay_no`、`refund_no`、`transfer_no`、`merchant_id`、`app_id`、`shard`、`biz_type`、`biz_no`、`from_status`、`to_status`、`source`（NOTIFY / QUERY / CLOSE / JOB / ADMIN / SYNC）、`err_code`、`elapsed_ms`、`job`。`job` 是进程内定时任务的名字，snake_case，如 `query_compensate`（PAY-05）、`timeout_close`（PAY-07）；它不是 `source = JOB`，后者是写入结果的来源。`source` 按发起这次写入的流程取值，与结果由谁判定无关：NOTIFY = 渠道回调（GW-06），QUERY = 查单补偿（PAY-05，含它在 NOT_FOUND 时走的关单），CLOSE = 商户关单（PAY-06），JOB = 超时关单（PAY-07），ADMIN = 管理操作，SYNC = 渠道受理的同步拒绝（PAY-03、REF-02 写入，PAY-04 使用，不是新的错误码）。
+业务字段名 snake_case，使用固定名称：`pay_no`、`refund_no`、`transfer_no`、`merchant_id`、`app_id`、`shard`、`biz_type`、`biz_no`、`from_status`、`to_status`、`source`（NOTIFY / QUERY / CLOSE / JOB / ADMIN / SYNC）、`err_code`、`elapsed_ms`、`job`。`job` 是进程内定时任务的名字，snake_case，如 `query_compensate`（PAY-05）、`timeout_close`（PAY-07）、`refund_recover`（REF-04）；它不是 `source = JOB`，后者是写入结果的来源。`source` 按发起这次写入的流程取值，与结果由谁判定无关：NOTIFY = 渠道回调（GW-06），QUERY = 查单补偿（PAY-05，含它在 NOT_FOUND 时走的关单），CLOSE = 商户关单（PAY-06），JOB = 超时关单（PAY-07），ADMIN = 管理操作，SYNC = 渠道受理的同步拒绝（PAY-03、REF-02 写入，PAY-04 使用，不是新的错误码）。
 
 脱敏按字段名，不区分大小写，名字包含下列片段即匹配。同时命中多条时，整段替换优先；否则按下表从上到下先命中的一条。长度按 Unicode 码点计。
 
@@ -447,4 +447,4 @@ BASE-09 只拼 DSN 文本，不连接数据库，也不调用驱动的 `ParseDSN
 | v2.26 | 2026-11-05 | PAY-05：§8 `QUERY_BACKOFF` 写明第 1 项对应插入流水时固定的 10 秒、代码不读该项，第 n 次查单后用第 n + 1 项。不新增配置项、错误码或前缀 |
 | v2.27 | 2026-11-06 | PAY-05 审查修复：§7.5 登记日志字段 `job`（进程内定时任务名，如 `query_compensate`），与 `source = JOB` 区分。不新增错误码、前缀或配置项 |
 | v2.28 | 2026-11-06 | PAY-05 审查修复：§8 `QUERY_BACKOFF` 每项下限 1 秒，小于 1 秒时 `LoadPayment` 返回配置错误（错误文本含变量名），进程不启动；理由是查单任务的跳过检查要求间隔远大于抢占和启动任务的耗时。默认值与 `deploy/.env.example` 都不小于 10 秒，不受影响。不新增配置项、错误码或前缀 |
-| v2.29 | 2026-11-06 | PAY-07：§7.5 日志字段 `job` 增加取值 `timeout_close`（超时关单）。超时关单经渠道关单写入结果时 `source = JOB`，沿用已有来源名。审查修复（同版本内追加）：§7.5 写明 `source` 按发起流程取值，逐个列出 NOTIFY / QUERY / CLOSE / JOB / ADMIN / SYNC 对应的流程。不新增错误码、前缀或配置项 |
+| v2.29 | 2026-11-06 | PAY-07：§7.5 日志字段 `job` 增加取值 `timeout_close`（超时关单）。超时关单经渠道关单写入结果时 `source = JOB`，沿用已有来源名。审查修复（同版本内追加）：§7.5 写明 `source` 按发起流程取值，逐个列出 NOTIFY / QUERY / CLOSE / JOB / ADMIN / SYNC 对应的流程。同版本内追加，REF-04 补登记：§7.5 日志字段 `job` 增加取值 `refund_recover`（退款卡单恢复，`job.NewRefundRecover`），REF-04 落地时漏登。不新增错误码、前缀或配置项 |
