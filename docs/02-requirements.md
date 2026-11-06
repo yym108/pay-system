@@ -388,7 +388,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | REF-02 | 退款冻结与渠道提交 | P0 | M4 | REF-01、ACC-11、CH-04、BASE-15 | DONE |
 | REF-03 | 退款结果推进 | P0 | M4 | REF-02、GW-06 | DONE |
 | REF-04 | 退款卡单恢复 | P0 | M4 | REF-02、REF-03、BASE-15 | TODO |
-| REF-05 | 退款查询 | P0 | M4 | REF-01 | TODO |
+| REF-05 | 退款查询 | P0 | M4 | REF-01 | DONE |
 | TRF-01 | 创建转账单 | P0 | M4 | PAY-01、ACC-13 | TODO |
 | TRF-02 | 同分片转账执行 | P0 | M4 | TRF-01、ACC-07、ACC-11、MQ-01 | TODO |
 | TRF-03 | 跨分片转账 TCC 协调 | P0 | M4 | TRF-01、ACC-04~06、ACC-14、ACC-11、MQ-01、BASE-15 | TODO |
@@ -1838,9 +1838,11 @@ INIT 表示已受理、尚未提交渠道；PROCESSING 表示已冻结商户资�
 
 规则：同 PAY-08，只能查本商户退款单。
 
+实现说明（2026-11-06，REF-05 落地时按 PAY-08 写明，不改规则、表结构和错误码）：直接读 `refund_order`，不做缓存，不写行，不推进状态，不调用 account 和渠道。`refund_no` 与 `out_refund_no` 二选一，空串算没提供，不 trim；两个都空或两个都非空返回已有的 `10001`，不读库。只提供 `refund_no` 时，没有行，或 `merchant_id` 与库中逐字节不同（含空商户号），都返回已有的 `30001`。只提供 `out_refund_no` 时按 `(merchant_id, out_refund_no)` 读，没有行返回 `30001`，他人的商户退款单号因此也是 `30001`。库列排序规则可能放宽匹配（大小写、尾部空格），读回后单号和商户号都逐字节比较，不同也是 `30001`。几种情况是同一个错误，不泄露退款单是否存在。查到且商户匹配则原样返回该行，状态可以是 INIT、PROCESSING、SUCCESS、FAILED。服务端处理超时与 `QueryPayment` 相同，为 2 秒。网关路由 `GET /v1/refunds...` 属于 GW-09，本功能点不做。
+
 验收：
 
-- [ ] 越权查询返回 `30001`。
+- [x] 越权查询返回 `30001`。
 
 ### 4.6 转账（TRF）
 
@@ -3203,5 +3205,6 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-05 | v3.0 | REF-03：ApplyRefundResult 落库。分支按结果意图选：FAILED 且 fail_code 为 INSUFFICIENT_BALANCE、FREEZE_CONFLICT、REFUND_TIMEOUT 走第 2 条（只 CAS INIT → FAILED，不碰 channel_txn），其余走第 1 条，REF-04 判超时与推进为 PROCESSING 并发时返回 10003，不把已提交渠道的退款判失败。第 1 条 FAILED 的 fail_code 用传入值，未传为 CHANNEL_FAILED。渠道 CAS 另加 txn_type = REFUND，读到 PAY 流水按 30001 处理。第 2 条 CAS 未命中时已 FAILED 视为重复，已 SUCCESS 是并发竞争、WARN 日志、不计冲突并返回该单，仍 INIT 或 PROCESSING 为 10003。来源不接受 CLOSE。第 5 条的 ERROR 日志与计数在事务回滚后各记一次；日志里的 refund_no、pay_no 被兜底扫描部分遮盖，靠指标加 SQL 定位。GW-06 handler 的 REFUND 分支接到 ApplyRefundNotify，提交后调用 callback.after_commit；未知 txn_type 由 10003 改为 10001，网关表现不变。REF-02 删去“本切片生产实现返回 10003”。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
 | 2026-11-05 | v3.0 | REF-03 文字澄清：实现说明里“事务重试不会重复记”改为写明真实原因，ERROR 日志在回滚之后输出，记录时回滚已完成；释放额度影响 0 行返回的错误不是 MySQL 错误号，`dbx.WithTx` 不重试。不改规则，不改代码逻辑，不新增错误码，不改表，不改 IDL。 |
 | 2026-11-05 | v3.0 | PAY-05：查单补偿落地。插入流水时的 10 秒是第 0 档，第 n 次抢占后用 QUERY_BACKOFF 第 n 项，超出后每小时一次；测试配置下第一次查单仍在创建 10 秒后。恰好 60 秒的 NOT_FOUND 不处理，恰好 24 小时仍查单，超过 24 小时置 next_query_at = NULL 并计 pay_channel_query_exhausted_total。抢占不改 version，显式写 updated_at。PAY 查得 CLOSED 调用 ApplyPayResult(CLOSED, QUERY)；REFUND 查得 CLOSED 只记 WARN 并等下一档；SUCCESS 缺金额或完成时间时等下一档。NOT_FOUND 关单复用 PAY-06 路径，source = QUERY；退款重提只在 PROCESSING 时进行，REJECTED 按 REF-02 用 source = SYNC 写 CHANNEL_REJECTED。每个任务 10 秒超时，不随批次取消。定时循环在 service/payment/job，不引用 biz，由 cmd/payment 传入 RunQueryBatch。计数由 OPS-03 暴露。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
+| 2026-11-06 | v3.0 | REF-05：`QueryRefund` 规则按 PAY-08 写明。直接读 `refund_order`，不缓存，不写，不调用 account 和渠道。`refund_no` 与 `out_refund_no` 二选一不合法是已有的 `10001`，不读库。他人退款单、不存在、读回后单号或商户号字节不同都是已有的 `30001`，同一个错误。服务端处理超时 2 秒。网关路由属于 GW-09，本次不做。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
 | 2026-11-06 | v3.0 | PAY-05 审查修复：任务启动时抢占写入的 next_query_at 已到期则跳过，不查单、不写库，WARN 日志并计数，避免批次慢于退避间隔时同一档重复查单、重复关单或重提；每批仍取 100 行。进程停止时批次 ctx 立即取消，等并发槽的任务不再启动，已开始的任务按自己的超时跑完。日志字段 job 登记到约定 §7.5。QUERY_BACKOFF 每项下限 1 秒，小于 1 秒时启动失败（约定 §8）。不改资金流向，不新增错误码，不改表，不改 IDL。 |
 | 2026-11-06 | v3.0 | PAY-05 文字澄清：实现说明里“可能已被另一个实例或下一批抢占”改为只由另一个实例接手。同一实例一次只跑一个批次，`RunQueryBatch` 要等本批任务全部结束（`wg.Wait`）才返回，下一批不会接手在途行。规则与行为不变。 |

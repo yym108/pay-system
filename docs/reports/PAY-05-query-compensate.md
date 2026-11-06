@@ -500,7 +500,7 @@ n 超过最后一个下标（生产配置是 7）后每小时一次。
 
 - 需求 `docs/02-requirements.md`：PAY-05 增加实现说明（退避下标、期限边界、抢占不改 `version`、跳过检查及下限、分发补充、关单与重提、超时与停机、定时循环、计数），6 条验收勾上，状态改为 DONE；变更记录增加 2026-11-05 和 2026-11-06 两行。
 - 约定 `docs/03-conventions.md`：v2.26 写明 `QUERY_BACKOFF` 第 0 项不被读取；v2.27 登记日志字段 `job`；v2.28 写明每项下限 1 秒及理由。
-- 流程文档 `docs/06-flows.md`：v2.35。查单补偿流程图（编号 CF-07）补齐超过 24 小时、渠道 `CLOSED`、成功缺字段、重提前检查、跳过已到期抢占的出口，改写停止语义；回调丢失时序图（编号 SL-02）图下注明已实现。
+- 流程文档 `docs/06-flows.md`：v2.35、v2.36（合入 main 后顺延，v2.34 是 REF-05 退款查询）。查单补偿流程图（编号 CF-07）补齐超过 24 小时、渠道 `CLOSED`、成功缺字段、重提前检查、跳过已到期抢占的出口，改写停止语义；回调丢失时序图（编号 SL-02）图下注明已实现。
 - 表结构文档 `docs/database.md`：补充抢占语义；`query_count` 说明改为抢占次数；变更记录两行，均为仅文档、无 DDL。
 - 面试笔记 `docs/interview-notes.md`：增加 PAY-05 一节。
 
@@ -570,7 +570,7 @@ go test -race -count=1 -tags integration ./service/payment/biz/ -run 'TestQueryC
 
 - `docs/02-requirements.md` 中 PAY-05 一节（规则、实现说明、验收），以及 PAY-03、PAY-04、PAY-06、REF-02、REF-03 的规则
 - `docs/03-conventions.md` §7.5 日志字段、§8 `QUERY_BACKOFF`、§9 v2.26 到 v2.28
-- `docs/06-flows.md` 版本 v2.35 的 CF-07、SL-02
+- `docs/06-flows.md` 版本 v2.36 的 CF-07、SL-02
 - `docs/database.md` 的 `channel_txn`
 - 上一功能点报告 `docs/reports/REF-03-refund-result.md`
 
@@ -581,3 +581,4 @@ go test -race -count=1 -tags integration ./service/payment/biz/ -run 'TestQueryC
 | 2026-11-06 | 与本报告同一次提交 | 首版 |
 | 2026-11-06 | 与本报告同一次提交 | 可读性第 1 轮 26 处已改 |
 | 2026-11-06 | 与本报告同一次提交 | 可读性第 2 轮 4 处已改；表头补措辞修正提交 `df1b9c5` |
+| 2026-11-06 | 合入 main 的合并提交 | 合入 REF-05 后流程文档版本号顺延：PAY-05 的两次修改改为 v2.35、v2.36 |

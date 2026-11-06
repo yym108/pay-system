@@ -357,6 +357,8 @@ type memOrders struct {
 	readErr    error
 	forceMiss  bool
 	beforeCAS  func()
+	// refundReads 记录 refundByNo 与 refundByMerchantOut 的调用次数，REF-05 用来断言参数不合法时不读库。
+	refundReads int
 }
 
 func (m *memOrders) insertPayment(_ context.Context, row PaymentOrder) error {
@@ -501,6 +503,7 @@ func (m *memOrders) channelTxnByBizNo(_ context.Context, bizNo string) (channelT
 func (m *memOrders) refundByMerchantOut(_ context.Context, merchantID, outRefundNo string) (RefundOrder, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.refundReads++
 	if m.readErr != nil {
 		return RefundOrder{}, false, m.readErr
 	}
@@ -569,6 +572,7 @@ func (m *memOrders) casRefundProcessing(_ context.Context, row RefundOrder, now 
 func (m *memOrders) refundByNo(_ context.Context, refundNo string) (RefundOrder, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.refundReads++
 	if m.readErr != nil {
 		return RefundOrder{}, false, m.readErr
 	}

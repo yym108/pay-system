@@ -54,4 +54,5 @@
 | REF-01 | 创建退款与额度占用 | 退款 | `e920750` | 2026-11-03 | [REF-01-create-refund.md](REF-01-create-refund.md) |
 | REF-02 | 退款冻结与渠道提交 | 退款 | `d9c6b6f` | 2026-11-04 | [REF-02-freeze-submit.md](REF-02-freeze-submit.md) |
 | REF-03 | 退款结果推进 | 退款 | `cb5f6e7` | 2026-11-05 | [REF-03-refund-result.md](REF-03-refund-result.md) |
+| REF-05 | 退款查询 | 退款 | `83b08fe` | 2026-11-06 | [REF-05-query-refund.md](REF-05-query-refund.md) |
 | PAY-05 | 查单补偿 | 支付 | `70319ba` | 2026-11-06 | [PAY-05-query-compensate.md](PAY-05-query-compensate.md) |

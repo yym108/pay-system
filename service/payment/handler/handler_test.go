@@ -184,7 +184,6 @@ func TestUnimplementedMethodsReturnInternal(t *testing.T) {
 		t.Fatalf("nil CreateRefund called biz %d times", n)
 	}
 	for name, fn := range map[string]func() error{
-		"QueryRefund":    func() error { _, err := h.QueryRefund(ctx, nil); return err },
 		"CreateTransfer": func() error { _, err := h.CreateTransfer(ctx, nil); return err },
 		"QueryTransfer":  func() error { _, err := h.QueryTransfer(ctx, nil); return err },
 		"SyncChannelTxn": func() error { _, err := h.SyncChannelTxn(ctx, nil); return err },
@@ -364,6 +363,7 @@ func TestListenAddrAndTimeout(t *testing.T) {
 		(Config{}).timeoutFor("CreateRefund") != PayServerTimeout ||
 		(Config{}).timeoutFor("CreatePayment") != ServerTimeout ||
 		(Config{}).timeoutFor("QueryPayment") != ServerTimeout ||
+		(Config{}).timeoutFor("QueryRefund") != ServerTimeout ||
 		(Config{}).timeoutFor("ClosePayment") != ServerTimeout {
 		t.Fatal("method timeout split drifted")
 	}
@@ -400,10 +400,6 @@ type call struct {
 func unimplementedCalls(cli paymentservice.Client) []call {
 	ctx := context.Background()
 	return []call{
-		{"QueryRefund", func() error {
-			_, err := cli.QueryRefund(ctx, &payment.QueryRefundRequest{MerchantId: "M100001"})
-			return err
-		}},
 		{"CreateTransfer", func() error {
 			_, err := cli.CreateTransfer(ctx, &payment.CreateTransferRequest{MerchantId: "M100001", OutTransferNo: "t1", PayeeMerchantId: "M100002", Amount: 1})
 			return err
@@ -533,6 +529,8 @@ type scripted struct {
 	appID     string
 	lastIn    biz.CreatePaymentInput
 	queryIn   biz.QueryInput
+	// refundQueryIn 只给 REF-05 的 QueryRefund 使用。
+	refundQueryIn biz.RefundQueryInput
 	// refundIn 与 notifyKind 只给 REF-03 的 REFUND 回调分支使用。
 	refundIn   biz.RefundResult
 	notifyKind string
@@ -596,6 +594,34 @@ func (s *scripted) QueryPayment(ctx context.Context, in *biz.QueryInput) (biz.Pa
 		return biz.PaymentOrder{}, err
 	}
 	return order, nil
+}
+
+func (s *scripted) QueryRefund(ctx context.Context, in *biz.RefundQueryInput) (biz.RefundOrder, error) {
+	s.mu.Lock()
+	s.calls++
+	refund, err, panicking, block := s.refund, s.err, s.panicking, s.block
+	if in != nil {
+		s.refundQueryIn = *in
+	}
+	s.mu.Unlock()
+	if panicking {
+		panic("boom " + testSecret)
+	}
+	if block != nil {
+		if berr := block(ctx); berr != nil {
+			return biz.RefundOrder{}, berr
+		}
+	}
+	if err != nil {
+		return biz.RefundOrder{}, err
+	}
+	return refund, nil
+}
+
+func (s *scripted) lastRefundQuery() biz.RefundQueryInput {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.refundQueryIn
 }
 
 func (s *scripted) lastQuery() biz.QueryInput {
@@ -980,4 +1006,87 @@ type metricsFunc func(string, int32, time.Duration)
 
 func (f metricsFunc) Observe(method string, bizCode int32, elapsed time.Duration) {
 	f(method, bizCode, elapsed)
+}
+
+// REF-05：QueryRefund 二选一不合法返回 10001，不进 biz；空串算没提供，不 trim。
+// 成功时 error 为 nil 并返回 RefundOrder；30001 走 BizStatusError，不带退款单。
+func TestQueryRefundHandler(t *testing.T) {
+	created := time.Date(2026, 11, 6, 10, 0, 0, 0, time.FixedZone("Asia/Shanghai", 8*60*60))
+	refund := biz.RefundOrder{
+		RefundNo: "RF0000000000000000001", MerchantID: "M100002", OutRefundNo: "R1", PayNo: "PA0000000000000000001",
+		Amount: 3000, Currency: "CNY", Reason: "demo", Status: "FAILED",
+		FailCode: "CHANNEL_FAILED", FailMsg: "mock fail", CreatedAt: created,
+	}
+	svc := &scripted{refund: refund}
+	h := New(svc)
+	ctx := context.Background()
+	if _, err := h.QueryRefund(ctx, nil); !errors.Is(errno.FromBizStatus(err), errno.ErrInvalidParam) {
+		t.Fatalf("nil request = %v", err)
+	}
+	refundNo := refund.RefundNo
+	outNo := refund.OutRefundNo
+	empty := ""
+	spaced := " "
+	for name, req := range map[string]*payment.QueryRefundRequest{
+		"none":   {MerchantId: "M100002"},
+		"empty":  {MerchantId: "M100002", RefundNo: &empty},
+		"both":   {MerchantId: "M100002", RefundNo: &refundNo, OutRefundNo: &outNo},
+		"spaces": {MerchantId: "M100002", RefundNo: &spaced, OutRefundNo: &spaced},
+	} {
+		if _, err := h.QueryRefund(ctx, req); !errors.Is(errno.FromBizStatus(err), errno.ErrInvalidParam) {
+			t.Fatalf("%s = %v", name, err)
+		}
+	}
+	if n := svc.callCount(); n != 0 {
+		t.Fatalf("invalid query called biz %d times", n)
+	}
+	got, err := h.QueryRefund(ctx, &payment.QueryRefundRequest{MerchantId: "M100002", RefundNo: &refundNo})
+	if err != nil || got.GetRefundNo() != refund.RefundNo || got.GetOutRefundNo() != "R1" || got.GetPayNo() != refund.PayNo ||
+		got.GetAmount() != 3000 || got.GetStatus() != "FAILED" || got.GetFailCode() != "CHANNEL_FAILED" ||
+		got.GetFailMsg() != "mock fail" || got.IsSetSucceededAt() || got.GetCreatedAt() != "2026-11-06T10:00:00.000+08:00" {
+		t.Fatalf("got=%+v err=%v", got, err)
+	}
+	if in := svc.lastRefundQuery(); in.MerchantID != "M100002" || in.RefundNo != refundNo || in.OutRefundNo != "" {
+		t.Fatalf("biz input = %+v", in)
+	}
+	rawOut := " " + outNo
+	if _, err = h.QueryRefund(ctx, &payment.QueryRefundRequest{MerchantId: "M100002", OutRefundNo: &rawOut}); err != nil {
+		t.Fatal(err)
+	}
+	if in := svc.lastRefundQuery(); in.OutRefundNo != rawOut || in.RefundNo != "" {
+		t.Fatalf("out_refund_no was trimmed: %+v", in)
+	}
+	svc.set(func(s *scripted) { s.err = errno.ErrOrderNotFound })
+	resp, err := h.QueryRefund(ctx, &payment.QueryRefundRequest{MerchantId: "M100001", RefundNo: &refundNo})
+	if resp != nil {
+		t.Fatalf("30001 carried a response: %+v", resp)
+	}
+	assertBizCode(t, "not found", err, errno.ErrOrderNotFound.Code)
+	if _, err = New(nil).QueryRefund(ctx, &payment.QueryRefundRequest{MerchantId: "M100002", RefundNo: &refundNo}); !errors.Is(errno.FromBizStatus(err), errno.ErrInternal) {
+		t.Fatalf("nil service = %v", err)
+	}
+	var nilH *Handler
+	if _, err = nilH.QueryRefund(ctx, nil); !errors.Is(errno.FromBizStatus(err), errno.ErrInternal) {
+		t.Fatalf("nil handler = %v", err)
+	}
+}
+
+// REF-05 验收 1（RPC）：经 Kitex 调用，越权查询收到业务码 30001，没有退款单；访问日志记 30001。
+func TestQueryRefundRPCOtherMerchant(t *testing.T) {
+	svc := &scripted{err: errno.ErrOrderNotFound}
+	access := &accessLog{}
+	addr := startServer(t, svc, Config{Access: access.record})
+	cli := dialKitex(t, addr, time.Second)
+	refundNo := "RF0000000000000000001"
+	resp, err := cli.QueryRefund(context.Background(), &payment.QueryRefundRequest{MerchantId: "M100001", RefundNo: &refundNo})
+	assertBizCode(t, "QueryRefund", err, errno.ErrOrderNotFound.Code)
+	if resp != nil && resp.GetRefundNo() != "" {
+		t.Fatalf("30001 carried a refund: %+v", resp)
+	}
+	if rec := access.last(); rec.path != "QueryRefund" || rec.errCode != itoa(errno.ErrOrderNotFound.Code) {
+		t.Fatalf("access = %+v", rec)
+	}
+	if in := svc.lastRefundQuery(); in.MerchantID != "M100001" || in.RefundNo != refundNo {
+		t.Fatalf("biz input = %+v", in)
+	}
 }
