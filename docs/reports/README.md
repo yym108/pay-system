@@ -57,3 +57,4 @@
 | REF-05 | 退款查询 | 退款 | `83b08fe` | 2026-11-06 | [REF-05-query-refund.md](REF-05-query-refund.md) |
 | PAY-05 | 查单补偿 | 支付 | `70319ba` | 2026-11-06 | [PAY-05-query-compensate.md](PAY-05-query-compensate.md) |
 | TRF-01 | 创建转账单 | 转账 | `9f69152` | 2026-11-06 | [TRF-01-create-transfer.md](TRF-01-create-transfer.md) |
+| REF-04 | 退款卡单恢复 | 退款 | `48289b7` | 2026-11-06 | [REF-04-refund-recover.md](REF-04-refund-recover.md) |
