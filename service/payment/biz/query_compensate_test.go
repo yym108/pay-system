@@ -451,7 +451,7 @@ func TestDispatchQueriesLimitsConcurrency(t *testing.T) {
 	}
 }
 
-// PAY-05 规则 1：任务启动时抢占写入的 next_query_at 已到期，这一行可能已被别的实例或下一批接手，
+// PAY-05 规则 1：任务启动时抢占写入的 next_query_at 已到期，这一行可能已被别的实例接手，
 // 不查单、不写库，只计数；还没到期的照常查单。
 func TestQueryTaskSkipsReclaimableClaim(t *testing.T) {
 	u := newQueryUnit(t)

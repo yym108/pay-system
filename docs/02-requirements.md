@@ -1,6 +1,6 @@
 # pay-system 需求规格说明书
 
-> 版本：v3.0　最后修改：2026-11-05
+> 版本：v3.0　最后修改：2026-11-06
 > 状态：v3.0 重新聚焦支付、退款、转账三条资金链路（变更见 §8.2），2026-10-13 已确认为开发基线；开发按 §3 功能点总表逐项推进
 > 上游：`PROJECT_GOALS.md`（目标与约束）、`docs/01-tech-decisions.md`（技术选型与版本）
 > 关联：`docs/03-conventions.md`（编号、错误码、命名等全局约定）、`docs/05-api.md`（接口文档）、`docs/database.md`（表结构）、`docs/04-dev-plan.md`（周计划）、`docs/06-flows.md`（流程图）
@@ -1596,7 +1596,7 @@ M4：
 - 退避下标：插入流水时 `next_query_at = 创建时间 + 10 秒`（PAY-03、REF-02 已有代码，对应第 0 档）。第 n 次抢占（`query_count` 变成 n）后，下次查单在 `QUERY_BACKOFF` 第 n 项之后；下标超出或该项不是正数时每小时一次。测试配置的 `QUERY_BACKOFF` 全为 2 秒，但第一次查单仍在创建 10 秒后，因为插入时的 10 秒是写死的，不读 `QUERY_BACKOFF`。DROP_NOTIFY 在测试配置下于创建 10 秒后的第一次查单变为 SUCCESS，满足 30 秒验收。
 - 期限边界：创建后恰好 60 秒的 NOT_FOUND 仍不处理，超过 60 秒才关单或重提退款。创建后恰好 24 小时的行仍查单，超过 24 小时的行在抢占事务里置 `next_query_at = NULL`、`updated_at = now`，`query_count`、`last_query_at` 不变，不查单；每行一条 WARN 日志（`biz_type`、`biz_no`），`pay_channel_query_exhausted_total + 1`。
 - 抢占只改 `query_count`、`last_query_at`、`next_query_at`、`updated_at`，不改 `version`，这几列不参与终态 CAS。同一批里按新的 `query_count` 分组，每组一条 `UPDATE ... WHERE id IN (...)`。
-- 每个任务记住抢占时写入的 `next_query_at`。任务真正启动时（拿到并发槽之后）当前时间已不早于该值，就跳过：不查单、不写库，WARN 日志（`biz_type`、`biz_no`），进程内计数 +1。原因：渠道慢使批次耗时超过退避间隔时，排在后面的行已经到期，可能已被另一个实例或下一批抢占进入下一档，再查就是同一档查两次，并可能重复关单或重提退款。这一档交给接手的一方。被跳过的行 `query_count` 仍已加 1，所以 `query_count` 可能略多于实际查单次数。已经开始的任务若比退避间隔还长，下一档的查单可能与它同时进行；终态都经 CAS 写入，关单和重提退款在渠道按 req_no 幂等，不会重复推进。每批仍取 100 行，不改规则 1。跳过检查要求退避间隔远大于抢占事务和启动任务的耗时，所以 `QUERY_BACKOFF` 每项不小于 1 秒，否则启动失败（约定 §8）。
+- 每个任务记住抢占时写入的 `next_query_at`。任务真正启动时（拿到并发槽之后）当前时间已不早于该值，就跳过：不查单、不写库，WARN 日志（`biz_type`、`biz_no`），进程内计数 +1。原因：渠道慢使批次耗时超过退避间隔时，排在后面的行已经到期，可能已被另一个实例抢占进入下一档，再查就是同一档查两次，并可能重复关单或重提退款。这一档交给接手的实例。本实例的下一批不会接手：同一实例一次只跑一个批次，`RunQueryBatch` 要等本批任务全部结束（`wg.Wait`）才返回。被跳过的行 `query_count` 仍已加 1，所以 `query_count` 可能略多于实际查单次数。已经开始的任务若比退避间隔还长，下一档的查单可能与它同时进行；终态都经 CAS 写入，关单和重提退款在渠道按 req_no 幂等，不会重复推进。每批仍取 100 行，不改规则 1。跳过检查要求退避间隔远大于抢占事务和启动任务的耗时，所以 `QUERY_BACKOFF` 每项不小于 1 秒，否则启动失败（约定 §8）。
 - 查单结果分发补充：PAY 查得 CLOSED（渠道已关闭，例如防悬挂行）→ `ApplyPayResult(CLOSED, source = QUERY)`，不带金额。REFUND 查得 CLOSED 不处理，WARN 日志，等下一档（退款不会被渠道关闭）。查得 SUCCESS 但缺金额或完成时间时不处理，等下一档。FAILED 的 `fail_code` 为 `CHANNEL_FAILED`。
 - PAY 的 NOT_FOUND 关单复用 PAY-06 的关单路径，`ApplyPayResult` 的 `source = QUERY`；`ALREADY_PAID`、渠道 `FAILED` 的结果写入方式与 PAY-06 相同。
 - REFUND 的 NOT_FOUND 只在退款单仍是 PROCESSING 时重提，复用 REF-02 提交渠道退款的同一段代码。重提 `REJECTED` 时 `ApplyRefundResult(FAILED, CHANNEL_REJECTED, source = SYNC)`，`fail_msg` 为渠道 `reason`，与 REF-02 同步受理拒绝相同。
@@ -3204,3 +3204,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-05 | v3.0 | REF-03 文字澄清：实现说明里“事务重试不会重复记”改为写明真实原因，ERROR 日志在回滚之后输出，记录时回滚已完成；释放额度影响 0 行返回的错误不是 MySQL 错误号，`dbx.WithTx` 不重试。不改规则，不改代码逻辑，不新增错误码，不改表，不改 IDL。 |
 | 2026-11-05 | v3.0 | PAY-05：查单补偿落地。插入流水时的 10 秒是第 0 档，第 n 次抢占后用 QUERY_BACKOFF 第 n 项，超出后每小时一次；测试配置下第一次查单仍在创建 10 秒后。恰好 60 秒的 NOT_FOUND 不处理，恰好 24 小时仍查单，超过 24 小时置 next_query_at = NULL 并计 pay_channel_query_exhausted_total。抢占不改 version，显式写 updated_at。PAY 查得 CLOSED 调用 ApplyPayResult(CLOSED, QUERY)；REFUND 查得 CLOSED 只记 WARN 并等下一档；SUCCESS 缺金额或完成时间时等下一档。NOT_FOUND 关单复用 PAY-06 路径，source = QUERY；退款重提只在 PROCESSING 时进行，REJECTED 按 REF-02 用 source = SYNC 写 CHANNEL_REJECTED。每个任务 10 秒超时，不随批次取消。定时循环在 service/payment/job，不引用 biz，由 cmd/payment 传入 RunQueryBatch。计数由 OPS-03 暴露。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
 | 2026-11-06 | v3.0 | PAY-05 审查修复：任务启动时抢占写入的 next_query_at 已到期则跳过，不查单、不写库，WARN 日志并计数，避免批次慢于退避间隔时同一档重复查单、重复关单或重提；每批仍取 100 行。进程停止时批次 ctx 立即取消，等并发槽的任务不再启动，已开始的任务按自己的超时跑完。日志字段 job 登记到约定 §7.5。QUERY_BACKOFF 每项下限 1 秒，小于 1 秒时启动失败（约定 §8）。不改资金流向，不新增错误码，不改表，不改 IDL。 |
+| 2026-11-06 | v3.0 | PAY-05 文字澄清：实现说明里“可能已被另一个实例或下一批抢占”改为只由另一个实例接手。同一实例一次只跑一个批次，`RunQueryBatch` 要等本批任务全部结束（`wg.Wait`）才返回，下一批不会接手在途行。规则与行为不变。 |

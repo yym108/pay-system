@@ -51,7 +51,8 @@ type QueryPolicy struct {
 }
 
 // queryTask 是一条已抢占的 PROCESSING 流水。QueryCount 是抢占之后的新值，
-// NextQueryAt 是抢占时写入的 next_query_at：到了这个时间，这一行可以被别的实例或下一批再次抢占。
+// NextQueryAt 是抢占时写入的 next_query_at：到了这个时间，这一行可以被别的实例再次抢占。
+// 本实例的下一批不会：定时循环一次只跑一个批次，RunQueryBatch 等本批任务全部结束（wg.Wait）才返回。
 type queryTask struct {
 	ID          int64
 	BizNo       string
@@ -139,8 +140,8 @@ func (p *Payments) dispatchQueries(ctx context.Context, tasks []queryTask) {
 }
 
 // runQueryTask 用自己的超时执行一个任务，不随批次 ctx 取消。panic 被恢复并计数，不记录 panic 值。
-// 启动时抢占写入的 next_query_at 已到期则跳过：批次慢于退避间隔时，这一行可能已被别的实例或下一批
-// 抢占进入下一档，再查就是同一档查两次。跳过不写库，这一档由接手的一方处理。
+// 启动时抢占写入的 next_query_at 已到期则跳过：批次慢于退避间隔时，这一行可能已被别的实例
+// 抢占进入下一档，再查就是同一档查两次。跳过不写库，这一档由接手的实例处理。
 func (p *Payments) runQueryTask(ctx context.Context, task queryTask) {
 	if !p.clk.Now().Before(task.NextQueryAt) {
 		queryClaimSkipped.Add(1)
