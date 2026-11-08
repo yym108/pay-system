@@ -59,6 +59,7 @@
 | TRF-01 | 创建转账单 | 转账 | `9f69152` | 2026-11-06 | [TRF-01-create-transfer.md](TRF-01-create-transfer.md) |
 | TRF-02 | 同分片转账执行 | 转账 | `e09ee63` | 2026-11-06 | [TRF-02-transfer-local.md](TRF-02-transfer-local.md) |
 | TRF-03 | 跨分片转账 TCC 协调 | 转账 | `4ab4300` | 2026-11-08 | [TRF-03-transfer-tcc.md](TRF-03-transfer-tcc.md) |
+| TRF-04 | 转账恢复任务 | 转账 | `5930324` | 2026-11-08 | [TRF-04-transfer-recover.md](TRF-04-transfer-recover.md) |
 | TRF-05 | 转账查询 | 转账 | `7b0d9e2` | 2026-11-06 | [TRF-05-query-transfer.md](TRF-05-query-transfer.md) |
 | REF-04 | 退款卡单恢复 | 退款 | `48289b7` | 2026-11-06 | [REF-04-refund-recover.md](REF-04-refund-recover.md) |
 | PAY-07 | 超时关单 | 支付 | `ea9733e` | 2026-11-06 | [PAY-07-timeout-close.md](PAY-07-timeout-close.md) |
