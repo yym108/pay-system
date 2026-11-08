@@ -410,7 +410,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | GW-06 | 渠道回调入口 | P0 | M3 | GW-01、PAY-04、CH-05、BASE-15 | DONE |
 | GW-07 | 管理接口（重放、核对、触发对账） | P0 | M6 | GW-01、MQ-05、ACC-10、ACC-11、REC-01 | TODO |
 | GW-08 | 商户密钥缓存 | P0 | M7 | GW-03、OPT-01、QA-02 | TODO |
-| GW-09 | 商户 API 路由（退款与转账） | P0 | M4 | GW-01、GW-02、GW-06、TL-01、REF-01、REF-05、TRF-01、TRF-05 | TODO |
+| GW-09 | 商户 API 路由（退款与转账） | P0 | M4 | GW-01、GW-02、GW-06、TL-01、REF-01、REF-05、TRF-01、TRF-05 | DONE |
 | REC-01 | 对账批次与调度 | P0 | M6 | BASE-03 | TODO |
 | REC-02 | 账单下载与导入 | P0 | M6 | REC-01、CH-08 | TODO |
 | REC-03 | 外部对账比对（按单号） | P0 | M6 | REC-02、CH-06、CH-09、PAY-05 | TODO |
@@ -2416,9 +2416,11 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 
 验收：
 
-- [ ] 创建退款与创建转账时 `amount` 为 `100.5`、`"100"`、`0`、`10000001` 均返回 `10001`；`payee_merchant_id` 为 `M12345`、`X100002` 返回 `10001`。
-- [ ] 转账请求体中伪造付款方 `merchant_id` 不影响付款方，转账单的付款方是验签商户。
-- [ ] 用 paycli 经网关完成“下单 → 支付 → 查询 → 退款 → 查询退款 → 同分片转账 → 跨分片转账 → 查询转账”（由 TL-01 移来），每一步退出码 0 且响应签名校验通过；支付经回调变为 SUCCESS 后再退款。
+- [x] 创建退款与创建转账时 `amount` 为 `100.5`、`"100"`、`0`、`10000001` 均返回 `10001`；`payee_merchant_id` 为 `M12345`、`X100002` 返回 `10001`。
+- [x] 转账请求体中伪造付款方 `merchant_id` 不影响付款方，转账单的付款方是验签商户。
+- [x] 用 paycli 经网关完成“下单 → 支付 → 查询 → 退款 → 查询退款 → 同分片转账 → 跨分片转账 → 查询转账”（由 TL-01 移来），每一步退出码 0 且响应签名校验通过；支付经回调变为 SUCCESS 后再退款。
+
+实现说明（2026-11-08）：路由已接上。`merchant_id` 只取验签结果；转账付款方同样只取验签结果。网关 `CreateRefund` 调用超时 5 秒、`CreateTransfer` 3 秒，查询走默认 1 秒，不重试。验收 3 用 paycli 经进程内网关与 payment/account/channel，余额用 account biz 夹具，因为没有 MQ-04。
 
 ### 4.10 对账（REC）
 
@@ -3293,3 +3295,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-06 | v3.0 | TRF-02：同分片转账执行落地。只执行 mode=LOCAL；TCC 仍返回 TRYING。TransferLocal 在事务外，CAS TRYING→SUCCESS/FAILED 与一条 outbox 在同一个 WithTx。超时、10003、10004、10001、10006 保持 TRYING。40001、40005 写成 FAILED/ACCOUNT_INVALID。余额不足仍是本次请求的 40002。CAS 影响 0 行再读。本库 CAS 失败返回 10003 或 10004，行仍 TRYING，相同商户单号不再执行。服务端超时仍 2 秒。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
 | 2026-11-07 | v3.0 | TRF-03：跨分片 TCC 在本请求内协调。未装协调器仍返回刚插入的 TRYING；生产装上后执行到 SUCCESS、FAILED（本次 INSUFFICIENT_BALANCE 为 40002）或中间态 CONFIRMING / CANCELLING（code 0）。并行 Try 用 errgroup.Group，不用 WithContext。TCC 成功不写 txn_no。40004 只做进程内无标签计数，没有 Prometheus。CONFIRMING、CANCELLING 和未决策的 TRYING 仍由 TRF-04 接管。stub 发号器返回 10003，终态发号回拨映射为 10004 且行停在终态前。相同商户单号不重新执行。服务端超时仍 2 秒。集成测试用进程内 account biz，不是 Kitex。Try、Confirm 和 Cancel 遇到 DeadlineExceeded 或 1213/1205 且父 ctx 仍有效时，整组分支最多再试 5 次；`sql.ErrTxDone`（事务已经结束）同样整组再试。`sql: Rows are closed`（结果集已经关闭）同样整组再试；业务错误不重试；Try 用尽后仍是 TRY_TIMEOUT，Confirm 和 Cancel 用尽后仍停在中间态。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
 | 2026-11-08 | v3.0 | TRF-04：转账恢复按注入时钟抢占 TRYING / CONFIRMING / CANCELLING，不用 SQL NOW()；SKIP LOCKED，一轮最多 100 行；退避在 Go 里按加 1 后的 retry_count 计算并封顶 60 秒；updated_at 显式写入，不改 version。事务外最多 20 并发，不用 WithContext；单笔 5 秒且不随批次取消。TRYING+LOCAL 调已有 executeLocal；TRYING+TCC 决策取消后直接 Cancel，不重跑 Try，不走 TransferExecutor。CAS 影响 0 行只再处理一次。pay_transfer_stuck 是进程内当前值，无 Prometheus、无 mode 标签。未装配返回已有的 10003 且不抢占。不新增错误码，不改表，不改 IDL，不改资金流向。§3 改为 DONE。 |
+| 2026-11-08 | v3.0 | GW-09：商户端口接上创建退款、查询退款、创建转账、查询转账。`merchant_id` 只取验签结果。网关调用 `CreateRefund` 5 秒、`CreateTransfer` 3 秒，查询 1 秒，不重试。不改 payment 服务端超时。验收 3 用 paycli 经进程内网关，余额用 account biz 夹具，因为没有 MQ-04。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |

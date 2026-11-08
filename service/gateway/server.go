@@ -91,7 +91,7 @@ func newHandler(admin bool, opts ...Option) *Handler {
 	return h
 }
 
-// Register 安装中间件。商户端口注册支付与余额路由，管理端口不注册。
+// Register 安装中间件。商户端口注册支付、退款、转账与余额路由，管理端口不注册。
 //
 // 顺序：请求体上限、Recovery、RequestID、Trace、AccessLog、
 // 时间窗口占位、验签、限流占位、nonce 占位、响应签名、handler。

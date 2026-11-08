@@ -35,6 +35,13 @@
 - 30001 和 50002 也回 `SUCCESS`，并给进程内计数加一，避免渠道空转重试。退款分支仍是 10003，留给 REF-03。
 - 未知单号、金额不一致、2 秒内 SUCCESS、DUP_NOTIFY 十次，由 payment 的集成测试打到进程内网关和 channel-mock。测试把自动完成延迟固定为 50 毫秒，生产默认延迟不变。
 
+## GW-09 退款与转账路由
+
+- 四条路由在商户端口。`merchant_id` 和转账付款方只取验签结果，请求体里的同名字段不读。
+- 网关调用超时是 `callopt`：`CreateRefund` 5 秒，`CreateTransfer` 3 秒，查询 1 秒。payment 的 `CreateTransfer` 服务端超时仍是 2 秒，这次不改。
+- 验收 3 不起 Kitex。测试适配器调用已导出的 payment handler；渠道 HTTP 打到进程内 channel_mock，回调进现有 `POST /callback/mockpay`。paycli 是编译出来的二进制，自己验平台响应签名。
+- M4 没有 MQ-04，支付 SUCCESS 不给商户入账。退款冻结和转账用的余额是 account biz 的平衡 `Post`，不是 SQL UPDATE。退款冻结到结束可能还在，`CheckBalance` 的 `expect_quiescent` 用 false。装配 `UsePay` 必须发生在网关 `Spin` 之前，否则 `-race` 看不到跨进程的先后关系。
+
 ## PAY-01 商户与密钥
 
 - `merchant` 表列跟随库默认 `utf8mb4_bin`：区分大小写，但 PAD SPACE 比较时忽略尾部空格，compose 上实测 `WHERE app_id = 'app_m100001 '` 也能查到 `app_m100001`。集成测试临时库是 `utf8mb4_0900_ai_ci`，不区分大小写和重音，`'APP_M100001'` 也能查到。两种规则下 SQL 都会匹配字节不同的值。`X-App-Id` 不在签名串里，若 nonce 防重按请求带来的 app_id 记键，换个写法同一个签名就能重放。查询后在应用里逐字节比较读回的 app_id、merchant_id，不一致按不存在返回 `20004`。去掉这次比较，集成测试 `TestPAY01UnknownAppID` 立刻失败（测试库下靠大小写触发）；尾部空格目前只在 compose 手测过。

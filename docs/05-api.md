@@ -2,9 +2,9 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 3.3.13 |
+| 文档版本 | 3.3.14 |
 | API 版本 | v1（路径前缀 `/v1`） |
-| 最后修改 | 2026-11-07 |
+| 最后修改 | 2026-11-08 |
 | 状态 | 设计基线，实现须与本文一致 |
 
 关联文档：需求 `docs/02-requirements.md`（各接口的业务规则以功能点为准）、约定 `docs/03-conventions.md`（错误码、单号、时间格式）。
@@ -80,6 +80,7 @@
 | 3.3.11 | 2026-11-06 | `QueryTransfer` 已实现，规则同 `QueryRefund`，只有付款商户可以查询。直接读 `transfer_order`，不缓存，不写。收款商户、其他商户与不存在都是已有的 `30001`。`transfer_no` 与 `out_transfer_no` 二选一不合法是已有的 `10001`，不进业务错误列。此前该方法返回 `10003`。服务端处理超时 2 秒。网关路由仍属 GW-09，尚未提供。不新增字段，不新增错误码，不改 IDL | §1、§4.9、§10.2 | TRF-05 |
 | 3.3.12 | 2026-11-06 | `CreateTransfer` 的 LOCAL 现在调用 `TransferLocal`。SUCCESS、FAILED（含 `fail_code = ACCOUNT_INVALID`）与本次执行到余额不足时的 `40002` 都会返回。TCC 仍返回刚插入的 TRYING。超时、`10003`、`10004`、`10001`、`10006` 保持 TRYING 且 code 0。服务端处理超时仍是 2 秒。不新增字段，不新增错误码，不改 IDL | §1、§4.8、§10.2 | TRF-02 |
 | 3.3.13 | 2026-11-07 | `CreateTransfer` 的 TCC 在本请求内协调到 SUCCESS、FAILED（`40002` 仅本次执行到 `INSUFFICIENT_BALANCE`）或中间态 CONFIRMING / CANCELLING（code 0）。未装协调器仍返回 TRYING。TCC 成功不写 `txn_no`。LOCAL 行为不变。服务端处理超时仍是 2 秒。不新增字段，不新增错误码，不改 IDL | §1、§4.8、§10.2 | TRF-03 |
+| 3.3.14 | 2026-11-08 | 网关已提供 §4.5、§4.6、§4.8、§4.9。`merchant_id` 只取验签结果。网关调用 `CreateRefund` 超时 5 秒、`CreateTransfer` 3 秒，查询 1 秒，不重试。payment 服务端超时不变。字段和错误码不变，不改 IDL | §1、§4.6、§4.9 | GW-09 |
 
 ## 1. 接口总览
 
@@ -102,11 +103,11 @@
 | `POST /v1/payments/{pay_no}/pay` 发起支付 | §4.2 | `PaymentService.Pay` | PAY-03、PAY-04 | 1.0.0 | 2026-11-01 |
 | `POST /v1/payments/{pay_no}/close` 关闭支付单 | §4.3 | `PaymentService.ClosePayment` | PAY-06 | 1.0.0 | 2026-11-01 |
 | `GET /v1/payments/{pay_no}`、`GET /v1/payments?out_trade_no=` 查询支付单 | §4.4 | `PaymentService.QueryPayment` | PAY-08 | 1.0.0 | 2026-11-01 |
-| `POST /v1/refunds` 创建退款 | §4.5 | `PaymentService.CreateRefund` | REF-01、REF-02、REF-03 | 1.0.0 | 2026-11-05 |
-| `GET /v1/refunds/{refund_no}`、`GET /v1/refunds?out_refund_no=` 查询退款 | §4.6 | `PaymentService.QueryRefund` | REF-05 | 1.0.0 | 2026-11-06 |
+| `POST /v1/refunds` 创建退款 | §4.5 | `PaymentService.CreateRefund` | REF-01、REF-02、REF-03 | 1.0.0 | 2026-11-08 |
+| `GET /v1/refunds/{refund_no}`、`GET /v1/refunds?out_refund_no=` 查询退款 | §4.6 | `PaymentService.QueryRefund` | REF-05 | 1.0.0 | 2026-11-08 |
 | `GET /v1/balance` 查询余额 | §4.7 | `AccountService.GetAccount` | ACC-02 | 1.0.0 | 2026-11-01 |
-| `POST /v1/transfers` 创建转账 | §4.8 | `PaymentService.CreateTransfer` | TRF-01~03 | 2.0.0 | 2026-11-07 |
-| `GET /v1/transfers/{transfer_no}`、`GET /v1/transfers?out_transfer_no=` 查询转账 | §4.9 | `PaymentService.QueryTransfer` | TRF-05 | 2.0.0 | 2026-11-06 |
+| `POST /v1/transfers` 创建转账 | §4.8 | `PaymentService.CreateTransfer` | TRF-01~03 | 2.0.0 | 2026-11-08 |
+| `GET /v1/transfers/{transfer_no}`、`GET /v1/transfers?out_transfer_no=` 查询转账 | §4.9 | `PaymentService.QueryTransfer` | TRF-05 | 2.0.0 | 2026-11-08 |
 | 商户异步通知 | §6 | — | NTF-01、NTF-02 | 1.0.0 | 2026-10-12 |
 | `POST /callback/mockpay` 渠道回调入口 | §7 | `PaymentService.HandleChannelNotify` | GW-06、REF-03 | 1.0.0 | 2026-11-05 |
 | `POST /admin/recon/run` 执行对账 | §8.2 | `ReconService.RunBatch` | REC-01、REC-08 | 1.0.0 | 2026-10-27 |
@@ -408,7 +409,7 @@ payment 的 `QueryPayment` 直接读 `payment_order`，不缓存，不写行，�
 
 只能查询当前商户的退款单，规则同 §4.4。`refund_no` 与 `out_refund_no` 二选一。查询串方式必须且只能提供 `out_refund_no`。两个都空或两个都非空（空串算没提供，不 trim）是已有的 `10001`，不读库。`10001` 是通用错误，不列入下面的业务错误。
 
-payment 的 `QueryRefund` 直接读 `refund_order`，不缓存，不写行，不推进状态。只提供 `refund_no`：没有行，或 `merchant_id` 与库中逐字节不同（含空商户号），都返回 `30001`。只提供 `out_refund_no`：没有行返回 `30001`，他人的商户退款单号因此也是 `30001`。两种情况同一个错误，调用方看不出退款单是否存在。查到且商户匹配则原样返回该行，状态可以是 `INIT`、`PROCESSING`、`SUCCESS`、`FAILED`。网关的这两条路由属于 GW-09，尚未提供。
+payment 的 `QueryRefund` 直接读 `refund_order`，不缓存，不写行，不推进状态。只提供 `refund_no`：没有行，或 `merchant_id` 与库中逐字节不同（含空商户号），都返回 `30001`。只提供 `out_refund_no`：没有行返回 `30001`，他人的商户退款单号因此也是 `30001`。两种情况同一个错误，调用方看不出退款单是否存在。查到且商户匹配则原样返回该行，状态可以是 `INIT`、`PROCESSING`、`SUCCESS`、`FAILED`。网关的这两条路由已由 GW-09 提供。
 
 响应 `data`：`RefundOrder`。
 
@@ -509,7 +510,7 @@ payment 的 `QueryRefund` 直接读 `refund_order`，不缓存，不写行，不
 
 只有付款商户可以查询；收款商户和其他商户查询返回 `30001`（不泄露存在性）。查询串方式必须且只能提供 `out_transfer_no`。`transfer_no` 与 `out_transfer_no` 两个都空或两个都非空（空串算没提供，不 trim）是已有的 `10001`，不读库。`10001` 是通用错误，不列入下面的业务错误。
 
-payment 的 `QueryTransfer` 直接读 `transfer_order`，不缓存，不写行，不推进状态。只提供 `transfer_no`：没有行，或 `merchant_id`（付款商户）与库中逐字节不同（收款商户、其他商户、空商户号），都返回 `30001`。只提供 `out_transfer_no`：按 `(merchant_id, out_transfer_no)` 读，没有行返回 `30001`，收款商户或其他商户拿付款方的商户转账单号因此也是 `30001`。几种情况同一个错误，调用方看不出转账单是否存在。查到且商户匹配则原样返回该行，状态可以是 `TRYING`、`CONFIRMING`、`CANCELLING`、`SUCCESS`、`FAILED`。网关的这两条路由属于 GW-09，尚未提供。
+payment 的 `QueryTransfer` 直接读 `transfer_order`，不缓存，不写行，不推进状态。只提供 `transfer_no`：没有行，或 `merchant_id`（付款商户）与库中逐字节不同（收款商户、其他商户、空商户号），都返回 `30001`。只提供 `out_transfer_no`：按 `(merchant_id, out_transfer_no)` 读，没有行返回 `30001`，收款商户或其他商户拿付款方的商户转账单号因此也是 `30001`。几种情况同一个错误，调用方看不出转账单是否存在。查到且商户匹配则原样返回该行，状态可以是 `TRYING`、`CONFIRMING`、`CANCELLING`、`SUCCESS`、`FAILED`。网关的这两条路由已由 GW-09 提供。
 
 响应 `data`：`Transfer`。
 
