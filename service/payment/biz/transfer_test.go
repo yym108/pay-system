@@ -62,6 +62,8 @@ type memTransfers struct {
 	finishes  int
 	// beforeInsert 在插入检查唯一键之前调用，用来让并发请求都越过预读。
 	beforeInsert func()
+	// hijackDecide 在决策比较状态之前改这一行，用来模拟 CAS 影响 0 行。
+	hijackDecide func(row *TransferOrder)
 }
 
 func (m *memTransfers) transferByMerchantOut(_ context.Context, merchantID, outTransferNo string) (TransferOrder, bool, error) {
@@ -118,6 +120,55 @@ func (m *memTransfers) finishTransfer(_ context.Context, row TransferOrder, stat
 		m.rows[i].Status = status
 		m.rows[i].FailCode = failCode
 		m.rows[i].TxnNo = txnNo
+		m.rows[i].FinishedAt = at
+		m.rows[i].UpdatedAt = at
+		m.rows[i].Version++
+		return m.rows[i], true, nil
+	}
+	return TransferOrder{}, false, errno.ErrInternal
+}
+
+func (m *memTransfers) decideTransfer(_ context.Context, row TransferOrder, status, failCode string, at time.Time) (TransferOrder, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.rows {
+		if m.rows[i].TransferNo != row.TransferNo {
+			continue
+		}
+		if m.hijackDecide != nil {
+			m.hijackDecide(&m.rows[i])
+		}
+		if m.rows[i].Status != transferStatusTrying {
+			return m.rows[i], false, nil
+		}
+		m.rows[i].Status = status
+		m.rows[i].FailCode = failCode
+		m.rows[i].UpdatedAt = at
+		m.rows[i].Version++
+		return m.rows[i], true, nil
+	}
+	return TransferOrder{}, false, errno.ErrInternal
+}
+
+func (m *memTransfers) finishTCCTransfer(ctx context.Context, row TransferOrder, fromStatus, status, failCode string, at time.Time, ids *idgen.Generator, _ clock.Clock) (TransferOrder, bool, error) {
+	if ids != nil {
+		// 与 outbox.Add 一样先发事件号。回拨失败时不改行。
+		if _, err := ids.NewNo(ctx, "EV"); err != nil {
+			return TransferOrder{}, false, err
+		}
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for i := range m.rows {
+		if m.rows[i].TransferNo != row.TransferNo {
+			continue
+		}
+		if m.rows[i].Status != fromStatus {
+			return m.rows[i], false, nil
+		}
+		m.rows[i].Status = status
+		m.rows[i].FailCode = failCode
+		m.rows[i].TxnNo = ""
 		m.rows[i].FinishedAt = at
 		m.rows[i].UpdatedAt = at
 		m.rows[i].Version++

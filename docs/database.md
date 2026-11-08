@@ -526,7 +526,7 @@
 ### 4.9 `transfer_order` — 转账单
 
 - **Purpose:** 商户间转账的状态机与跨分片 TCC 协调者的持久化状态（`docs/02-requirements.md` §4.6、D18）。`mode` 在创建时由双方分片决定：同分片 LOCAL，由 account 一个本地事务完成；跨分片 TCC，由 payment 驱动付款方冻结分支与收款方 `transfer_branch` 分支。
-- **Lifecycle:** LOCAL：TRYING → SUCCESS / FAILED。TCC：TRYING → CONFIRMING → SUCCESS；TRYING → CANCELLING → FAILED。TRYING 是唯一可以改变决策的状态；CONFIRMING、CANCELLING 落盘后只能前进，由恢复任务（TRF-04）重试到终态。TRF-01 以自动提交的单条 INSERT 写入 `status = TRYING`、`version = 0`、`retry_count = 0`，`fail_code`、`txn_no`、`finished_at` 为 NULL，`created_at`、`updated_at` 由应用时钟显式写入，`next_retry_at = created_at + TRANSFER_RECOVER_DELAY`。插入前按 `uk_merchant_out_transfer_no` 读已有行；插入 1062 后在插入之外再按同一键读，读不到说明冲突的是 `uk_transfer_no`。TRF-01 的插入不更新已有行。TRF-02 对 LOCAL 在账户调用之外用一个事务 CAS `TRYING → SUCCESS / FAILED`（`version` 加 1，显式写 `updated_at` 与 `finished_at`），并在同一事务写一条 outbox；TCC 的状态推进仍属于 TRF-03、TRF-04。无 DDL。
+- **Lifecycle:** LOCAL：TRYING → SUCCESS / FAILED。TCC：TRYING → CONFIRMING → SUCCESS；TRYING → CANCELLING → FAILED。TRYING 是唯一可以改变决策的状态；CONFIRMING、CANCELLING 落盘后只能前进，由恢复任务（TRF-04）重试到终态。TRF-01 以自动提交的单条 INSERT 写入 `status = TRYING`、`version = 0`、`retry_count = 0`，`fail_code`、`txn_no`、`finished_at` 为 NULL，`created_at`、`updated_at` 由应用时钟显式写入，`next_retry_at = created_at + TRANSFER_RECOVER_DELAY`。插入前按 `uk_merchant_out_transfer_no` 读已有行；插入 1062 后在插入之外再按同一键读，读不到说明冲突的是 `uk_transfer_no`。TRF-01 的插入不更新已有行。TRF-02 对 LOCAL 在账户调用之外用一个事务 CAS `TRYING → SUCCESS / FAILED`（`version` 加 1，显式写 `updated_at` 与 `finished_at`），并在同一事务写一条 outbox。TRF-03 在本请求内 CAS `TRYING → CONFIRMING` 或 `CANCELLING`，再 CAS 到 `SUCCESS` 或 `FAILED`；停住的中间态和未决策的 TRYING 仍由 TRF-04 重试。无 DDL。
 - **Sensitivity:** 内部交易数据，`remark` 不得包含个人信息。
 - **Authoritative source:** `migrations/payment/000001_init.up.sql`。
 - **Write owners/read consumers:** payment 写（TRF-01~04）；recon 只读（REC-05）。
@@ -982,6 +982,7 @@
 | 2026-11-06 | 无（仅文档） | `transfer_order.uk_transfer_no`（用途说明） | TRF-05：`QueryTransfer` 按 `uk_transfer_no` 或 `uk_merchant_out_transfer_no` 只读，不写行、不改 `version`。读回后逐字节比较单号与商户号，排序规则放宽匹配到的行按没有行处理。无 DDL | 未执行迁移（无 SQL 变更） |
 | 2026-11-06 | 无（仅文档） | refund_order（Lifecycle、兼容说明） | REF-04：卡单恢复只读扫描 INIT 且 `updated_at <= now − 30s`，按 `(updated_at, id)` 翻页、每页 100 行，走 `idx_status_updated_at`；按 `created_at` 判 1 小时，超过则经 REF-03 CAS `INIT → FAILED`（REFUND_TIMEOUT，source = JOB）。无 DDL | 未执行迁移（无 SQL 变更） |
 | 2026-11-06 | 无（仅文档） | transfer_order（Lifecycle） | TRF-02：LOCAL 在账户调用之外 CAS `TRYING → SUCCESS / FAILED`，`version` 加 1，显式写 `updated_at` 与 `finished_at`，同一事务写一条 outbox。不改列、不改 CHECK。无 DDL | 未执行迁移 |
+| 2026-11-07 | 无（仅文档） | transfer_order（Lifecycle） | TRF-03：本请求内 CAS `TRYING → CONFIRMING` 或 `CANCELLING`，再 CAS 到 `SUCCESS` 或 `FAILED`。停住的中间态和未决策的 TRYING 仍由 TRF-04 重试。不改列、不改 CHECK。无 DDL | 未执行迁移 |
 
 ## 6. Open Questions
 

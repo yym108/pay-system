@@ -21,8 +21,12 @@ const (
 	transferStatusFailed       = "FAILED"
 	transferModeLocal          = "LOCAL"
 	transferModeTCC            = "TCC"
+	transferStatusConfirming   = "CONFIRMING"
+	transferStatusCancelling   = "CANCELLING"
 	transferFailInsufficient   = "INSUFFICIENT_BALANCE"
 	transferFailAccountInvalid = "ACCOUNT_INVALID"
+	transferFailTryTimeout     = "TRY_TIMEOUT"
+	transferBizType            = "TRANSFER"
 	maxRemarkRunes             = 128
 	// defaultTransferRecoverDelay 与 TRANSFER_RECOVER_DELAY 的默认值一致，未调用 UseTransfer 时使用。
 	defaultTransferRecoverDelay = 10 * time.Second
@@ -71,7 +75,8 @@ type TransferExecutor interface {
 	ExecuteTransfer(ctx context.Context, row TransferOrder) (TransferOrder, error)
 }
 
-// transferStore 读写转账单。TRF-02 用 finishTransfer 把 TRYING 收成终态；TRF-03、TRF-04 不在这里。
+// transferStore 读写转账单。TRF-02 用 finishTransfer 把 TRYING 收成终态。
+// TRF-03 用 decideTransfer 落盘决策，再用 finishTCCTransfer 收 TCC 终态。TRF-04 不在这里。
 type transferStore interface {
 	transferByMerchantOut(ctx context.Context, merchantID, outTransferNo string) (TransferOrder, bool, error)
 	// transferByNo 按 transfer_no 读，不比较商户号；调用方按自己的规则比较（TRF-05）。
@@ -80,11 +85,18 @@ type transferStore interface {
 	// finishTransfer 把仍是 TRYING 的行收成 SUCCESS 或 FAILED，并在同一次提交里写 outbox。
 	// applied 为 false 表示 CAS 影响 0 行，current 是再读到的当前行，没有写 outbox。
 	finishTransfer(ctx context.Context, row TransferOrder, status, failCode, txnNo string, at time.Time, ids *idgen.Generator, clk clock.Clock) (current TransferOrder, applied bool, err error)
+	// decideTransfer 把 TRYING 收成 CONFIRMING 或 CANCELLING。不写 outbox。
+	// CANCELLING 必须带 failCode。applied 为 false 时 current 是再读到的行。
+	decideTransfer(ctx context.Context, row TransferOrder, status, failCode string, at time.Time) (current TransferOrder, applied bool, err error)
+	// finishTCCTransfer 把 CONFIRMING 收成 SUCCESS，或把 CANCELLING 收成 FAILED。
+	// SUCCESS 不写 txn_no。FAILED 不改已经写下的 fail_code。命中时同事务写 outbox。
+	finishTCCTransfer(ctx context.Context, row TransferOrder, fromStatus, status, failCode string, at time.Time, ids *idgen.Generator, clk clock.Clock) (current TransferOrder, applied bool, err error)
 }
 
 // UseTransfer 装上转账恢复延迟和执行器。
 // recoverDelay 是 TRANSFER_RECOVER_DELAY，写进新单的 next_retry_at；负数时保留默认的 10 秒。
-// exec 为 nil 时，CreateTransfer 返回刚插入的 TRYING 转账单，不执行。
+// exec 为 nil 时不使用这份执行器。LOCAL 改看 LocalTransferrer，TCC 改看 TCCBrancher。
+// 两条都没装时，CreateTransfer 返回刚插入的 TRYING 转账单。
 func (p *Payments) UseTransfer(recoverDelay time.Duration, exec TransferExecutor) {
 	if p == nil {
 		return
@@ -102,6 +114,17 @@ func (p *Payments) UseLocalTransfer(local LocalTransferrer) {
 		return
 	}
 	p.localTransfer = local
+}
+
+// UseTCCTransfer 装上跨分片协调（TRF-03）。
+// branch 为 nil 时不执行 TCC。parallel 为 true 时两个分支并行，否则先付款方。
+// 已装 TransferExecutor 时执行器优先，不调用 branch。
+func (p *Payments) UseTCCTransfer(branch TCCBrancher, parallel bool) {
+	if p == nil {
+		return
+	}
+	p.tccTransfer = branch
+	p.tccParallel = parallel
 }
 
 // CreateTransfer 转给转账创建。payments 为 nil 时返回 10003。
@@ -283,8 +306,8 @@ func (p *Payments) onTransferInsertErr(ctx context.Context, req transferRequest,
 	return sameTransfer(existing, req)
 }
 
-// executeTransfer 在插入提交之后执行转账。事务外调用账户，CAS 在执行器或 executeLocal 自己的事务里。
-// 注入的执行器优先，用来保住 TRF-01 的测试。没有执行器时，只有 LOCAL 且装了 LocalTransferrer 才执行。
+// executeTransfer 在插入提交之后执行转账。事务外调用账户，CAS 在各自的事务里。
+// 注入的执行器优先，用来保住 TRF-01 的测试。没有执行器时，LOCAL 走 LocalTransferrer，TCC 走 TCCBrancher。
 func (p *Payments) executeTransfer(ctx context.Context, row TransferOrder) (TransferOrder, error) {
 	var got TransferOrder
 	var err error
@@ -293,6 +316,8 @@ func (p *Payments) executeTransfer(ctx context.Context, row TransferOrder) (Tran
 		got, err = p.transferExec.ExecuteTransfer(ctx, row)
 	case row.Mode == transferModeLocal && p.localTransfer != nil:
 		got, err = p.executeLocal(ctx, row)
+	case row.Mode == transferModeTCC && p.tccTransfer != nil:
+		got, err = p.executeTCC(ctx, row)
 	default:
 		return row, nil
 	}

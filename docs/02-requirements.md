@@ -1,6 +1,6 @@
 # pay-system 需求规格说明书
 
-> 版本：v3.0　最后修改：2026-11-06
+> 版本：v3.0　最后修改：2026-11-07
 > 状态：v3.0 重新聚焦支付、退款、转账三条资金链路（变更见 §8.2），2026-10-13 已确认为开发基线；开发按 §3 功能点总表逐项推进
 > 上游：`PROJECT_GOALS.md`（目标与约束）、`docs/01-tech-decisions.md`（技术选型与版本）
 > 关联：`docs/03-conventions.md`（编号、错误码、命名等全局约定）、`docs/05-api.md`（接口文档）、`docs/database.md`（表结构）、`docs/04-dev-plan.md`（周计划）、`docs/06-flows.md`（流程图）
@@ -391,7 +391,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | REF-05 | 退款查询 | P0 | M4 | REF-01 | DONE |
 | TRF-01 | 创建转账单 | P0 | M4 | PAY-01、ACC-13 | DONE |
 | TRF-02 | 同分片转账执行 | P0 | M4 | TRF-01、ACC-07、ACC-11、MQ-01 | DONE |
-| TRF-03 | 跨分片转账 TCC 协调 | P0 | M4 | TRF-01、ACC-04~06、ACC-14、ACC-11、MQ-01、BASE-15 | TODO |
+| TRF-03 | 跨分片转账 TCC 协调 | P0 | M4 | TRF-01、ACC-04~06、ACC-14、ACC-11、MQ-01、BASE-15 | DONE |
 | TRF-04 | 转账恢复任务 | P0 | M4 | TRF-02、TRF-03、BASE-15 | TODO |
 | TRF-05 | 转账查询 | P0 | M4 | TRF-01 | DONE |
 | MQ-01 | outbox 写入 | P0 | M3 | BASE-08、BASE-05 | DONE |
@@ -1912,7 +1912,7 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 
 实现说明（2026-11-06，TRF-01 落地时的澄清，不改资金流向、表结构和错误码）：
 
-- 第 5 条的执行是可注入的执行器（LOCAL 走 TRF-02，TCC 走 TRF-03）。未调用 `UseTransfer` 的执行器、也未装 `LocalTransferrer` 时，提交后返回刚插入的 TRYING 转账单，code 0，不调用 account、不写 outbox。生产进程对 LOCAL 装上 TRF-02 的账户客户端；TCC 仍返回 TRYING，由 TRF-04 按 `next_retry_at` 接管。
+- 第 5 条的执行是可注入的执行器（LOCAL 走 TRF-02，TCC 走 TRF-03）。未调用 `UseTransfer` 的执行器、也未装 `LocalTransferrer`、也未装对应路径的协调器时，提交后返回刚插入的 TRYING 转账单，code 0，不调用 account、不写 outbox。未装 TCC 协调器时仍返回刚插入的 TRYING。生产进程装上协调器后，TCC 在本请求内执行。从未做出决策的 TRYING，以及 CONFIRMING、CANCELLING，仍由 TRF-04 接管。
 - 校验顺序：参数（`10001`）→ 按 `(merchant_id, out_transfer_no)` 读已有单（命中按第 3 条返回已有单或 `10006`）→ 收款方（`30008`）→ 插入。已有单号换了不合法的收款方（例如转给自己）也是 `10006`。付款商户号来自验签结果，格式不合法（`shard.Of` 失败）同样返回 `10001`；付款商户的状态由网关校验，这里不再读库。收款商户配置可以来自 `MERCHANT_CONFIG_CACHE_TTL` 内的缓存；读商户失败不是 `30008`，按依赖错误返回。
 - `notify_url` 显式传空串返回 `10001`（同 PAY-02）。`remark` 未传或传空串都存 NULL，不参与第 3 条的幂等比较。
 - 插入遇 1062 时在这条插入之外再读 `(merchant_id, out_transfer_no)`：读到则按第 3 条比较，一致返回已有单且不再执行，执行只由插入成功的那次请求负责；读不到说明冲突的是 `uk_transfer_no`（发号撞号），返回 `10003`。
@@ -1945,7 +1945,7 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 
 实现说明（2026-11-06，TRF-02 落地时的澄清，不改资金流向、表结构和错误码）：
 
-- 只执行 `mode = LOCAL`。`TCC` 即使装了账户客户端也返回刚插入的 TRYING，不调用 `TransferLocal`。生产在 `cmd/payment` 里 `Dial("account:8882")` 后 `UseLocalTransfer`；`UseTransfer` 的执行器仍为 nil。单测注入的 `TransferExecutor` 优先于 local。nil 执行器且未装 local 时行为与 TRF-01 相同。
+- 只执行 `mode = LOCAL`。TCC 不调用 `TransferLocal`。未装 TRF-03 协调器时仍返回刚插入的 TRYING；生产装上协调器后在本请求内执行。注入的 `TransferExecutor` 仍优先于 local 和 TCC。生产在 `cmd/payment` 里 `Dial("account:8882")` 后 `UseLocalTransfer`；`UseTransfer` 的执行器仍为 nil。nil 执行器且未装 local 时行为与 TRF-01 相同。
 - `TransferLocal` 在 payment 事务外调用。返回 SUCCESS 或 FAILED 后，另开一个 `dbx.WithTx`：CAS `WHERE transfer_no AND status = TRYING`，`version = version + 1`，`finished_at` 与 `updated_at` 用注入时钟截断到毫秒，并在同一事务写一条 outbox。SUCCESS 写 `txn_no` 和 `transfer.succeeded`；FAILED 写返回的 `fail_code` 和 `transfer.failed`。账户余额不足是 nil error 加 `INSUFFICIENT_BALANCE`，本次执行的请求再返回已有的 `40002`。
 - 超时、`10003`、`10004` 不 CAS、不写 outbox，接口返回 TRYING 且 code 0。`10001`、`10006` 同样保持 TRYING，只打 ERROR 日志（`transfer_no`、`err_code`）。不增加 `pay_transfer_stuck`，该指标由 TRF-04 在 `retry_count >= 10` 时暴露。不能把这两种码写成 FAILED。
 - `40001`、`40005` 在一个事务里 CAS 为 FAILED，`fail_code = ACCOUNT_INVALID`，写 `transfer.failed`，ERROR 日志，接口 code 0，不是 `40002`。SUCCESS 但 `txn_no` 为空、FAILED 但 `fail_code` 为空、或其他 status：保持 TRYING，ERROR 日志，不 CAS。
@@ -1978,12 +1978,24 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 
 验收：
 
-- [ ] `M100001 → M100002` 转 500：转账 SUCCESS；分片 1 有 `TRANSFER_OUT`，分片 0 有 `TRANSFER_IN`；两个分片在途合计 0；`CheckBalance` 通过。
-- [ ] 付款方余额不足：转账 FAILED（`40002`），收款方分支 CANCELLED，付款方冻结单 RELEASED 墓碑，没有任何转账凭证。
-- [ ] 注入收款方 Try 超时（测试替身）：转账 FAILED（`TRY_TIMEOUT`），付款方冻结被释放，可用余额恢复。
-- [ ] 注入付款方 Confirm 失败一次：接口返回 CONFIRMING，转账单保持 CONFIRMING（之后的推进由 TRF-04 验收）。
-- [ ] A、B 分属两个分片且各 10000，A→B 与 B→A 各 200 笔并发转 1：全部终态后 A + B = 20000，在途合计 0，`CheckBalance` 通过。
-- [ ] 并行与串行模式下以上结果一致。
+- [x] `M100001 → M100002` 转 500：转账 SUCCESS；分片 1 有 `TRANSFER_OUT`，分片 0 有 `TRANSFER_IN`；两个分片在途合计 0；`CheckBalance` 通过。
+- [x] 付款方余额不足：转账 FAILED（`40002`），收款方分支 CANCELLED，付款方冻结单 RELEASED 墓碑，没有任何转账凭证。
+- [x] 注入收款方 Try 超时（测试替身）：转账 FAILED（`TRY_TIMEOUT`），付款方冻结被释放，可用余额恢复。
+- [x] 注入付款方 Confirm 失败一次：接口返回 CONFIRMING，转账单保持 CONFIRMING（之后的推进由 TRF-04 验收）。
+- [x] A、B 分属两个分片且各 10000，A→B 与 B→A 各 200 笔并发转 1：全部终态后 A + B = 20000，在途合计 0，`CheckBalance` 通过。
+- [x] 并行与串行模式下以上结果一致。
+
+实现说明（2026-11-07，TRF-03 落地时的澄清，不改资金流向、表结构和错误码）：
+
+- 只有 `mode = TCC` 走这条协调。注入的 `TransferExecutor` 优先于 local 和 TCC。未装 TCC 协调器时仍返回刚插入的 TRYING，code 0，不调用账户、不写 outbox。生产进程在 `Dial` 之后 `UseLocalTransfer`，然后 `UseTCCTransfer`，`UseTransfer` 的执行器仍为 nil；装上协调器后，TCC 在本请求内执行。LOCAL 不调用 TCC，TCC 不调用 `TransferLocal`。服务端处理超时仍是 2 秒。
+- Try：`TRANSFER_PARALLEL_BRANCH = true` 用 `errgroup.Group`，不用 `WithContext`，一个 Try 失败不取消另一个的 ctx；false 时先 Freeze 再 TryPayee。两边都等待。之后是故障点 `transfer.after_try`。都成功则 CAS `TRYING → CONFIRMING`，不写 `fail_code`、`finished_at`、`txn_no`，`version` 加 1，`updated_at` 为注入时钟截断到毫秒。否则 CAS `TRYING → CANCELLING` 并写 `fail_code`。付款方有错只映射付款方，否则映射收款方：`40002` → `INSUFFICIENT_BALANCE`；`40001` / `40005` → `ACCOUNT_INVALID`；超时、`10004`、`10003`、`40004`、`10001`、`10006` 以及其他非取消错误 → `TRY_TIMEOUT`。只有 `10001` 和 `10006` 打 ERROR，消息是 `transfer tcc try`，字段只有 `transfer_no` 和十进制 `err_code`。余额不足不打这条日志。
+- 调用任何账户方法之前，父 ctx 已取消：返回 `ctx.Err()`，不调用分支，行保持 TRYING。两个 Try 都返回之后，任一边是 `context.Canceled`：不 CAS，返回 `context.Canceled`，保持 TRYING。重试用尽后仍是截止超时的，按 `TRY_TIMEOUT` 走取消。Confirm 或 Cancel 遇到 `context.Canceled` 返回该错误；其他失败返回当前中间态和 nil error。一边取消、一边 `40004` 时返回取消，不加计数。
+- CAS 影响 0 行时在同一 READ COMMITTED 事务里再读：CONFIRMING 继续第 5 步，CANCELLING 继续第 6 步，SUCCESS / FAILED 返回当前行且不再写 outbox。仍是 TRYING 或未知状态则返回该行和已有的 `10003`，不循环。只有这次 CAS 真正写入（`applied = true`）才调用 `transfer.after_decision`，然后再 Confirm 或 Cancel。
+- CONFIRMING：并行时同时 `ConfirmFreeze`（channel 为空串）和 `TransferInConfirm`，不经过 `transfer.after_payer_confirm`。串行时先付款方，然后该故障点，然后收款方；付款方失败也要调收款方。都成功才在一个 payment 事务里 CAS `CONFIRMING → SUCCESS`，写 `finished_at` 和 `updated_at`，`version` 加 1，不改 `txn_no` 和 `fail_code`，并 `outbox.Add(transfer.succeeded)`。TCC 成功的 `txn_no` 保持 NULL。普通失败停在 CONFIRMING，返回该行和 nil error，不取消已经成功的分支。业务错误本请求不重试。`40004` 把进程内无标签计数加 1（一次协调加一次，不是每个分支一次），ERROR 日志消息是 `transfer tcc inconsistent`，字段同样只有 `transfer_no` 和 `err_code`，停在 CONFIRMING，nil error。没有 Prometheus，也没有 `pay_stage_duration_seconds`。
+- CANCELLING：并行 `ReleaseFreeze` 与 `TransferInCancel`；串行先付款方再收款方，没有 `after_payer_confirm`。都成功则一个事务 CAS `CANCELLING → FAILED`，保留已有 `fail_code`，不写 `txn_no`，写 `finished_at`，outbox 为 `transfer.failed`。普通失败停在 CANCELLING，nil error。`40004` 同样计数和日志，停在 CANCELLING，nil error。
+- Try、Confirm 和 Cancel 遇到 `DeadlineExceeded` 或 MySQL 1213/1205（包在 `*errno.Error` 里也算），且父 ctx 仍有效时，整组分支最多再试 5 次（含第一次共 6 轮）。`sql.ErrTxDone`（事务已经结束）同样整组再试。`sql: Rows are closed`（结果集已经关闭）同样整组再试。一边成功也再调两边，已成功的分支幂等返回。`context.Canceled`、没有这些原因的业务错误和其他未知错误不重试。父 ctx 已经结束则不重试。Try 用尽后剩下的 `DeadlineExceeded` 仍是 `TRY_TIMEOUT`。Confirm 和 Cancel 用尽后仍停在 CONFIRMING 或 CANCELLING，nil error。
+- 账户调用在 payment 事务外。payment 事务只 CAS `transfer_order`，终态才写 outbox，一个事务不碰账户分片。发号器不是 `*idgen.Generator`（含 stub）时返回 `10003`，行保持 TRYING，不调用分支。终态事务里时钟回拨映射为 `10004`，行停在 CONFIRMING 或 CANCELLING。决策或终态的数据库错误原样返回。相同 `(merchant_id, out_transfer_no)` 的重试不重新执行。从未做出决策的 TRYING，以及停住的 CONFIRMING、CANCELLING，仍由 TRF-04 接管。本次请求走到 FAILED 且 `fail_code = INSUFFICIENT_BALANCE` 时返回 `40002`；`TRY_TIMEOUT`、`ACCOUNT_INVALID` 以及 CONFIRMING、CANCELLING 的 error 为 nil。
+- 集成测试直接调用进程内 account biz，不起 Kitex。生产代码不 import `service/account`。付款方 Confirm 失败而收款方已经入账时，在途合计不为 0，全量 `CheckBalance` 不能把 `expect_quiescent` 设为 true；分录仍然配平。
 
 #### TRF-04 转账恢复任务
 
@@ -3265,3 +3277,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-06 | v3.0 | PAY-07：超时关单落地。INIT、PAYING 各一条扫描，`WHERE status = ? AND expire_at <= now ORDER BY expire_at LIMIT 100`，合计每批至多 200 条，走 `idx_status_expire_at` 无 filesort，不加锁，恰好 `expire_at = now` 算过期。每条复用 PAY-06 的关单代码，PAYING 写入结果的 `source = JOB`；`source` 按发起流程取值（NOTIFY / QUERY / CLOSE / JOB / ADMIN / SYNC）。INIT 先逐条关闭，PAYING 再以最多 10 个并发关闭；调用失败不写库，下一轮重试。每条 10 秒超时，不随批次取消，单条 panic 恢复并计数；失败按错误码计入 `pay_timeout_close_failures_total`（OPS-03），`50002` 记 ERROR。成功日志不区分是否本实例写入。定时循环复用 PAY-05 的 job 循环，每 5 秒一次，日志字段 `job = timeout_close`（约定 §7.5）。写明已知限制：持续失败的 PAYING 行超过 100 条时占满 PAYING 配额；`50002` 这类不可重试的失败每 5 秒重试，没有退避。不改资金流向，不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
 | 2026-11-06 | v3.0 | PAY-07 文字更正，不改规则与行为：实现说明已知限制里“直到 PAY-05 在创建 60 秒后按 NOT_FOUND 关单”改为从渠道流水创建计时，PAY-05 约在 110 秒那次查单才关；发起支付最晚在过期前 30 秒，任何过期时长下都可能与超时关单重叠，期间超时关单最多约 16 次 `10004`。 |
 | 2026-11-06 | v3.0 | TRF-02：同分片转账执行落地。只执行 mode=LOCAL；TCC 仍返回 TRYING。TransferLocal 在事务外，CAS TRYING→SUCCESS/FAILED 与一条 outbox 在同一个 WithTx。超时、10003、10004、10001、10006 保持 TRYING。40001、40005 写成 FAILED/ACCOUNT_INVALID。余额不足仍是本次请求的 40002。CAS 影响 0 行再读。本库 CAS 失败返回 10003 或 10004，行仍 TRYING，相同商户单号不再执行。服务端超时仍 2 秒。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
+| 2026-11-07 | v3.0 | TRF-03：跨分片 TCC 在本请求内协调。未装协调器仍返回刚插入的 TRYING；生产装上后执行到 SUCCESS、FAILED（本次 INSUFFICIENT_BALANCE 为 40002）或中间态 CONFIRMING / CANCELLING（code 0）。并行 Try 用 errgroup.Group，不用 WithContext。TCC 成功不写 txn_no。40004 只做进程内无标签计数，没有 Prometheus。CONFIRMING、CANCELLING 和未决策的 TRYING 仍由 TRF-04 接管。stub 发号器返回 10003，终态发号回拨映射为 10004 且行停在终态前。相同商户单号不重新执行。服务端超时仍 2 秒。集成测试用进程内 account biz，不是 Kitex。Try、Confirm 和 Cancel 遇到 DeadlineExceeded 或 1213/1205 且父 ctx 仍有效时，整组分支最多再试 5 次；`sql.ErrTxDone`（事务已经结束）同样整组再试。`sql: Rows are closed`（结果集已经关闭）同样整组再试；业务错误不重试；Try 用尽后仍是 TRY_TIMEOUT，Confirm 和 Cancel 用尽后仍停在中间态。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |

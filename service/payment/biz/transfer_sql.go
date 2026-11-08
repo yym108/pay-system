@@ -47,6 +47,26 @@ UPDATE transfer_order
 SET status = 'FAILED', fail_code = ?, finished_at = ?, version = version + 1, updated_at = ?
 WHERE transfer_no = ? AND status = 'TRYING'`
 
+const casTransferConfirmingSQL = `
+UPDATE transfer_order
+SET status = 'CONFIRMING', version = version + 1, updated_at = ?
+WHERE transfer_no = ? AND status = 'TRYING'`
+
+const casTransferCancellingSQL = `
+UPDATE transfer_order
+SET status = 'CANCELLING', fail_code = ?, version = version + 1, updated_at = ?
+WHERE transfer_no = ? AND status = 'TRYING'`
+
+const casTCCSuccessSQL = `
+UPDATE transfer_order
+SET status = 'SUCCESS', finished_at = ?, version = version + 1, updated_at = ?
+WHERE transfer_no = ? AND status = 'CONFIRMING'`
+
+const casTCCFailedSQL = `
+UPDATE transfer_order
+SET status = 'FAILED', finished_at = ?, version = version + 1, updated_at = ?
+WHERE transfer_no = ? AND status = 'CANCELLING'`
+
 const transferByNoSQL = `
 SELECT transfer_no, merchant_id, out_transfer_no, payee_merchant_id, amount, currency, remark, notify_url,
        mode, payer_shard, payee_shard, status, fail_code, txn_no, retry_count, next_retry_at, finished_at,
@@ -157,6 +177,145 @@ func (s sqlTransferStore) finishTransfer(ctx context.Context, row TransferOrder,
 		current.Status = status
 		current.FailCode = failCode
 		current.TxnNo = txnNo
+		current.FinishedAt = at
+		current.UpdatedAt = at
+		current.Version++
+		applied = true
+		return nil
+	})
+	if err != nil {
+		return TransferOrder{}, false, err
+	}
+	return current, applied, nil
+}
+
+// decideTransfer 在一个事务里写下 CONFIRMING 或 CANCELLING。账户调用必须在这之前完成。
+func (s sqlTransferStore) decideTransfer(ctx context.Context, row TransferOrder, status, failCode string, at time.Time) (TransferOrder, bool, error) {
+	if s.db == nil {
+		return TransferOrder{}, false, errno.ErrInternal
+	}
+	switch status {
+	case transferStatusConfirming:
+		if failCode != "" {
+			return TransferOrder{}, false, errno.ErrInternal
+		}
+	case transferStatusCancelling:
+		if failCode == "" {
+			return TransferOrder{}, false, errno.ErrInternal
+		}
+	default:
+		return TransferOrder{}, false, errno.ErrInternal
+	}
+	var current TransferOrder
+	var applied bool
+	err := dbx.WithTx(ctx, s.db, func(tx *sqlx.Tx) error {
+		var (
+			res     sql.Result
+			execErr error
+		)
+		if status == transferStatusConfirming {
+			res, execErr = tx.ExecContext(ctx, casTransferConfirmingSQL, at, row.TransferNo)
+		} else {
+			res, execErr = tx.ExecContext(ctx, casTransferCancellingSQL, failCode, at, row.TransferNo)
+		}
+		if execErr != nil {
+			return execErr
+		}
+		n, nerr := res.RowsAffected()
+		if nerr != nil {
+			return nerr
+		}
+		if n == 0 {
+			got, scanErr := scanTransfer(tx.QueryRowContext(ctx, transferByNoSQL, row.TransferNo))
+			if scanErr != nil {
+				return scanErr
+			}
+			if got.TransferNo != row.TransferNo {
+				return errno.ErrInternal
+			}
+			current = got
+			return nil
+		}
+		if n != 1 {
+			return errno.Wrap(errno.ErrInternal, fmt.Errorf("transfer decide affected %d", n))
+		}
+		current = row
+		current.Status = status
+		current.FailCode = failCode
+		current.UpdatedAt = at
+		current.Version++
+		applied = true
+		return nil
+	})
+	if err != nil {
+		return TransferOrder{}, false, err
+	}
+	return current, applied, nil
+}
+
+// finishTCCTransfer 在一个事务里把 TCC 中间态收成终态，并在命中时写一条 outbox。
+// SUCCESS 不写 txn_no。FAILED 保留 CANCELLING 时已经写入的 fail_code。
+func (s sqlTransferStore) finishTCCTransfer(ctx context.Context, row TransferOrder, fromStatus, status, failCode string, at time.Time, ids *idgen.Generator, clk clock.Clock) (TransferOrder, bool, error) {
+	if s.db == nil || ids == nil || clk == nil {
+		return TransferOrder{}, false, errno.ErrInternal
+	}
+	switch {
+	case fromStatus == transferStatusConfirming && status == transferStatusSuccess && failCode == "":
+	case fromStatus == transferStatusCancelling && status == transferStatusFailed && failCode != "":
+	default:
+		return TransferOrder{}, false, errno.ErrInternal
+	}
+	var current TransferOrder
+	var applied bool
+	err := dbx.WithTx(ctx, s.db, func(tx *sqlx.Tx) error {
+		var (
+			res     sql.Result
+			execErr error
+		)
+		if status == transferStatusSuccess {
+			res, execErr = tx.ExecContext(ctx, casTCCSuccessSQL, at, at, row.TransferNo)
+		} else {
+			res, execErr = tx.ExecContext(ctx, casTCCFailedSQL, at, at, row.TransferNo)
+		}
+		if execErr != nil {
+			return execErr
+		}
+		n, nerr := res.RowsAffected()
+		if nerr != nil {
+			return nerr
+		}
+		if n == 0 {
+			got, scanErr := scanTransfer(tx.QueryRowContext(ctx, transferByNoSQL, row.TransferNo))
+			if scanErr != nil {
+				return scanErr
+			}
+			if got.TransferNo != row.TransferNo {
+				return errno.ErrInternal
+			}
+			current = got
+			return nil
+		}
+		if n != 1 {
+			return errno.Wrap(errno.ErrInternal, fmt.Errorf("transfer tcc finish affected %d", n))
+		}
+		evt := outbox.Event{
+			TransferNo: row.TransferNo, OutTransferNo: row.OutTransferNo,
+			MerchantID: row.MerchantID, PayeeMerchantID: row.PayeeMerchantID,
+			Amount: row.Amount, Mode: row.Mode, Status: status, FinishedAt: at,
+		}
+		if status == transferStatusSuccess {
+			evt.Type = outbox.EventTransferSucceeded
+		} else {
+			evt.Type = outbox.EventTransferFailed
+			evt.FailCode = failCode
+		}
+		if addErr := outbox.Add(ctx, tx, evt, ids, clk); addErr != nil {
+			return addErr
+		}
+		current = row
+		current.Status = status
+		current.FailCode = failCode
+		current.TxnNo = ""
 		current.FinishedAt = at
 		current.UpdatedAt = at
 		current.Version++

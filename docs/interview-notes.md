@@ -275,3 +275,11 @@
 ## REF-04 退款卡单恢复
 
 “在 `refund.after_freeze` 处 kill 进程”用真实的 kill -9 验收：集成测试把自己的测试二进制作为子进程重新执行，子进程用 `fault.Init` 打开故障点，以真实 account biz 冻结后在故障点被 SIGKILL；父进程断言退出原因是 `signal: killed`、退款仍是 INIT、冻结单已有 1 张、没有渠道流水，再新建一个 `Payments`（相当于重启后的进程）跑一轮恢复。子进程的 DSN 起初放在环境变量里，`gosec` 的 SSRF 污点分析（G704）从 `os.Getenv` 一路追到渠道 HTTP 客户端的 `http.NewRequestWithContext` 报警，虽然两者并不相连；改为从标准输入传 DSN 后告警消失，DSN 里的密码也不再出现在子进程环境里。恢复任务不抢占、不加锁：重复执行靠冻结幂等、`INIT → PROCESSING` 的 CAS 和 `channel_txn.uk_biz_no`，两实例同时跑同一批卡单，每笔仍只有 1 张冻结单、1 条流水、渠道只受理 1 次。1 小时边界取严格大于，把比较改成 `>=` 做变异检查，恰好 1 小时的用例失败。
+
+## TRF-03 跨分片转账 TCC
+
+并行的两个 Try 用 `errgroup.Group`，不能用 `WithContext`。`WithContext` 会在一个 Try 失败时取消另一个，另一边的结果变成未知，协调者无法决定确认还是取消。失败的那一边返回后，另一边的 ctx 必须仍然有效，两边都要等到结束。
+
+TCC 成功不把 `txn_no` 写在 payment 的 `transfer_order` 上。付款和收款不在同一个库，一张凭证放不下两次记账。两张凭证分别在付款分片的 `TRANSFER_OUT` 和收款分片的 `TRANSFER_IN`。
+
+Confirm 失败一次，本请求就停在 CONFIRMING，不在本请求里重试，也不取消已经成功的分支。恢复是 TRF-04 的事。例外是账户事务 3 秒预算打满：`DeadlineExceeded` 或 MySQL 1213/1205（包在 10003 里也算）且父 ctx 仍有效时，Try、Confirm 和 Cancel 整组最多再试 5 次；`sql.ErrTxDone`（事务已经结束）同样整组再试。`sql: Rows are closed`（结果集已经关闭）同样整组再试；业务错误不重试。Try 用尽后仍是 TRY_TIMEOUT，Confirm 和 Cancel 用尽后仍停在中间态。
