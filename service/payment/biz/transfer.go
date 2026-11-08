@@ -76,7 +76,8 @@ type TransferExecutor interface {
 }
 
 // transferStore 读写转账单。TRF-02 用 finishTransfer 把 TRYING 收成终态。
-// TRF-03 用 decideTransfer 落盘决策，再用 finishTCCTransfer 收 TCC 终态。TRF-04 不在这里。
+// TRF-03 用 decideTransfer 落盘决策，再用 finishTCCTransfer 收 TCC 终态。
+// TRF-04 复用这三处收口，不另写终态路径。抢占不走这个接口。
 type transferStore interface {
 	transferByMerchantOut(ctx context.Context, merchantID, outTransferNo string) (TransferOrder, bool, error)
 	// transferByNo 按 transfer_no 读，不比较商户号；调用方按自己的规则比较（TRF-05）。

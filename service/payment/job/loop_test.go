@@ -233,3 +233,14 @@ func TestNewRefundRecover(t *testing.T) {
 		t.Fatalf("loop = %s %s", l.name, l.interval)
 	}
 }
+
+// TRF-04：循环名 transfer_recover，间隔用传入的配置；小于等于 0 时 NewLoop 改成 1 秒。
+func TestNewTransferRecover(t *testing.T) {
+	l := NewTransferRecover(2*time.Second, func(context.Context) error { return nil })
+	if l.name != "transfer_recover" || l.interval != 2*time.Second {
+		t.Fatalf("loop = %s %s", l.name, l.interval)
+	}
+	if got := NewTransferRecover(0, func(context.Context) error { return nil }).interval; got != time.Second {
+		t.Fatalf("non-positive interval = %s", got)
+	}
+}

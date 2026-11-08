@@ -105,13 +105,14 @@ func serve(cfg config.Payment, logOut io.Writer) error {
 	}
 	payments.UseRefund(biz.NewAccountRefundFreezer(accountCli), channelClient, payments, cfg.ChannelNotifyURL)
 	payments.UseQuery(channelClient, biz.QueryPolicy{Backoff: cfg.QueryBackoff})
-	// LOCAL 走 TransferLocal。TCC 在本请求内协调，卡住的中间态留给 TRF-04。
+	// LOCAL 走 TransferLocal。TCC 在本请求内协调。停住的 TRYING、CONFIRMING、CANCELLING 由 transfer_recover 按 next_retry_at 推进。
 	payments.UseTransfer(cfg.TransferRecoverDelay, nil)
 	payments.UseLocalTransfer(biz.NewAccountLocalTransfer(accountCli))
 	payments.UseTCCTransfer(biz.NewAccountTCCTransfer(accountCli), cfg.TransferParallelBranch)
 	queryLoop := job.NewQueryCompensate(payments.RunQueryBatch)
 	refundLoop := job.NewRefundRecover(payments.RunRefundRecoverBatch)
 	closeLoop := job.NewTimeoutClose(payments.RunTimeoutCloseBatch)
+	transferLoop := job.NewTransferRecover(cfg.TransferRecoverInterval, payments.RunTransferRecoverBatch)
 	exit := make(chan error, 1)
 	admin := server.New(server.Config{
 		Addr:         server.AddrPayment,
@@ -137,5 +138,6 @@ func serve(cfg config.Payment, logOut io.Writer) error {
 	admin.RegisterGroup(queryLoop)
 	admin.RegisterGroup(refundLoop)
 	admin.RegisterGroup(closeLoop)
+	admin.RegisterGroup(transferLoop)
 	return admin.Run(context.Background())
 }

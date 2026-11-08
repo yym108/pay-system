@@ -26,6 +26,10 @@ func TestMain(m *testing.M) {
 	if os.Getenv(refundCrashChildEnv) != "" {
 		os.Exit(runRefundCrashChild())
 	}
+	// TRF-04 验收 1–3 同样把本测试二进制当被 kill 的 payment，见 transfer_recover_integration_test.go。
+	if os.Getenv(transferCrashChildEnv) != "" {
+		os.Exit(runTransferCrashChild())
+	}
 	code := m.Run()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	err := testkit.Shutdown(ctx)

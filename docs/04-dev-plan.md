@@ -90,7 +90,7 @@
 - [x] CH-06 其余场景：SLOW、ACCEPT_TIMEOUT（CLOSE_RACE 已由 CH-03 完成；BILL_MISSING、BILL_AMOUNT_DIFF 的账单表现在第 6 周 CH-08 验收）；CH-04 渠道退款
 - [x] REF-01 创建退款 → REF-02 冻结与提交 → REF-03 结果推进 → REF-04 卡单恢复；REF-05 查询
 - [x] PAY-05 查单补偿（依赖 CH-06、REF-03）、PAY-07 超时关单
-- [ ] TRF-01 创建转账单 → TRF-02 同分片执行 → TRF-03 跨分片 TCC → TRF-04 恢复任务；TRF-05 查询
+- [x] TRF-01 创建转账单 → TRF-02 同分片执行 → TRF-03 跨分片 TCC → TRF-04 恢复任务；TRF-05 查询
 - [ ] GW-09 退款与转账路由（含 paycli 经网关跑通完整流程）
 
 交付：A4；退款与转账主链路跑通（入账消费在第 5 周接入，本周退款测试中用直接调用 account biz 层代替消费）；TRF-03 跨分片并发用例通过（A11 主体）；`service/payment` 覆盖率 ≥ 70%。

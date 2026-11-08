@@ -1,6 +1,6 @@
 # Database Schema
 
-> **Last updated:** 2026-11-06
+> **Last updated:** 2026-11-08
 > **Database engine/version:** MySQL 8.4.11（InnoDB，utf8mb4 / utf8mb4_bin）
 > **Schema sources:** `migrations/account/000001_init.up.sql`（`pay_account_0` 与 `pay_account_1` 各执行一次）、`migrations/payment/000001_init.up.sql`、`migrations/payment/000002_merchant_fee_rate.up.sql`、`migrations/recon/000001_init.up.sql`、`migrations/channel_mock/000001_init.up.sql`。设计稿 `docs/schema/schema_draft.sql` 已在 BASE-03 删除。golang-migrate 还会在每个 schema 创建工具表 `schema_migrations`（`version`、`dirty`），不在业务清单里。
 > **Owner:** pay-system 项目作者
@@ -526,7 +526,7 @@
 ### 4.9 `transfer_order` — 转账单
 
 - **Purpose:** 商户间转账的状态机与跨分片 TCC 协调者的持久化状态（`docs/02-requirements.md` §4.6、D18）。`mode` 在创建时由双方分片决定：同分片 LOCAL，由 account 一个本地事务完成；跨分片 TCC，由 payment 驱动付款方冻结分支与收款方 `transfer_branch` 分支。
-- **Lifecycle:** LOCAL：TRYING → SUCCESS / FAILED。TCC：TRYING → CONFIRMING → SUCCESS；TRYING → CANCELLING → FAILED。TRYING 是唯一可以改变决策的状态；CONFIRMING、CANCELLING 落盘后只能前进，由恢复任务（TRF-04）重试到终态。TRF-01 以自动提交的单条 INSERT 写入 `status = TRYING`、`version = 0`、`retry_count = 0`，`fail_code`、`txn_no`、`finished_at` 为 NULL，`created_at`、`updated_at` 由应用时钟显式写入，`next_retry_at = created_at + TRANSFER_RECOVER_DELAY`。插入前按 `uk_merchant_out_transfer_no` 读已有行；插入 1062 后在插入之外再按同一键读，读不到说明冲突的是 `uk_transfer_no`。TRF-01 的插入不更新已有行。TRF-02 对 LOCAL 在账户调用之外用一个事务 CAS `TRYING → SUCCESS / FAILED`（`version` 加 1，显式写 `updated_at` 与 `finished_at`），并在同一事务写一条 outbox。TRF-03 在本请求内 CAS `TRYING → CONFIRMING` 或 `CANCELLING`，再 CAS 到 `SUCCESS` 或 `FAILED`；停住的中间态和未决策的 TRYING 仍由 TRF-04 重试。无 DDL。
+- **Lifecycle:** LOCAL：TRYING → SUCCESS / FAILED。TCC：TRYING → CONFIRMING → SUCCESS；TRYING → CANCELLING → FAILED。TRYING 是唯一可以改变决策的状态；CONFIRMING、CANCELLING 落盘后只能前进，由恢复任务（TRF-04）重试到终态。TRF-01 以自动提交的单条 INSERT 写入 `status = TRYING`、`version = 0`、`retry_count = 0`，`fail_code`、`txn_no`、`finished_at` 为 NULL，`created_at`、`updated_at` 由应用时钟显式写入，`next_retry_at = created_at + TRANSFER_RECOVER_DELAY`。插入前按 `uk_merchant_out_transfer_no` 读已有行；插入 1062 后在插入之外再按同一键读，读不到说明冲突的是 `uk_transfer_no`。TRF-01 的插入不更新已有行。TRF-02 对 LOCAL 在账户调用之外用一个事务 CAS `TRYING → SUCCESS / FAILED`（`version` 加 1，显式写 `updated_at` 与 `finished_at`），并在同一事务写一条 outbox。TRF-03 在本请求内 CAS `TRYING → CONFIRMING` 或 `CANCELLING`，再 CAS 到 `SUCCESS` 或 `FAILED`。TRF-04 已按 `idx_status_next_retry_at` 抢占并推进：`now` 用注入时钟截到毫秒并作为参数传入，不用 SQL NOW()；`FOR UPDATE SKIP LOCKED`，一轮最多 100 行；退避按加 1 后的 `retry_count` 在 Go 里计算（n ≥ 6 为 60 秒）后绑定 `next_retry_at`；`updated_at` 显式写成同一时钟（该列 ON UPDATE CURRENT_TIMESTAMP，不写会变成 SQL NOW()）；抢占不改 `version`。提交后事务外最多 20 并发推进。无 DDL。
 - **Sensitivity:** 内部交易数据，`remark` 不得包含个人信息。
 - **Authoritative source:** `migrations/payment/000001_init.up.sql`。
 - **Write owners/read consumers:** payment 写（TRF-01~04）；recon 只读（REC-05）。
@@ -983,6 +983,7 @@
 | 2026-11-06 | 无（仅文档） | refund_order（Lifecycle、兼容说明） | REF-04：卡单恢复只读扫描 INIT 且 `updated_at <= now − 30s`，按 `(updated_at, id)` 翻页、每页 100 行，走 `idx_status_updated_at`；按 `created_at` 判 1 小时，超过则经 REF-03 CAS `INIT → FAILED`（REFUND_TIMEOUT，source = JOB）。无 DDL | 未执行迁移（无 SQL 变更） |
 | 2026-11-06 | 无（仅文档） | transfer_order（Lifecycle） | TRF-02：LOCAL 在账户调用之外 CAS `TRYING → SUCCESS / FAILED`，`version` 加 1，显式写 `updated_at` 与 `finished_at`，同一事务写一条 outbox。不改列、不改 CHECK。无 DDL | 未执行迁移 |
 | 2026-11-07 | 无（仅文档） | transfer_order（Lifecycle） | TRF-03：本请求内 CAS `TRYING → CONFIRMING` 或 `CANCELLING`，再 CAS 到 `SUCCESS` 或 `FAILED`。停住的中间态和未决策的 TRYING 仍由 TRF-04 重试。不改列、不改 CHECK。无 DDL | 未执行迁移 |
+| 2026-11-08 | 无（仅文档） | transfer_order（Lifecycle） | TRF-04：按 `idx_status_next_retry_at` 用注入时钟参数抢占（不用 SQL NOW()），`FOR UPDATE SKIP LOCKED`，一轮最多 100 行；退避在 Go 里按加 1 后的 `retry_count` 计算；`updated_at` 显式写入，不改 `version`。不改列、不改 CHECK。无 DDL | 未执行迁移 |
 
 ## 6. Open Questions
 

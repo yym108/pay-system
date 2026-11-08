@@ -283,3 +283,13 @@
 TCC 成功不把 `txn_no` 写在 payment 的 `transfer_order` 上。付款和收款不在同一个库，一张凭证放不下两次记账。两张凭证分别在付款分片的 `TRANSFER_OUT` 和收款分片的 `TRANSFER_IN`。
 
 Confirm 失败一次，本请求就停在 CONFIRMING，不在本请求里重试，也不取消已经成功的分支。恢复是 TRF-04 的事。例外是账户事务 3 秒预算打满：`DeadlineExceeded` 或 MySQL 1213/1205（包在 10003 里也算）且父 ctx 仍有效时，Try、Confirm 和 Cancel 整组最多再试 5 次；`sql.ErrTxDone`（事务已经结束）同样整组再试。`sql: Rows are closed`（结果集已经关闭）同样整组再试；业务错误不重试。Try 用尽后仍是 TRY_TIMEOUT，Confirm 和 Cancel 用尽后仍停在中间态。
+
+## TRF-04 转账恢复任务
+
+抢占和请求线程会抢同一行的决策 CAS。恢复看到仍是 TRYING 的 TCC，一律改成 CANCELLING、`fail_code = TRY_TIMEOUT`，然后 Cancel，不再 Try。请求线程如果先把决策提交成 CONFIRMING，恢复这次 CAS 影响 0 行，只再读一次并改走 Confirm。已经是 SUCCESS 或 FAILED 就结束，不再写第二条 outbox。迟到的 Try 由墓碑拦住，恢复自己不再发 Try。
+
+不在恢复里重跑 Try。决策窗口已经关掉：再 Try 可能在已经决定取消之后又成功，或者和还活着的请求线程各做一次。Confirm 和 Cancel 本身幂等，下一轮重试它们是安全的。恢复也不走 `CreateTransfer` 和 `executeTransfer`。`CreateTransfer` 对相同商户单号不会重新执行；注入的 `TransferExecutor` 会抢走所有模式，只留给请求路径。卡住的 TRYING + LOCAL 直接调用已有的 `executeLocal`。
+
+`pay_transfer_stuck` 是本进程里当前卡住的 `transfer_no` 集合的大小，不是只增计数，也不是 Prometheus。`retry_count >= 10` 且仍非终态才计入，到达终态就从集合去掉。没有 mode 标签。OPS-03 以后再暴露。
+
+多实例靠 `FOR UPDATE SKIP LOCKED` 加状态 CAS。一个实例锁住的行，另一个实例跳过。抢占只加 `retry_count` 并推后 `next_retry_at`，不改 `version`：`version` 只跟状态 CAS 走。`updated_at` 有 `ON UPDATE CURRENT_TIMESTAMP`，抢占必须把注入时钟写进去，否则这一列会变成数据库的 `NOW()`。

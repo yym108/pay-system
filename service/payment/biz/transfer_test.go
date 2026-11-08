@@ -64,6 +64,9 @@ type memTransfers struct {
 	beforeInsert func()
 	// hijackDecide 在决策比较状态之前改这一行，用来模拟 CAS 影响 0 行。
 	hijackDecide func(row *TransferOrder)
+	// decideMiss 为 true 时这一次决策直接返回当前行且 applied 为 false，然后清掉。
+	// 用来模拟 CAS 影响 0 行、但状态仍是 TRYING（hijack 没改状态）的情况。
+	decideMiss bool
 }
 
 func (m *memTransfers) transferByMerchantOut(_ context.Context, merchantID, outTransferNo string) (TransferOrder, bool, error) {
@@ -137,6 +140,10 @@ func (m *memTransfers) decideTransfer(_ context.Context, row TransferOrder, stat
 		}
 		if m.hijackDecide != nil {
 			m.hijackDecide(&m.rows[i])
+		}
+		if m.decideMiss {
+			m.decideMiss = false
+			return m.rows[i], false, nil
 		}
 		if m.rows[i].Status != transferStatusTrying {
 			return m.rows[i], false, nil
