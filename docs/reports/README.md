@@ -64,3 +64,4 @@
 | TRF-05 | 转账查询 | 转账 | `7b0d9e2` | 2026-11-06 | [TRF-05-query-transfer.md](TRF-05-query-transfer.md) |
 | REF-04 | 退款卡单恢复 | 退款 | `48289b7` | 2026-11-06 | [REF-04-refund-recover.md](REF-04-refund-recover.md) |
 | PAY-07 | 超时关单 | 支付 | `ea9733e` | 2026-11-06 | [PAY-07-timeout-close.md](PAY-07-timeout-close.md) |
+| MQ-03 | Kafka 生产与消费框架 | 基础设施 | `4a24c7b` | 2026-11-10 | [MQ-03-kafka-framework.md](MQ-03-kafka-framework.md) |
