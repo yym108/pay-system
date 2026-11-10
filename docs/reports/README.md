@@ -65,3 +65,4 @@
 | REF-04 | 退款卡单恢复 | 退款 | `48289b7` | 2026-11-06 | [REF-04-refund-recover.md](REF-04-refund-recover.md) |
 | PAY-07 | 超时关单 | 支付 | `ea9733e` | 2026-11-06 | [PAY-07-timeout-close.md](PAY-07-timeout-close.md) |
 | MQ-03 | Kafka 生产与消费框架 | 基础设施 | `4a24c7b` | 2026-11-10 | [MQ-03-kafka-framework.md](MQ-03-kafka-framework.md) |
+| MQ-02 | outbox 投递器 | 基础设施 | `3df960e` | 2026-11-10 | [MQ-02-outbox-dispatcher.md](MQ-02-outbox-dispatcher.md) |
