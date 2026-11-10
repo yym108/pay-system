@@ -2,9 +2,9 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 3.3.14 |
+| 文档版本 | 3.3.15 |
 | API 版本 | v1（路径前缀 `/v1`） |
-| 最后修改 | 2026-11-08 |
+| 最后修改 | 2026-11-10 |
 | 状态 | 设计基线，实现须与本文一致 |
 
 关联文档：需求 `docs/02-requirements.md`（各接口的业务规则以功能点为准）、约定 `docs/03-conventions.md`（错误码、单号、时间格式）。
@@ -81,6 +81,7 @@
 | 3.3.12 | 2026-11-06 | `CreateTransfer` 的 LOCAL 现在调用 `TransferLocal`。SUCCESS、FAILED（含 `fail_code = ACCOUNT_INVALID`）与本次执行到余额不足时的 `40002` 都会返回。TCC 仍返回刚插入的 TRYING。超时、`10003`、`10004`、`10001`、`10006` 保持 TRYING 且 code 0。服务端处理超时仍是 2 秒。不新增字段，不新增错误码，不改 IDL | §1、§4.8、§10.2 | TRF-02 |
 | 3.3.13 | 2026-11-07 | `CreateTransfer` 的 TCC 在本请求内协调到 SUCCESS、FAILED（`40002` 仅本次执行到 `INSUFFICIENT_BALANCE`）或中间态 CONFIRMING / CANCELLING（code 0）。未装协调器仍返回 TRYING。TCC 成功不写 `txn_no`。LOCAL 行为不变。服务端处理超时仍是 2 秒。不新增字段，不新增错误码，不改 IDL | §1、§4.8、§10.2 | TRF-03 |
 | 3.3.14 | 2026-11-08 | 网关已提供 §4.5、§4.6、§4.8、§4.9。`merchant_id` 只取验签结果。网关调用 `CreateRefund` 超时 5 秒、`CreateTransfer` 3 秒，查询 1 秒，不重试。payment 服务端超时不变。字段和错误码不变，不改 IDL | §1、§4.6、§4.9 | GW-09 |
+| 3.3.15 | 2026-11-10 | MQ-03 已在 payment、account 注册 Kafka 就绪检查和生产者刷新。broker 不可达时 `/readyz` 为 503，进程仍能启动。同一批前一条没提交就停，世代失效不空转提交；生产错误不带地址。没提交的分区会把拉取位置退回到该 offset，更高的 offset 不处理。不改字段，不改错误码，不改 IDL | §1、§12 | MQ-03 |
 
 ## 1. 接口总览
 
@@ -118,7 +119,7 @@
 | 模拟渠道管理 `config` / `bill-inject` | §9.8 | — | CH-07、CH-09 | 1.0.0 | 2026-10-12 |
 | AccountService / PaymentService / ReconService | §10 | — | 见各方法 | 1.0.0 | 2026-10-27 |
 | 事件 `payment.succeeded`、`refund.succeeded`、`refund.failed`、`transfer.succeeded`、`transfer.failed` | §11 | — | MQ-01、MQ-04、NTF-01 | 1.0.0 | 2026-10-28 |
-| `GET /healthz`、`GET /readyz` 进程探针 | §12 | — | OPS-01 | 3.2.0 | 2026-11-01 |
+| `GET /healthz`、`GET /readyz` 进程探针 | §12 | — | OPS-01 | 3.2.0 | 2026-11-10 |
 | `GET /debug/pprof/` 及 cmdline、profile、symbol、trace | §12 | — | OPS-05 | 3.3.0 | 2026-11-01 |
 
 ## 2. 通用约定
@@ -1117,6 +1118,6 @@ account 不消费转账事件：转账的两个分支由 payment 同步驱动（
 
 payment 的业务端口是 Kitex :8881，account 的业务端口是 Kitex :8882。这两个业务端口不提供 HTTP `/debug/pprof/`，也不在 RPC 端口上另挂 HTTP。channel-mock 的业务端口 :9080 对 `GET /debug/pprof/` 返回 404。pprof 只在上表这些正在监听的管理端口上。§9.8 的渠道管理路径仍未实现，和 pprof 不是同一件事。
 
-失败正文是固定的 `unavailable`，不写 DSN、地址或口令。单项检查超时 1 秒。account 的数据库检查是两个分片按顺序各 Ping 1 秒，外层等待 2 秒。gateway 的 Redis、payment 与 account 的 Kafka 可以以后注册；本次没有注册，所以不会因为它们不存在而返回 503。
+失败正文是固定的 `unavailable`，不写 DSN、地址或口令。单项检查超时 1 秒。account 的数据库检查是两个分片按顺序各 Ping 1 秒，外层等待 2 秒。gateway 的 Redis 可以以后注册；本次没有注册，所以不会因为 Redis 不存在而返回 503。MQ-03 已在 payment、account 注册 Kafka 就绪检查和生产者刷新；broker 不可达时 `/readyz` 为 503，进程仍能启动。
 
-收到 SIGTERM 或 SIGINT：`/readyz` 立刻 503，停止接收新的业务请求和新消息，等待在途请求、消息处理和任务批次，默认上限 10 秒。到点就继续，不等待尚未结束的请求。然后刷新已注册的生产者。本次没有生产者，这一步为空。最后关闭连接和管理端口。`/healthz` 在管理端口关闭前仍是 200。
+收到 SIGTERM 或 SIGINT：`/readyz` 立刻 503，停止接收新的业务请求和新消息，等待在途请求、消息处理和任务批次，默认上限 10 秒。到点就继续，不等待尚未结束的请求。然后刷新已注册的生产者。MQ-03 已在 payment、account 注册 Kafka 就绪检查和生产者刷新；broker 不可达时 `/readyz` 为 503，进程仍能启动。最后关闭连接和管理端口。`/healthz` 在管理端口关闭前仍是 200。

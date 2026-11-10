@@ -35,6 +35,14 @@
 - 30001 和 50002 也回 `SUCCESS`，并给进程内计数加一，避免渠道空转重试。退款分支仍是 10003，留给 REF-03。
 - 未知单号、金额不一致、2 秒内 SUCCESS、DUP_NOTIFY 十次，由 payment 的集成测试打到进程内网关和 channel-mock。测试把自动完成延迟固定为 50 毫秒，生产默认延迟不变。
 
+## MQ-03 Kafka 框架
+
+- 进程启动不依赖 Kafka 连通。broker 列表为空才拒绝启动；连不上时 `/readyz` 为 503，进程仍起来。
+- `pay_mq_consume_errors_total`、`pay_mq_dlq_total`、`pay_mq_consume_lag` 只在进程内，按 topic 和消费组计数。不起 HTTP，不暴露 `/metrics`。
+- 提交 offset 前杀进程用测试里的 `beforeCommit` 钩子，不新增故障点。重复投递由 MQ-04 的业务幂等吸收。
+- 同一批前一条没提交就停，世代失效不空转提交。
+- 没提交的分区会把拉取位置退回到该 offset，更高的 offset 不处理。
+
 ## GW-09 退款与转账路由
 
 - 四条路由在商户端口。`merchant_id` 和转账付款方只取验签结果，请求体里的同名字段不读。

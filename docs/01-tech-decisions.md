@@ -72,6 +72,8 @@ CH-06（2026-10-27）：DUP_NOTIFY 的第一波用 `golang.org/x/sync/errgroup`�
 
 BASE-15（2026-10-27）：`pkg/fault` 只用标准库，不新增 Go 模块，也不新增配置项。取舍见 §2.4。
 
+MQ-03（2026-11-10）：`go.mod` 直接依赖已登记的 `github.com/twmb/franz-go v1.22.1`。`github.com/twmb/franz-go/pkg/kmsg v1.14.0` 被 tidy 提成直接依赖，集成测试用它发 CreateTopics 和 OffsetFetch；`kadm` 是另一个模块，没有 v1.22.1，没有加入。没有加入 `prometheus/client_golang`。testcontainers 的 kafka 模块 v0.44.0 只接受 `confluentinc/confluent-local`，不能指定 `apache/kafka:4.3.1`，所以没有加入；集成测试用已有的 GenericContainer 起与 compose 相同的镜像。为钉死宿主机端口，测试引用了 testcontainers 已经带入的 `github.com/moby/moby/api v1.55.0`，tidy 把它从间接改为直接，版本不变。franz-go 把间接依赖 `github.com/klauspost/compress` 从 v1.18.6 升到 v1.20.0。本表锁定版本没有改。生产错误不带地址。没提交的分区会把拉取位置退回到该 offset。
+
 ### 2.2 容器镜像（均已确认提供 arm64 与 amd64）
 
 | 组件 | 镜像 |
@@ -103,7 +105,7 @@ BASE-01（2026-10-13）：根据本机实际安装版本，将本表 Go 本机�
 - 仍有一条 `dynamicgo only support amd64 && go1.17~go1.24` 告警。dynamicgo 只用于 Kitex 泛化调用，本项目不使用，可以忽略。
 - 设计稿 DDL 已拆成 `migrations/` 并删除。`make migrate` 在 compose 的 `mysql:8.4.11` 上 up、down、再 up 成功，详见 `docs/database.md` §5。
 
-未验证项（第 1 周验证）：franz-go 与 Kafka 4.3.1 的实际收发、Hertz/Kitex OTel 中间件的链路串联、testcontainers 在 CI 外环境的启动耗时。
+未验证项（第 1 周验证）：Hertz/Kitex OTel 中间件的链路串联、testcontainers 在 CI 外环境的启动耗时。franz-go 与 Kafka 4.3.1 的收发已由 MQ-03 的集成测试在 2026-11-10 验证。
 
 ### 2.4 故障注入（BASE-15）
 

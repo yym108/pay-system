@@ -396,7 +396,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | TRF-05 | 转账查询 | P0 | M4 | TRF-01 | DONE |
 | MQ-01 | outbox 写入 | P0 | M3 | BASE-08、BASE-05 | DONE |
 | MQ-02 | outbox 投递器 | P0 | M5 | MQ-01、MQ-03、BASE-15 | TODO |
-| MQ-03 | Kafka 生产与消费框架 | P0 | M5 | BASE-02、OPS-01 | TODO |
+| MQ-03 | Kafka 生产与消费框架 | P0 | M5 | BASE-02、OPS-01 | DONE |
 | MQ-04 | account 事件消费（逐条模式） | P0 | M5 | MQ-02、MQ-03、ACC-03、ACC-05、ACC-06、PAY-06、REF-03、BASE-15 | TODO |
 | MQ-05 | 死信与事件重放 | P0 | M5 | MQ-02、MQ-04 | TODO |
 | MQ-06 | outbox 清理 | P1 | M8 | MQ-02 | TODO |
@@ -2150,10 +2150,10 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 
 验收：
 
-- [ ] 处理函数前 3 次返回可重试错误、第 4 次成功：消息只成功处理一次，offset 已提交。
-- [ ] Kafka 不可用时 payment、account 的 `/readyz` 返回 503，恢复后返回 200（由 OPS-01 移来）。
-- [ ] 不可重试错误的消息进入 `pay.dlq`，后续消息继续消费。
-- [ ] 处理成功、提交前 kill 进程，重启后重新投递（由业务幂等吸收）。
+- [x] 处理函数前 3 次返回可重试错误、第 4 次成功：消息只成功处理一次，offset 已提交。
+- [x] Kafka 不可用时 payment、account 的 `/readyz` 返回 503，恢复后返回 200（由 OPS-01 移来）。
+- [x] 不可重试错误的消息进入 `pay.dlq`，后续消息继续消费。
+- [x] 处理成功、提交前 kill 进程，重启后重新投递（由业务幂等吸收）。
 
 #### MQ-04 account 事件消费
 
@@ -3296,3 +3296,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-07 | v3.0 | TRF-03：跨分片 TCC 在本请求内协调。未装协调器仍返回刚插入的 TRYING；生产装上后执行到 SUCCESS、FAILED（本次 INSUFFICIENT_BALANCE 为 40002）或中间态 CONFIRMING / CANCELLING（code 0）。并行 Try 用 errgroup.Group，不用 WithContext。TCC 成功不写 txn_no。40004 只做进程内无标签计数，没有 Prometheus。CONFIRMING、CANCELLING 和未决策的 TRYING 仍由 TRF-04 接管。stub 发号器返回 10003，终态发号回拨映射为 10004 且行停在终态前。相同商户单号不重新执行。服务端超时仍 2 秒。集成测试用进程内 account biz，不是 Kitex。Try、Confirm 和 Cancel 遇到 DeadlineExceeded 或 1213/1205 且父 ctx 仍有效时，整组分支最多再试 5 次；`sql.ErrTxDone`（事务已经结束）同样整组再试。`sql: Rows are closed`（结果集已经关闭）同样整组再试；业务错误不重试；Try 用尽后仍是 TRY_TIMEOUT，Confirm 和 Cancel 用尽后仍停在中间态。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
 | 2026-11-08 | v3.0 | TRF-04：转账恢复按注入时钟抢占 TRYING / CONFIRMING / CANCELLING，不用 SQL NOW()；SKIP LOCKED，一轮最多 100 行；退避在 Go 里按加 1 后的 retry_count 计算并封顶 60 秒；updated_at 显式写入，不改 version。事务外最多 20 并发，不用 WithContext；单笔 5 秒且不随批次取消。TRYING+LOCAL 调已有 executeLocal；TRYING+TCC 决策取消后直接 Cancel，不重跑 Try，不走 TransferExecutor。CAS 影响 0 行只再处理一次。pay_transfer_stuck 是进程内当前值，无 Prometheus、无 mode 标签。未装配返回已有的 10003 且不抢占。不新增错误码，不改表，不改 IDL，不改资金流向。§3 改为 DONE。 |
 | 2026-11-08 | v3.0 | GW-09：商户端口接上创建退款、查询退款、创建转账、查询转账。`merchant_id` 只取验签结果。网关调用 `CreateRefund` 5 秒、`CreateTransfer` 3 秒，查询 1 秒，不重试。不改 payment 服务端超时。验收 3 用 paycli 经进程内网关，余额用 account biz 夹具，因为没有 MQ-04。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
+| 2026-11-10 | v3.0 | MQ-03：`pkg/mq` 提供 Kafka 生产者与消费组。生产者 `acks=all`、幂等生产、`linger=5ms`，单次生产超时 5 秒，消息头写入 `event_id`、`event_type`、`traceparent`。消费者关闭自动提交，分区内按 offset 顺序，处理函数返回 nil 才提交；可重试错误从 100ms 翻倍到 5 秒，不可重试写入 `pay.dlq` 后提交原 offset。payment 与 account 注册 Kafka 就绪检查和生产者刷新；broker 不可达时 `/readyz` 为 503，进程仍能启动。指标只在进程内。同一批前一条没提交就停，世代失效不空转提交；永久错误写 DLQ 失败后只重试写入；生产错误不带地址。没提交的分区会把拉取位置退回到该 offset，更高的 offset 不处理。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |

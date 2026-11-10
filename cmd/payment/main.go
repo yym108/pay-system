@@ -16,6 +16,7 @@ import (
 	"github.com/yym108/pay-system/pkg/fault"
 	"github.com/yym108/pay-system/pkg/idgen"
 	"github.com/yym108/pay-system/pkg/logx"
+	"github.com/yym108/pay-system/pkg/mq"
 	"github.com/yym108/pay-system/pkg/secretbox"
 	"github.com/yym108/pay-system/pkg/server"
 	"github.com/yym108/pay-system/service/payment/biz"
@@ -139,5 +140,9 @@ func serve(cfg config.Payment, logOut io.Writer) error {
 	admin.RegisterGroup(refundLoop)
 	admin.RegisterGroup(closeLoop)
 	admin.RegisterGroup(transferLoop)
+	// 连不上 Kafka 也要启动。只有 broker 列表为空才在这里失败。
+	if err := mq.RegisterProducer(admin, cfg.KafkaBrokers); err != nil {
+		return err
+	}
 	return admin.Run(context.Background())
 }

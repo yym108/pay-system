@@ -15,6 +15,7 @@ import (
 	"github.com/yym108/pay-system/pkg/fault"
 	"github.com/yym108/pay-system/pkg/idgen"
 	"github.com/yym108/pay-system/pkg/logx"
+	"github.com/yym108/pay-system/pkg/mq"
 	"github.com/yym108/pay-system/pkg/server"
 	"github.com/yym108/pay-system/service/account/biz"
 	"github.com/yym108/pay-system/service/account/dal"
@@ -104,5 +105,9 @@ func serve(cfg config.Account, logOut io.Writer) error {
 			return nil
 		},
 	))
+	// 连不上 Kafka 也要启动。只有 broker 列表为空才在这里失败。
+	if err := mq.RegisterProducer(admin, cfg.KafkaBrokers); err != nil {
+		return err
+	}
 	return admin.Run(context.Background())
 }
