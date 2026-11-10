@@ -18,6 +18,7 @@ import (
 	"github.com/yym108/pay-system/pkg/mq"
 	"github.com/yym108/pay-system/pkg/server"
 	"github.com/yym108/pay-system/service/account/biz"
+	"github.com/yym108/pay-system/service/account/consumer"
 	"github.com/yym108/pay-system/service/account/dal"
 	"github.com/yym108/pay-system/service/account/handler"
 )
@@ -81,7 +82,8 @@ func serve(cfg config.Account, logOut io.Writer) error {
 	if err != nil {
 		return err
 	}
-	h := handler.New(biz.New(pools, ids, cfg.PlatformSubAccounts))
+	svc := biz.New(pools, ids, cfg.PlatformSubAccounts)
+	h := handler.New(svc)
 	exit := make(chan error, 1)
 	admin := server.New(server.Config{
 		Addr:         server.AddrAccount,
@@ -106,8 +108,18 @@ func serve(cfg config.Account, logOut io.Writer) error {
 		},
 	))
 	// 连不上 Kafka 也要启动。只有 broker 列表为空才在这里失败。
-	if _, err := mq.RegisterProducer(admin, cfg.KafkaBrokers); err != nil {
+	producer, err := mq.RegisterProducer(admin, cfg.KafkaBrokers)
+	if err != nil {
 		return err
 	}
+	group, err := consumer.Open(consumer.Config{
+		Brokers: mq.ParseBrokers(cfg.KafkaBrokers),
+		Ledger:  svc,
+	})
+	if err != nil {
+		_ = producer.Close()
+		return err
+	}
+	admin.RegisterGroup(group)
 	return admin.Run(context.Background())
 }

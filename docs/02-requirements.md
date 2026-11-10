@@ -255,7 +255,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 
 | 业务 | biz_type / biz_no | 所在分片 | 借方 | 贷方 |
 |---|---|---|---|---|
-| 支付成功（金额 A，手续费 F） | `PAY` / pay_no | 商户所属分片 | 渠道应收 A | 商户 A − F；手续费收入 F（F = 0 时省略该分录） |
+| 支付成功（金额 A，手续费 F） | `PAY` / pay_no | 商户所属分片 | 渠道应收 A | 商户 A − F；手续费收入 F（F = 0 时省略手续费分录；F = A 时省略商户分录） |
 | 退款确认（金额 R） | `REFUND` / refund_no | 商户所属分片 | 商户 R（同时减少冻结 R） | 渠道应收 R |
 | 同分片转账（金额 T） | `TRANSFER` / transfer_no | 双方共同分片 | 付款商户 T | 收款商户 T |
 | 跨分片转账，付款方确认 | `TRANSFER_OUT` / transfer_no | 付款方分片 | 付款商户 T（同时减少冻结 T） | 转账在途 T |
@@ -397,7 +397,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | MQ-01 | outbox 写入 | P0 | M3 | BASE-08、BASE-05 | DONE |
 | MQ-02 | outbox 投递器 | P0 | M5 | MQ-01、MQ-03、BASE-15 | DONE |
 | MQ-03 | Kafka 生产与消费框架 | P0 | M5 | BASE-02、OPS-01 | DONE |
-| MQ-04 | account 事件消费（逐条模式） | P0 | M5 | MQ-02、MQ-03、ACC-03、ACC-05、ACC-06、PAY-06、REF-03、BASE-15 | TODO |
+| MQ-04 | account 事件消费（逐条模式） | P0 | M5 | MQ-02、MQ-03、ACC-03、ACC-05、ACC-06、PAY-06、REF-03、BASE-15 | DONE |
 | MQ-05 | 死信与事件重放 | P0 | M5 | MQ-02、MQ-04 | TODO |
 | MQ-06 | outbox 清理 | P1 | M8 | MQ-02 | TODO |
 | NTF-01 | 通知记录生成 | P0 | M5 | MQ-03 | TODO |
@@ -2174,24 +2174,32 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 
 | 事件 | 处理 | 不可重试情况 |
 |---|---|---|
-| `payment.succeeded` | 按 `merchant_id` 路由分片，`Post(PAY, pay_no)`，分录按 §2.5.2：借本分片渠道应收子账户 A，贷商户 A − F，贷本分片手续费收入子账户 F（F = 0 时省略手续费分录，凭证只有 2 条分录） | 商户账户不存在；`Post` 返回 `40005`（账户非 ACTIVE） |
-| `refund.succeeded` | `ConfirmFreeze(REFUND, refund_no, merchant_id, channel)`，贷本分片渠道应收子账户 | 返回 `40004`（冻结单缺失或已解冻，属于严重不一致，计数并输出 ERROR 日志） |
+| `payment.succeeded` | 按 `merchant_id` 路由分片，`Post(PAY, pay_no)`，分录按 §2.5.2：借本分片渠道应收子账户 A，贷商户 A − F，贷本分片手续费收入子账户 F（F = 0 时省略手续费分录，凭证只有 2 条分录；F = A 时省略商户分录） | 商户账户不存在；`Post` 返回 `40005`（账户非 ACTIVE） |
+| `refund.succeeded` | `ConfirmFreeze(REFUND, refund_no, merchant_id, channel)`，贷本分片渠道应收子账户 | 返回 `40004`（冻结单缺失或已解冻，属于严重不一致，计数并输出 ERROR 日志）；`ConfirmFreeze` 带回的 `40005`（平台渠道应收非 ACTIVE）不可重试，不计该计数。平台子账户不存在返回的 `40001` 继续重试 |
 | `refund.failed` | `ReleaseFreeze(REFUND, refund_no, merchant_id, amount)`，冻结不存在时为空回滚 | 返回 `40004`（已确认扣款） |
 
-故障点 `ledger.after_commit`（数据库提交后、offset 提交前）。
+故障点 `ledger.after_commit`（数据库提交后、offset 提交前）。调用点在数据库事务提交成功之后、handler 返回 nil 之前。生产路径不设置 `BeforeCommit`。
 
 `Post` 返回 `40005` 视为不可重试：按 MQ-03 写入 DLQ 并提交 offset，`pay_mq_dlq_total + 1`，输出 ERROR 日志（`event_id`、`event_type`、`merchant_id`，不含密钥）。账户恢复 ACTIVE 后由 MQ-05 重放修复。（2026-10-27 用户决定）
 
+`Post` 返回 `duplicated = true` 且 error 为 nil 时视为成功，提交 offset，不再插入凭证。商户结算账户不存在（`40001`）不可重试。平台子账户不存在是 `10003`，可重试。其他数据库错误、超时和 `10003` 返回普通错误，不提交 offset。不要把所有错误码都当成永久错误。
+
+`fee_amount` 缺失、不是整数、小于 0 或大于 `amount`：数据不合法，永久错误进入 DLQ，不记账。`fee_amount = amount` 时省略金额为 0 的商户分录（`Post` 拒绝金额 0）。同一事务内按账户 id 升序锁住渠道应收、手续费收入和商户结算账户后，商户非 ACTIVE 仍返回 `40005`，不写凭证。`fee_amount = 0` 时不写手续费分录。
+
+`40004` 的进程内计数名叫 `pay_ledger_freeze_conflict_total`。不进 Prometheus，不进 `/metrics`，也不写入 OPS-03 的指标表。
+
+account 进程在现有生产者之外用同一组 broker 启动消费组 `account-ledger`，只订阅 `pay.payment.succeeded`、`pay.refund.succeeded`、`pay.refund.failed`。不订阅转账 topic，不读取 `LEDGER_BATCH_ENABLED`。批量记账仍是 OPT-02。payment 不启动这个消费组。
+
 验收：
 
-- [ ] 同一 `payment.succeeded` 消息投递 5 次，只生成 1 张凭证（A3 账务层）。
-- [ ] 在 `ledger.after_commit` kill 进程，重启后重复消费不重复入账（C5）。
-- [ ] 商户账户不存在时消息进入 DLQ，后续消息正常处理。
-- [ ] 商户结算账户被测试改为非 ACTIVE：该 `payment.succeeded` 不重试，进入 DLQ，`pay_mq_dlq_total` +1，有一条 ERROR 日志，没有新凭证；后续消息正常处理。
-- [ ] `fee_amount = 0` 的 `payment.succeeded`：凭证只有借渠道应收 A、贷商户 A 两条分录，手续费收入余额不变，`CheckBalance` 通过。
-- [ ] CLOSE_RACE 关单返回 `30003` 的订单（由 PAY-06 移来）：`payment.succeeded` 经投递器投递并消费后，商户入账恰好 1 次。
-- [ ] 订单 10000 入账后退款 3000 成功（由 REF-03 移来）：消费 `refund.succeeded` 后商户余额 −3000、冻结 0、渠道应收 −3000，`CheckBalance` 通过。
-- [ ] 退款 FAILED（渠道 FAIL 或受理拒绝，由 REF-02、REF-03 移来）：消费 `refund.failed` 后冻结单 RELEASED，`frozen_amount` 恢复，用新的 `out_refund_no` 再次退款成功。
+- [x] 同一 `payment.succeeded` 消息投递 5 次，只生成 1 张凭证（A3 账务层）。
+- [x] 在 `ledger.after_commit` kill 进程，重启后重复消费不重复入账（C5）。
+- [x] 商户账户不存在时消息进入 DLQ，后续消息正常处理。
+- [x] 商户结算账户被测试改为非 ACTIVE：该 `payment.succeeded` 不重试，进入 DLQ，`pay_mq_dlq_total` +1，有一条 ERROR 日志，没有新凭证；后续消息正常处理。
+- [x] `fee_amount = 0` 的 `payment.succeeded`：凭证只有借渠道应收 A、贷商户 A 两条分录，手续费收入余额不变，`CheckBalance` 通过。
+- [x] CLOSE_RACE 关单返回 `30003` 的订单（由 PAY-06 移来）：`payment.succeeded` 经投递器投递并消费后，商户入账恰好 1 次。
+- [x] 订单 10000 入账后退款 3000 成功（由 REF-03 移来）：消费 `refund.succeeded` 后商户余额 −3000、冻结 0、渠道应收 −3000，`CheckBalance` 通过。
+- [x] 退款 FAILED（渠道 FAIL 或受理拒绝，由 REF-02、REF-03 移来）：消费 `refund.failed` 后冻结单 RELEASED，`frozen_amount` 恢复，用新的 `out_refund_no` 再次退款成功。
 
 #### MQ-05 死信与事件重放
 
@@ -3309,3 +3317,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-08 | v3.0 | GW-09：商户端口接上创建退款、查询退款、创建转账、查询转账。`merchant_id` 只取验签结果。网关调用 `CreateRefund` 5 秒、`CreateTransfer` 3 秒，查询 1 秒，不重试。不改 payment 服务端超时。验收 3 用 paycli 经进程内网关，余额用 account biz 夹具，因为没有 MQ-04。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
 | 2026-11-10 | v3.0 | MQ-03：`pkg/mq` 提供 Kafka 生产者与消费组。生产者 `acks=all`、幂等生产、`linger=5ms`，单次生产超时 5 秒，消息头写入 `event_id`、`event_type`、`traceparent`。消费者关闭自动提交，分区内按 offset 顺序，处理函数返回 nil 才提交；可重试错误从 100ms 翻倍到 5 秒，不可重试写入 `pay.dlq` 后提交原 offset。payment 与 account 注册 Kafka 就绪检查和生产者刷新；broker 不可达时 `/readyz` 为 503，进程仍能启动。指标只在进程内。同一批前一条没提交就停，世代失效不空转提交；永久错误写 DLQ 失败后只重试写入；生产错误不带地址。没提交的分区会把拉取位置退回到该 offset，更高的 offset 不处理。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
 | 2026-11-10 | v3.0 | MQ-02：领取和回写的 UPDATE 显式写注入时钟的 `updated_at`（该列 `ON UPDATE CURRENT_TIMESTAMP`，不写会变成数据库时间）。退避用加 1 后的 `retry_count`：第 1 次失败间隔 2 秒，`newRetry >= 9` 封顶 5 分钟，第 20 次同一条 UPDATE 写成 DEAD。整批发送共用一次 5 秒超时。`pay_outbox_pending`、`pay_outbox_dead` 按 topic 存在进程内，刷新时用当前 COUNT 覆盖，掉到 0 的 topic 记为 0。不改资金流向，不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
+| 2026-11-10 | v3.0 | MQ-04：account 进程启动消费组 `account-ledger`，逐条消费支付成功、退款成功、退款失败，直接调用本进程 biz。一条消息一个分片事务。不读 `LEDGER_BATCH_ENABLED`。故障点 `ledger.after_commit` 在数据库事务提交成功之后、handler 返回 nil 之前。`fee_amount` 缺失、非整数、小于 0 或大于金额时进 DLQ，不记账。`fee_amount` 等于金额时省略金额为 0 的商户分录；该商户非 ACTIVE 时仍返回 `40005`，不写凭证。`40004` 的进程内计数名叫 `pay_ledger_freeze_conflict_total`，不进 Prometheus，不进 `/metrics`，不写入 OPS-03 的表。`duplicated = true` 且 error 为 nil 视为成功。平台子账户缺失是可重试的 `10003`。退款确认返回 `40005` 时进 DLQ，不计入 `pay_ledger_freeze_conflict_total`，`40001` 仍重试。`F = A` 时按账户 id 升序加锁后再看商户状态。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |

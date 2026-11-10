@@ -40,6 +40,8 @@ linters:
             - "!**/service/payment/**/transfer_tcc_integration_test.go"
             # TRF-04 验收要直接调用 account biz 证明崩溃后的冻结、分支和凭证。生产代码仍禁止。
             - "!**/service/payment/**/transfer_recover_integration_test.go"
+            # MQ-04 验收要经投递器把真实事件交给 account 消费组。生产代码仍禁止。
+            - "!**/service/payment/**/ledger_consume_integration_test.go"
           allow:
             - github.com/yym108/pay-system/service/payment
           deny:

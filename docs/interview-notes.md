@@ -35,6 +35,12 @@
 - 30001 和 50002 也回 `SUCCESS`，并给进程内计数加一，避免渠道空转重试。退款分支仍是 10003，留给 REF-03。
 - 未知单号、金额不一致、2 秒内 SUCCESS、DUP_NOTIFY 十次，由 payment 的集成测试打到进程内网关和 channel-mock。测试把自动完成延迟固定为 50 毫秒，生产默认延迟不变。
 
+## MQ-04 account 事件消费
+
+- `ledger.after_commit` 打在数据库事务提交成功之后、handler 返回 nil 之前。`pkg/fault` 的生产实现发出 SIGKILL 后就返回。测试里如果这个函数返回，同一条协程会继续提交 offset。`select {}` 只能放在子进程替换的 kill 函数里。不能写进生产代码，也不能写在父测试进程。
+- Go 1.27 的 `json.Number` 会收下带引号的数字。金额要先确认 JSON token 是数字，再取 `Int64`。
+- `pay_ledger_freeze_conflict_total` 只在进程内存里。不进 Prometheus，也不进 `/metrics`。
+
 ## MQ-03 Kafka 框架
 
 - 进程启动不依赖 Kafka 连通。broker 列表为空才拒绝启动；连不上时 `/readyz` 为 503，进程仍起来。

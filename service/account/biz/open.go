@@ -1,7 +1,7 @@
 // Package biz 实现账户开户、账户查询、通用记账、冻结、解冻、确认扣款、同分片转账、收款方转账分支和余额核对。
 //
 // OpenAccount 供种子和测试调用。GetAccount 只读。Post 在调用方事务里记账。
-// Freeze、ReleaseFreeze、ConfirmFreeze、TransferLocal、TransferInTry、TransferInConfirm 和 TransferInCancel 自己提交分片事务。这些方法都不监听 RPC。
+// PostPay、Freeze、ReleaseFreeze、ConfirmFreeze、TransferLocal、TransferInTry、TransferInConfirm 和 TransferInCancel 自己提交分片事务。这些方法都不监听 RPC。
 // CheckBalance 是进程内只读核对，自己在分片上打开一致性快照，不监听 RPC。
 package biz
 
