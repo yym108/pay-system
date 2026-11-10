@@ -106,7 +106,7 @@ func serve(cfg config.Account, logOut io.Writer) error {
 		},
 	))
 	// 连不上 Kafka 也要启动。只有 broker 列表为空才在这里失败。
-	if err := mq.RegisterProducer(admin, cfg.KafkaBrokers); err != nil {
+	if _, err := mq.RegisterProducer(admin, cfg.KafkaBrokers); err != nil {
 		return err
 	}
 	return admin.Run(context.Background())

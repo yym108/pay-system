@@ -1,6 +1,6 @@
 # pay-system 需求规格说明书
 
-> 版本：v3.0　最后修改：2026-11-08
+> 版本：v3.0　最后修改：2026-11-10
 > 状态：v3.0 重新聚焦支付、退款、转账三条资金链路（变更见 §8.2），2026-10-13 已确认为开发基线；开发按 §3 功能点总表逐项推进
 > 上游：`PROJECT_GOALS.md`（目标与约束）、`docs/01-tech-decisions.md`（技术选型与版本）
 > 关联：`docs/03-conventions.md`（编号、错误码、命名等全局约定）、`docs/05-api.md`（接口文档）、`docs/database.md`（表结构）、`docs/04-dev-plan.md`（周计划）、`docs/06-flows.md`（流程图）
@@ -395,7 +395,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | TRF-04 | 转账恢复任务 | P0 | M4 | TRF-02、TRF-03、BASE-15 | DONE |
 | TRF-05 | 转账查询 | P0 | M4 | TRF-01 | DONE |
 | MQ-01 | outbox 写入 | P0 | M3 | BASE-08、BASE-05 | DONE |
-| MQ-02 | outbox 投递器 | P0 | M5 | MQ-01、MQ-03、BASE-15 | TODO |
+| MQ-02 | outbox 投递器 | P0 | M5 | MQ-01、MQ-03、BASE-15 | DONE |
 | MQ-03 | Kafka 生产与消费框架 | P0 | M5 | BASE-02、OPS-01 | DONE |
 | MQ-04 | account 事件消费（逐条模式） | P0 | M5 | MQ-02、MQ-03、ACC-03、ACC-05、ACC-06、PAY-06、REF-03、BASE-15 | TODO |
 | MQ-05 | 死信与事件重放 | P0 | M5 | MQ-02、MQ-04 | TODO |
@@ -2101,36 +2101,47 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 1. payment 进程内运行，每 200ms 执行一轮。领取、发送、回写分开，发送不在事务里，不改表结构，租约放在 `next_retry_at`：
 
    ```
-   -- 事务 1：领取并写租约
+   -- 事务 1：领取并写租约。now 与 L 来自注入时钟，截到毫秒，不用 SQL NOW()。
    BEGIN
-     SELECT * FROM outbox WHERE status = 'PENDING' AND next_retry_at <= now
-      ORDER BY id LIMIT 100 FOR UPDATE SKIP LOCKED
-     UPDATE outbox SET next_retry_at = L WHERE id IN (...)    -- L = now + 30s，截到毫秒（与列精度一致）
+     SELECT id, event_id, event_type, topic, msg_key, payload, retry_count
+       FROM outbox
+      WHERE status = 'PENDING' AND next_retry_at <= now
+      ORDER BY id
+      LIMIT 100
+      FOR UPDATE SKIP LOCKED
+     UPDATE outbox
+        SET next_retry_at = L, updated_at = now
+      WHERE id IN (...)
    COMMIT
+   -- L = now + 30s。没有到期行就提交空事务并返回，不发送，不打故障点。
+   -- updated_at 有 ON UPDATE CURRENT_TIMESTAMP，领取和回写都必须显式写注入时钟。
 
-   -- 事务外：批量同步发送（acks=all、幂等生产者，等待全部确认，超时 5s）
-   故障点 outbox.after_send                                    -- 发送之后、回写之前
+   -- 事务外：批量同步发送（acks=all、幂等生产者）。整批共用一次 5 秒超时，不是每条 5 秒。
+   故障点 outbox.after_send                                    -- 发送返回之后、任何回写之前；全部失败也调用
 
-   -- 逐条 CAS 回写，条件都是 WHERE id = ? AND status = 'PENDING' AND next_retry_at = L
-   成功：status = 'SENT', sent_at = now
-   失败：retry_count + 1，next_retry_at = now + min(2^retry_count 秒, 5 分钟)，last_error 截断到 512 字符
-         retry_count 达到 20：status = 'DEAD'
+   -- 逐条 CAS 回写，每条自己一个事务。条件是 WHERE id = ? AND status = 'PENDING' AND next_retry_at = L
+   -- L 用本实例领取时写入的那个值，不重新计算。
+   成功：status = 'SENT'，sent_at = now（回写时刻的注入时钟）。retry_count 不变，不改 last_error
+   失败：retry_count 加 1。间隔用加 1 之后的值 min(2^newRetry 秒, 5 分钟)。
+         第 1 次失败后 retry_count = 1，间隔 2 秒。newRetry >= 9 直接 5 分钟。
+         last_error 取错误字符串，按字节截断到 512。
+         newRetry >= 20：同一条 UPDATE 把 status 写成 'DEAD'
    影响 0 行：租约已过期并被其他实例重新领取，本次结果丢弃，不报错
    ```
 
 2. 发送期间不持有行锁。租约 30 秒大于发送超时 5 秒与事务上限 3 秒之和，正常情况下回写在租约内完成，其他实例领不到同一行，所以不注入故障时每条事件只发送一次。
 3. 发送后、回写前崩溃，或回写失败，该行仍是 PENDING、`next_retry_at = L`；租约到期后被任一实例重新领取并再次发送，重复由消费端幂等吸收。
 4. 业务正确性不依赖消息顺序：退款冻结在创建时同步完成，入账与退款确认之间没有先后依赖。
-5. 每 10 秒更新指标 `pay_outbox_pending`、`pay_outbox_dead`。
+5. 每 10 秒按 topic 刷新进程内指标 `pay_outbox_pending`、`pay_outbox_dead`（标签 topic，与 OPS-03 表一致）。只在内存里记。每次用当前 COUNT 覆盖，掉到 0 的 topic 记为 0。
 
 验收：
 
-- [ ] Kafka 停止 2 分钟期间事件积压，恢复后全部投递，`pay_outbox_pending` 回落到 0（C7）。
-- [ ] 不注入故障，两个投递器并发运行 1 万条事件：Kafka 中每个 `event_id` 恰好出现 1 次，1 万条全部为 SENT。
-- [ ] 注入发送失败的假生产者，20 次后状态为 DEAD，`pay_outbox_dead` 为 1。
-- [ ] 发送期间不持有行锁：假生产者阻塞发送时，另一个连接对已领取的行执行 `SELECT … FOR UPDATE NOWAIT` 立即成功。
-- [ ] 过期租约可被接管：实例 A 领取后假生产者阻塞，Fake 时钟推进 31 秒，实例 B 领取到同一行、发送成功并置为 SENT。
-- [ ] 过期回写不覆盖新租约：上一条中 B 领取之后、回写之前放行 A，A 的成功和失败回写都影响 0 行，该行的 `status`、`next_retry_at`、`retry_count` 保持 B 写入的值。
+- [x] Kafka 停止 2 分钟期间事件积压，恢复后全部投递，`pay_outbox_pending` 回落到 0（C7）。
+- [x] 不注入故障，两个投递器并发运行 1 万条事件：Kafka 中每个 `event_id` 恰好出现 1 次，1 万条全部为 SENT。
+- [x] 注入发送失败的假生产者，20 次后状态为 DEAD，`pay_outbox_dead` 为 1。
+- [x] 发送期间不持有行锁：假生产者阻塞发送时，另一个连接对已领取的行执行 `SELECT … FOR UPDATE NOWAIT` 立即成功。
+- [x] 过期租约可被接管：实例 A 领取后假生产者阻塞，Fake 时钟推进 31 秒，实例 B 领取到同一行、发送成功并置为 SENT。
+- [x] 过期回写不覆盖新租约：上一条中 B 领取之后、回写之前放行 A，A 的成功和失败回写都影响 0 行，该行的 `status`、`next_retry_at`、`retry_count` 保持 B 写入的值。
 
 #### MQ-03 Kafka 生产与消费框架（pkg/mq）
 
@@ -3297,3 +3308,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-08 | v3.0 | TRF-04：转账恢复按注入时钟抢占 TRYING / CONFIRMING / CANCELLING，不用 SQL NOW()；SKIP LOCKED，一轮最多 100 行；退避在 Go 里按加 1 后的 retry_count 计算并封顶 60 秒；updated_at 显式写入，不改 version。事务外最多 20 并发，不用 WithContext；单笔 5 秒且不随批次取消。TRYING+LOCAL 调已有 executeLocal；TRYING+TCC 决策取消后直接 Cancel，不重跑 Try，不走 TransferExecutor。CAS 影响 0 行只再处理一次。pay_transfer_stuck 是进程内当前值，无 Prometheus、无 mode 标签。未装配返回已有的 10003 且不抢占。不新增错误码，不改表，不改 IDL，不改资金流向。§3 改为 DONE。 |
 | 2026-11-08 | v3.0 | GW-09：商户端口接上创建退款、查询退款、创建转账、查询转账。`merchant_id` 只取验签结果。网关调用 `CreateRefund` 5 秒、`CreateTransfer` 3 秒，查询 1 秒，不重试。不改 payment 服务端超时。验收 3 用 paycli 经进程内网关，余额用 account biz 夹具，因为没有 MQ-04。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
 | 2026-11-10 | v3.0 | MQ-03：`pkg/mq` 提供 Kafka 生产者与消费组。生产者 `acks=all`、幂等生产、`linger=5ms`，单次生产超时 5 秒，消息头写入 `event_id`、`event_type`、`traceparent`。消费者关闭自动提交，分区内按 offset 顺序，处理函数返回 nil 才提交；可重试错误从 100ms 翻倍到 5 秒，不可重试写入 `pay.dlq` 后提交原 offset。payment 与 account 注册 Kafka 就绪检查和生产者刷新；broker 不可达时 `/readyz` 为 503，进程仍能启动。指标只在进程内。同一批前一条没提交就停，世代失效不空转提交；永久错误写 DLQ 失败后只重试写入；生产错误不带地址。没提交的分区会把拉取位置退回到该 offset，更高的 offset 不处理。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
+| 2026-11-10 | v3.0 | MQ-02：领取和回写的 UPDATE 显式写注入时钟的 `updated_at`（该列 `ON UPDATE CURRENT_TIMESTAMP`，不写会变成数据库时间）。退避用加 1 后的 `retry_count`：第 1 次失败间隔 2 秒，`newRetry >= 9` 封顶 5 分钟，第 20 次同一条 UPDATE 写成 DEAD。整批发送共用一次 5 秒超时。`pay_outbox_pending`、`pay_outbox_dead` 按 topic 存在进程内，刷新时用当前 COUNT 覆盖，掉到 0 的 topic 记为 0。不改资金流向，不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |

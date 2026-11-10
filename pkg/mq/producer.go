@@ -63,6 +63,45 @@ func (p *Producer) Produce(ctx context.Context, msg Message) error {
 	return mapProduceErr(ctx, p.client.ProduceSync(pctx, messageRecord(msg)).FirstErr())
 }
 
+// ProduceBatch 同步发送一批。整批共用一次 ProduceTimeout，不是每条各计一次。
+// 返回与 msgs 等长的逐条错误。空批次返回 nil，不拨号。
+// 错误经过 mapProduceErr，不包装 franz 的错误，文本不含 broker 地址。
+func (p *Producer) ProduceBatch(ctx context.Context, msgs []Message) []error {
+	if len(msgs) == 0 {
+		return nil
+	}
+	out := make([]error, len(msgs))
+	if err := ctx.Err(); err != nil {
+		for i := range out {
+			out[i] = err
+		}
+		return out
+	}
+	if p == nil || p.client == nil {
+		for i := range out {
+			out[i] = ErrUnavailable
+		}
+		return out
+	}
+	recs := make([]*kgo.Record, len(msgs))
+	for i := range msgs {
+		recs[i] = messageRecord(msgs[i])
+	}
+	pctx, cancel := context.WithTimeout(ctx, ProduceTimeout)
+	defer cancel()
+	results := p.client.ProduceSync(pctx, recs...)
+	for i := range out {
+		var err error
+		if i < len(results) {
+			err = results[i].Err
+		} else {
+			err = ErrUnavailable
+		}
+		out[i] = mapProduceErr(ctx, err)
+	}
+	return out
+}
+
 // mapProduceErr 去掉 broker 地址。调用方 ctx 已取消时返回该错误。
 func mapProduceErr(ctx context.Context, err error) error {
 	if err == nil {

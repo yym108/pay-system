@@ -1,6 +1,6 @@
-// Package outbox 在调用方事务里写入本地消息表。
+// Package outbox 在调用方事务里写入本地消息表，并在 payment 进程里投递。
 //
-// Add 只负责插入一行。投递、领取和 Kafka 发送不属于本包这一层。
+// Add 只负责插入一行。Dispatcher 领取、在事务外发送、再按租约回写。
 package outbox
 
 import (

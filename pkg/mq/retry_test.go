@@ -235,7 +235,7 @@ func TestOpenProducerRejectsEmptyBrokers(t *testing.T) {
 		}
 	}
 	admin := server.New(server.Config{Addr: "127.0.0.1:0"})
-	if err := RegisterProducer(admin, " , "); !errors.Is(err, ErrNoBroker) {
+	if _, err := RegisterProducer(admin, " , "); !errors.Is(err, ErrNoBroker) {
 		t.Fatalf("RegisterProducer(empty) = %v", err)
 	}
 }
@@ -266,7 +266,7 @@ func TestRegisterProducerLazyAndClosed(t *testing.T) {
 	sigs := make(chan os.Signal, 1)
 	admin := server.New(server.Config{Listener: ln, Signals: sigs, DrainTimeout: time.Second})
 	admin.RequireDB(func(context.Context) error { return nil }, 0)
-	if err := RegisterProducer(admin, " 127.0.0.1:1 "); err != nil {
+	if _, err := RegisterProducer(admin, " 127.0.0.1:1 "); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -587,5 +587,54 @@ func TestProduceErrorHidesAddress(t *testing.T) {
 	got := mapProduceErr(ctx, dial)
 	if !errors.Is(got, context.Canceled) || strings.Contains(got.Error(), "127.0.0.1") || strings.Contains(got.Error(), "dial") {
 		t.Fatalf("cancelled produce err = %v", got)
+	}
+}
+
+// MQ-02：错误文本不含 127.0.0.1 和 dial。空批次不拨号。空 broker 仍是 ErrNoBroker。
+func TestMQ02ProduceBatchHidesAddress(t *testing.T) {
+	var closed *Producer
+	if closed.ProduceBatch(context.Background(), nil) != nil {
+		t.Fatal("empty batch on nil producer")
+	}
+	errs := closed.ProduceBatch(context.Background(), []Message{{Topic: "pay.mq02.none"}})
+	if len(errs) != 1 || !errors.Is(errs[0], ErrUnavailable) {
+		t.Fatalf("nil client errs = %v", errs)
+	}
+	if strings.Contains(errs[0].Error(), "127.0.0.1") || strings.Contains(errs[0].Error(), "dial") {
+		t.Fatal("nil client error text contains an address")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	p, err := OpenProducer([]string{"127.0.0.1:1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = p.Close() })
+	errs = p.ProduceBatch(ctx, []Message{{
+		Topic: "pay.mq02.none", Key: []byte("k"), Value: []byte("v"),
+		EventID: "EV0000000000000000001", EventType: "payment.succeeded",
+	}})
+	if len(errs) != 1 || !errors.Is(errs[0], context.Canceled) {
+		t.Fatalf("cancelled batch = %v", errs)
+	}
+	if strings.Contains(errs[0].Error(), "127.0.0.1") || strings.Contains(errs[0].Error(), "dial") {
+		t.Fatal("cancelled batch error text contains an address")
+	}
+	errs = p.ProduceBatch(context.Background(), []Message{{
+		Topic: "pay.mq02.none", Key: []byte("k"), Value: []byte("{}"),
+		EventID: "EV0000000000000000001", EventType: "payment.succeeded", Traceparent: "",
+	}})
+	if len(errs) != 1 || errs[0] == nil {
+		t.Fatalf("down broker errs = %v", errs)
+	}
+	text := errs[0].Error()
+	if strings.Contains(text, "127.0.0.1") || strings.Contains(text, "dial") {
+		t.Fatal("produce error text contains an address")
+	}
+	if _, err = OpenProducer(nil); !errors.Is(err, ErrNoBroker) {
+		t.Fatalf("empty broker = %v", err)
+	}
+	if strings.Contains(err.Error(), "127.0.0.1") || strings.Contains(err.Error(), "dial") {
+		t.Fatal("empty broker error text contains an address")
 	}
 }

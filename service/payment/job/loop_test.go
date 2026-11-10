@@ -234,6 +234,18 @@ func TestNewRefundRecover(t *testing.T) {
 	}
 }
 
+// MQ-02：投递每 200ms，积压指标每 10 秒。account 不注册这两个循环。
+func TestNewOutboxLoops(t *testing.T) {
+	deliver := NewOutboxDeliver(func(context.Context) error { return nil })
+	if deliver.name != "outbox_deliver" || deliver.interval != OutboxDeliverInterval || OutboxDeliverInterval != 200*time.Millisecond {
+		t.Fatalf("deliver = %s %s", deliver.name, deliver.interval)
+	}
+	gauge := NewOutboxGauge(func(context.Context) error { return nil })
+	if gauge.name != "outbox_gauge" || gauge.interval != OutboxGaugeInterval || OutboxGaugeInterval != 10*time.Second {
+		t.Fatalf("gauge = %s %s", gauge.name, gauge.interval)
+	}
+}
+
 // TRF-04：循环名 transfer_recover，间隔用传入的配置；小于等于 0 时 NewLoop 改成 1 秒。
 func TestNewTransferRecover(t *testing.T) {
 	l := NewTransferRecover(2*time.Second, func(context.Context) error { return nil })

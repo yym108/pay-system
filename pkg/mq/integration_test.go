@@ -172,7 +172,7 @@ func TestMQ03Accept2Readyz(t *testing.T) {
 		Signals:      make(chan os.Signal, 1),
 	})
 	admin.RequireDB(func(context.Context) error { return nil }, 0)
-	if err := RegisterProducer(admin, brokerAddr); err != nil {
+	if _, err := RegisterProducer(admin, brokerAddr); err != nil {
 		t.Fatal(err)
 	}
 	errCh := make(chan error, 1)

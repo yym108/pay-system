@@ -141,6 +141,7 @@ BASE-01（2026-10-13）：根据本机实际安装版本，将本表 Go 本机�
   - franz-go 持续活跃（2026-09 仍在发版），支持幂等生产者、手动提交 offset、按分区并发消费；segmentio/kafka-go 更新较慢，API 对手动提交支持较弱。
 - 代价：Kafka 没有原生延迟消息和消息级重试。重试和延迟由 outbox 的 `next_retry_at` 与通知表的 `next_attempt_at` 在数据库侧实现；outbox 的 `next_retry_at` 同时兼作投递租约（见 D4 补充，2026-10-27）。
 - 回滚条件：第 1 周 franz-go 与 Kafka 4.3.1 联调失败且一天内无法解决，改用 segmentio/kafka-go v0.4.51。
+- 补充（2026-11-10，MQ-02）：投递整批调用 `Producer.ProduceBatch`，一批共用一次 5 秒超时，逐条返回错误，不关闭幂等生产。`RegisterProducer` 返回同一个 `*Producer`，payment 用它发送，退出仍走已登记的 Flush 和 Close，不另开生产者。account 只登记这个生产者，不投递。
 
 ### D4 sqlx + 手写 SQL
 

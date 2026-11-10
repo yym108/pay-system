@@ -308,3 +308,11 @@ Confirm 失败一次，本请求就停在 CONFIRMING，不在本请求里重试�
 `pay_transfer_stuck` 是本进程里当前卡住的 `transfer_no` 集合的大小，不是只增计数，也不是 Prometheus。`retry_count >= 10` 且仍非终态才计入，到达终态就从集合去掉。没有 mode 标签。OPS-03 以后再暴露。
 
 多实例靠 `FOR UPDATE SKIP LOCKED` 加状态 CAS。一个实例锁住的行，另一个实例跳过。抢占只加 `retry_count` 并推后 `next_retry_at`，不改 `version`：`version` 只跟状态 CAS 走。`updated_at` 有 `ON UPDATE CURRENT_TIMESTAMP`，抢占必须把注入时钟写进去，否则这一列会变成数据库的 `NOW()`。
+
+## MQ-02 outbox 投递
+
+`updated_at` 同样有 `ON UPDATE CURRENT_TIMESTAMP`。领取和回写都要显式写注入时钟，否则这一列会变成数据库时间，和 `next_retry_at` 的租约对不上同一把钟。
+
+退避按加 1 之后的 `retry_count` 算。第 1 次失败是 2 秒，不是 1 秒。`2^9` 秒已经超过 5 分钟，从第 9 次起直接封顶，不再做位移。
+
+Kafka 容器 `Stop` 再 `Start` 时，OrbStack 会改随机映射的宿主机端口，`Host()` 还经常是 `localhost`，拨出去变成 `::1`。原来的生产者还拿着旧地址。测试把广告地址钉在 `127.0.0.1` 和选定端口上，重启后端口变了就失败。容器日志里已经有上一次的 “Kafka Server started”，不能靠这一行判断进程起来了，要重新探活。
