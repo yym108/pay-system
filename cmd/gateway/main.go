@@ -63,7 +63,10 @@ func serve(ctx context.Context, logOut io.Writer, channelKey string) error {
 		gateway.WithChannelKey([]byte(channelKey)),
 		gateway.WithNotifyAPI(clients.Payment),
 	)
-	admin := gateway.NewAdmin(gateway.WithClock(clock.Real{}))
+	admin := gateway.NewAdmin(
+		gateway.WithClock(clock.Real{}),
+		gateway.WithReplayAPI(clients.Payment),
+	)
 	errCh := make(chan error, 2)
 	var wg sync.WaitGroup
 	wg.Add(2)

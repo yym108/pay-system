@@ -22,6 +22,7 @@ func TestRPCTimeoutTable(t *testing.T) {
 		{method: "CheckBalance", want: 120 * time.Second},
 		{method: "GetAccount", want: time.Second},
 		{method: "QueryPayment", want: time.Second},
+		{method: "ReplayEvent", want: time.Second},
 		{method: "HandleChannelNotify", want: time.Second},
 		{method: "", want: time.Second},
 	}

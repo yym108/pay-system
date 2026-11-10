@@ -985,6 +985,7 @@
 | 2026-11-07 | 无（仅文档） | transfer_order（Lifecycle） | TRF-03：本请求内 CAS `TRYING → CONFIRMING` 或 `CANCELLING`，再 CAS 到 `SUCCESS` 或 `FAILED`。停住的中间态和未决策的 TRYING 仍由 TRF-04 重试。不改列、不改 CHECK。无 DDL | 未执行迁移 |
 | 2026-11-08 | 无（仅文档） | transfer_order（Lifecycle） | TRF-04：按 `idx_status_next_retry_at` 用注入时钟参数抢占（不用 SQL NOW()），`FOR UPDATE SKIP LOCKED`，一轮最多 100 行；退避在 Go 里按加 1 后的 `retry_count` 计算；`updated_at` 显式写入，不改 `version`。不改列、不改 CHECK。无 DDL | 未执行迁移 |
 | 2026-11-10 | 无（仅文档） | outbox.updated_at（写路径说明） | MQ-02：领取和回写的 UPDATE 显式写注入时钟的 `updated_at`，避免 `ON UPDATE CURRENT_TIMESTAMP` 写成数据库时间。无 DDL | 未执行迁移 |
+| 2026-11-10 | 无（仅文档） | outbox.status、outbox.updated_at、outbox.next_retry_at（写路径说明） | MQ-05：SENT / DEAD 改回 PENDING 时显式写注入时钟的 `updated_at` 和 `next_retry_at`，不改 `sent_at`、`last_error`。按业务单号重建调用已有的 `outbox.Add`。无 DDL | 未执行迁移 |
 
 ## 6. Open Questions
 

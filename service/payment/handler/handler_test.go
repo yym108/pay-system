@@ -195,9 +195,14 @@ func TestUnimplementedMethodsReturnInternal(t *testing.T) {
 	if n := svc.callCount(); n != 0 {
 		t.Fatalf("nil QueryTransfer called biz %d times", n)
 	}
+	if _, err := h.ReplayEvent(ctx, nil); !errors.Is(errno.FromBizStatus(err), errno.ErrInvalidParam) {
+		t.Fatal("nil ReplayEvent request")
+	}
+	if n := svc.callCount(); n != 0 {
+		t.Fatalf("nil ReplayEvent called biz %d times", n)
+	}
 	for name, fn := range map[string]func() error{
 		"SyncChannelTxn": func() error { _, err := h.SyncChannelTxn(ctx, nil); return err },
-		"ReplayEvent":    func() error { _, err := h.ReplayEvent(ctx, nil); return err },
 	} {
 		if !errors.Is(errno.FromBizStatus(fn()), errno.ErrInternal) {
 			t.Fatalf("%s nil request", name)
@@ -375,6 +380,7 @@ func TestListenAddrAndTimeout(t *testing.T) {
 		(Config{}).timeoutFor("QueryPayment") != ServerTimeout ||
 		(Config{}).timeoutFor("QueryRefund") != ServerTimeout ||
 		(Config{}).timeoutFor("QueryTransfer") != ServerTimeout ||
+		(Config{}).timeoutFor("ReplayEvent") != ServerTimeout ||
 		(Config{}).timeoutFor("ClosePayment") != ServerTimeout {
 		t.Fatal("method timeout split drifted")
 	}
@@ -413,10 +419,6 @@ func unimplementedCalls(cli paymentservice.Client) []call {
 	return []call{
 		{"SyncChannelTxn", func() error {
 			_, err := cli.SyncChannelTxn(ctx, &payment.SyncChannelTxnRequest{BizNo: "PA1"})
-			return err
-		}},
-		{"ReplayEvent", func() error {
-			_, err := cli.ReplayEvent(ctx, &payment.ReplayEventRequest{})
 			return err
 		}},
 	}
@@ -541,6 +543,7 @@ type scripted struct {
 	transferIn biz.CreateTransferInput
 	// transferQueryIn 只给 TRF-05 的 QueryTransfer 使用。
 	transferQueryIn biz.TransferQueryInput
+	rebuilt         bool
 }
 
 func (s *scripted) set(fn func(*scripted)) {
@@ -816,10 +819,57 @@ func (s *scripted) lastRefundResult() biz.RefundResult {
 	return s.refundIn
 }
 
+func (s *scripted) ReplayEvent(_ context.Context, in *biz.ReplayInput) (biz.ReplayResult, error) {
+	s.mu.Lock()
+	s.calls++
+	err, rebuilt := s.err, s.rebuilt
+	s.mu.Unlock()
+	if err != nil {
+		return biz.ReplayResult{}, err
+	}
+	id := "EV_SCRIPTED"
+	if in != nil && in.EventID != "" {
+		id = in.EventID
+	}
+	return biz.ReplayResult{EventID: id, Rebuilt: rebuilt}, nil
+}
+
 func (s *scripted) lastPaymentInput() biz.CreatePaymentInput {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.lastIn
+}
+
+func TestReplayEventHandler(t *testing.T) {
+	svc := &scripted{}
+	h := New(svc)
+	ctx := context.Background()
+	eventID := "EV1"
+	bizNo := "PA1"
+	eventType := "payment.succeeded"
+	if _, err := h.ReplayEvent(ctx, &payment.ReplayEventRequest{EventId: &eventID, BizNo: &bizNo}); !errors.Is(errno.FromBizStatus(err), errno.ErrInvalidParam) {
+		t.Fatal("both keys")
+	}
+	if _, err := h.ReplayEvent(ctx, &payment.ReplayEventRequest{BizNo: &bizNo}); !errors.Is(errno.FromBizStatus(err), errno.ErrInvalidParam) {
+		t.Fatal("only biz")
+	}
+	if n := svc.callCount(); n != 0 {
+		t.Fatalf("invalid replay called biz %d times", n)
+	}
+	got, err := h.ReplayEvent(ctx, &payment.ReplayEventRequest{EventId: &eventID})
+	if err != nil || got == nil || got.EventId != eventID || got.Rebuilt {
+		t.Fatalf("replay = %+v err=%v", got, err)
+	}
+	svc.set(func(s *scripted) {
+		s.rebuilt = true
+		s.err = errno.ErrOrderStatusConflict
+	})
+	if _, err = h.ReplayEvent(ctx, &payment.ReplayEventRequest{BizNo: &bizNo, EventType: &eventType}); !errors.Is(errno.FromBizStatus(err), errno.ErrOrderStatusConflict) {
+		t.Fatalf("30003 = %v", err)
+	}
+	if _, err = New(nil).ReplayEvent(ctx, &payment.ReplayEventRequest{EventId: &eventID}); !errors.Is(errno.FromBizStatus(err), errno.ErrInternal) {
+		t.Fatalf("nil service = %v", err)
+	}
 }
 
 func copyPaymentInput(in *biz.CreatePaymentInput) biz.CreatePaymentInput {

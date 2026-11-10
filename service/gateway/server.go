@@ -33,6 +33,7 @@ type Handler struct {
 	payment    paymentAPI
 	account    accountAPI
 	notify     notifyAPI
+	replay     replayAPI
 	channelKey []byte
 	nextNonce  func() (string, error)
 	logger     *slog.Logger
@@ -91,7 +92,8 @@ func newHandler(admin bool, opts ...Option) *Handler {
 	return h
 }
 
-// Register 安装中间件。商户端口注册支付、退款、转账与余额路由，管理端口不注册。
+// Register 安装中间件。商户端口注册支付、退款、转账与余额路由。
+// 管理端口只注册 POST /admin/outbox/replay，不注册商户路由。
 //
 // 顺序：请求体上限、Recovery、RequestID、Trace、AccessLog、
 // 时间窗口占位、验签、限流占位、nonce 占位、响应签名、handler。
@@ -109,7 +111,9 @@ func (h *Handler) Register(r *server.Hertz) {
 	r.Use(h.rateLimit)
 	r.Use(h.nonce)
 	r.Use(h.platformSign)
-	if !h.admin {
+	if h.admin {
+		h.registerAdmin(r)
+	} else {
 		h.registerV1(r)
 		h.registerCallback(r)
 	}

@@ -1,7 +1,7 @@
 // Package handler 是 payment 的 Kitex 适配。
 // 只做协议转换和错误码转换，不改 biz 的幂等与 CAS。
 // 已实现 GetMerchantCredential（PAY-01）、CreatePayment（PAY-02）、Pay（PAY-03）、ClosePayment（PAY-06）、QueryPayment（PAY-08）、
-// CreateRefund（REF-02）、QueryRefund（REF-05）、CreateTransfer（TRF-01）、QueryTransfer（TRF-05）和 HandleChannelNotify（PAY 分支 GW-06，REFUND 分支 REF-03）。
+// CreateRefund（REF-02）、QueryRefund（REF-05）、CreateTransfer（TRF-01）、QueryTransfer（TRF-05）、HandleChannelNotify（PAY 分支 GW-06，REFUND 分支 REF-03）和 ReplayEvent（MQ-05）。
 // 其余方法属于各自的功能点，实现前调用一律返回 10003，不进 biz。
 package handler
 
@@ -336,7 +336,34 @@ func (h *Handler) SyncChannelTxn(_ context.Context, _ *payment.SyncChannelTxnReq
 	return nil, notImplemented()
 }
 
-// ReplayEvent 属于 MQ-05，未实现，返回 10003。
-func (h *Handler) ReplayEvent(_ context.Context, _ *payment.ReplayEventRequest) (*payment.ReplayEventResponse, error) {
-	return nil, notImplemented()
+// ReplayEvent 重放一条 outbox（MQ-05）。响应是 event_id 和 rebuilt，不带 biz_code。
+// 请求为 nil，或 event_id 与 biz_no + event_type 不是二选一，返回 10001，不进 biz。空串算没提供，不 trim。
+// 10002、30003 走 BizStatusError。成功时 error 为 nil。
+func (h *Handler) ReplayEvent(ctx context.Context, req *payment.ReplayEventRequest) (r *payment.ReplayEventResponse, err error) {
+	defer recoverBiz(ctx, &err)
+	if err = h.ready(); err != nil {
+		return nil, err
+	}
+	if req == nil || !replayRequestOK(req.GetEventId(), req.GetBizNo(), req.GetEventType()) {
+		return nil, errno.ToBizStatus(errno.ErrInvalidParam)
+	}
+	got, callErr := h.svc.ReplayEvent(ctx, &biz.ReplayInput{
+		EventID:   req.GetEventId(),
+		BizNo:     req.GetBizNo(),
+		EventType: req.GetEventType(),
+	})
+	if callErr != nil {
+		return nil, statusErr(ctx, callErr)
+	}
+	return &payment.ReplayEventResponse{EventId: got.EventID, Rebuilt: got.Rebuilt}, nil
+}
+
+func replayRequestOK(eventID, bizNo, eventType string) bool {
+	hasEvent := eventID != ""
+	hasBiz := bizNo != ""
+	hasType := eventType != ""
+	if hasEvent {
+		return !hasBiz && !hasType
+	}
+	return hasBiz && hasType
 }

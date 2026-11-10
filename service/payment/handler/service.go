@@ -20,6 +20,7 @@ type Service interface {
 	QueryTransfer(ctx context.Context, in *biz.TransferQueryInput) (biz.TransferOrder, error)
 	ApplyChannelNotify(ctx context.Context, in biz.PayResult) (string, error)
 	ApplyRefundNotify(ctx context.Context, in biz.RefundResult) (string, error)
+	ReplayEvent(ctx context.Context, in *biz.ReplayInput) (biz.ReplayResult, error)
 }
 
 var _ Service = (*biz.App)(nil)

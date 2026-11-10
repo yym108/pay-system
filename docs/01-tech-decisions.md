@@ -154,7 +154,7 @@ BASE-01（2026-10-13）：根据本机实际安装版本，将本表 Go 本机�
   - 隔离级别统一 READ COMMITTED（DSN 设置 `transaction_isolation='READ-COMMITTED'`）。正确性依赖条件更新和唯一索引，不依赖 RR 的间隙锁；RC 可以减少间隙锁导致的死锁。这是一个面试讲解点。
 - 补充（2026-10-14，BASE-06）：`errno.ErrDuplicate` 与 MySQL 1062 映射仍留给 BASE-08，本功能点不实现。`pkg/errno` 只定义约定 §5.2 的业务码（跳过保留的 `30002`），并直接依赖 kitex v0.16.3 的 `BizStatusError` 做双向转换。
 - 补充（2026-10-15，BASE-08）：不实现 `errno.ErrDuplicate`，只提供 `IsDuplicate`。`github.com/jmoiron/sqlx v1.4.0` 已作为直接依赖写入 `go.mod`，版本与 §2.1 锁定表相同，不升级。`github.com/go-sql-driver/mysql` 仍是 v1.10.1。
-- 补充（2026-10-27，用户确认，MQ-02）：outbox 投递不在持有行锁的事务里发 Kafka。流程是领取 → 提交 → 事务外发送 → CAS 回写：短事务用 `FOR UPDATE SKIP LOCKED` 选出到期的 PENDING 行，把 `next_retry_at` 改为租约到期时刻 now + 30s 后立即提交；在事务外批量发送；再按 `WHERE id = ? AND status = 'PENDING' AND next_retry_at = <租约值>` 回写 SENT 或退避时间。影响 0 行说明租约过期后已被别的实例领取，本次放弃回写。原因：原方案在发送期间持锁最长约 5 秒，违反“事务内禁止调用 MQ”，也会占住连接。`next_retry_at` 兼作租约，不改表结构，不新增状态。代价是租约过期或回写前崩溃会重复发送，由消费端幂等吸收（与原方案“确认后、COMMIT 前崩溃”的重复同性质）。重放把 SENT / DEAD 改回 PENDING 时同时设 `next_retry_at = now`，不碰 PENDING 行，不与租约冲突。
+- 补充（2026-10-27，用户确认，MQ-02）：outbox 投递不在持有行锁的事务里发 Kafka。流程是领取 → 提交 → 事务外发送 → CAS 回写：短事务用 `FOR UPDATE SKIP LOCKED` 选出到期的 PENDING 行，把 `next_retry_at` 改为租约到期时刻 now + 30s 后立即提交；在事务外批量发送；再按 `WHERE id = ? AND status = 'PENDING' AND next_retry_at = <租约值>` 回写 SENT 或退避时间。影响 0 行说明租约过期后已被别的实例领取，本次放弃回写。原因：原方案在发送期间持锁最长约 5 秒，违反“事务内禁止调用 MQ”，也会占住连接。`next_retry_at` 兼作租约，不改表结构，不新增状态。代价是租约过期或回写前崩溃会重复发送，由消费端幂等吸收（与原方案“确认后、COMMIT 前崩溃”的重复同性质）。重放把 SENT / DEAD 改回 PENDING 时同时设 `next_retry_at = now`，不碰 PENDING 行，不与租约冲突。MQ-05 这条 UPDATE 还显式写同一个注入时钟的 `updated_at`；按业务单号且行已删除时，先锁单据行再查一次 outbox，没有行才调用 `outbox.Add`，时钟与 Add 相同。
 
 ### D5 自研雪花 ID
 

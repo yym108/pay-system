@@ -398,7 +398,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | MQ-02 | outbox 投递器 | P0 | M5 | MQ-01、MQ-03、BASE-15 | DONE |
 | MQ-03 | Kafka 生产与消费框架 | P0 | M5 | BASE-02、OPS-01 | DONE |
 | MQ-04 | account 事件消费（逐条模式） | P0 | M5 | MQ-02、MQ-03、ACC-03、ACC-05、ACC-06、PAY-06、REF-03、BASE-15 | DONE |
-| MQ-05 | 死信与事件重放 | P0 | M5 | MQ-02、MQ-04 | TODO |
+| MQ-05 | 死信与事件重放 | P0 | M5 | MQ-02、MQ-04 | DONE |
 | MQ-06 | outbox 清理 | P1 | M8 | MQ-02 | TODO |
 | NTF-01 | 通知记录生成 | P0 | M5 | MQ-03 | TODO |
 | NTF-02 | 通知发送与固定间隔重试 | P0 | M5 | NTF-01、BASE-13、TL-02 | TODO |
@@ -2209,7 +2209,7 @@ account 进程在现有生产者之外用同一组 broker 启动消费组 `accou
 
 规则：
 
-1. 按 `event_id` 重放：`UPDATE outbox SET status = 'PENDING', retry_count = 0, next_retry_at = now WHERE event_id = ? AND status IN ('SENT', 'DEAD')`。
+1. 按 `event_id` 重放：`UPDATE outbox SET status = 'PENDING', retry_count = 0, next_retry_at = ?, updated_at = ? WHERE event_id = ? AND status IN ('SENT', 'DEAD')`。`next_retry_at` 与 `updated_at` 都写成注入时钟的同一个 now，截断到毫秒，Asia/Shanghai，不用 SQL `NOW()`，不交给 `ON UPDATE CURRENT_TIMESTAMP`。不改 `sent_at`、`last_error`。
    影响 0 行时：事件不存在 → `10002`；事件已是 PENDING（等待投递中）→ 不做修改，返回 code 0、`rebuilt = false`。
 2. 按业务单号重放：按 `idx_biz_no_event_type` 找到对应事件后同上；事件已被清理（MQ-06）时，根据订单当前数据重建一条新事件（新 `event_id`），前提是订单状态与事件类型一致（如 SUCCESS 才能重建 `payment.succeeded`）。
 3. 重放依赖消费端幂等，因此对已成功处理的事件重放无副作用。
@@ -2217,9 +2217,9 @@ account 进程在现有生产者之外用同一组 broker 启动消费组 `accou
 
 验收：
 
-- [ ] 删除一张 PAY 凭证所对应的消费结果（测试环境中构造“漏入账”），重放后入账完成；对正常事件重放不产生新凭证。
-- [ ] 对 PAYING 订单重建 `payment.succeeded` 被拒绝（`30003`）。
-- [ ] 因商户账户非 ACTIVE 进入 DLQ 的 `payment.succeeded`（MQ-04）：账户恢复 ACTIVE 后按 `event_id` 重放，入账恰好 1 次，`CheckBalance` 通过。
+- [x] 删除一张 PAY 凭证所对应的消费结果（测试环境中构造“漏入账”），重放后入账完成；对正常事件重放不产生新凭证。
+- [x] 对 PAYING 订单重建 `payment.succeeded` 被拒绝（`30003`）。
+- [x] 因商户账户非 ACTIVE 进入 DLQ 的 `payment.succeeded`（MQ-04）：账户恢复 ACTIVE 后按 `event_id` 重放，入账恰好 1 次，`CheckBalance` 通过。
 
 #### MQ-06 outbox 清理
 
@@ -3318,3 +3318,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-10 | v3.0 | MQ-03：`pkg/mq` 提供 Kafka 生产者与消费组。生产者 `acks=all`、幂等生产、`linger=5ms`，单次生产超时 5 秒，消息头写入 `event_id`、`event_type`、`traceparent`。消费者关闭自动提交，分区内按 offset 顺序，处理函数返回 nil 才提交；可重试错误从 100ms 翻倍到 5 秒，不可重试写入 `pay.dlq` 后提交原 offset。payment 与 account 注册 Kafka 就绪检查和生产者刷新；broker 不可达时 `/readyz` 为 503，进程仍能启动。指标只在进程内。同一批前一条没提交就停，世代失效不空转提交；永久错误写 DLQ 失败后只重试写入；生产错误不带地址。没提交的分区会把拉取位置退回到该 offset，更高的 offset 不处理。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
 | 2026-11-10 | v3.0 | MQ-02：领取和回写的 UPDATE 显式写注入时钟的 `updated_at`（该列 `ON UPDATE CURRENT_TIMESTAMP`，不写会变成数据库时间）。退避用加 1 后的 `retry_count`：第 1 次失败间隔 2 秒，`newRetry >= 9` 封顶 5 分钟，第 20 次同一条 UPDATE 写成 DEAD。整批发送共用一次 5 秒超时。`pay_outbox_pending`、`pay_outbox_dead` 按 topic 存在进程内，刷新时用当前 COUNT 覆盖，掉到 0 的 topic 记为 0。不改资金流向，不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
 | 2026-11-10 | v3.0 | MQ-04：account 进程启动消费组 `account-ledger`，逐条消费支付成功、退款成功、退款失败，直接调用本进程 biz。一条消息一个分片事务。不读 `LEDGER_BATCH_ENABLED`。故障点 `ledger.after_commit` 在数据库事务提交成功之后、handler 返回 nil 之前。`fee_amount` 缺失、非整数、小于 0 或大于金额时进 DLQ，不记账。`fee_amount` 等于金额时省略金额为 0 的商户分录；该商户非 ACTIVE 时仍返回 `40005`，不写凭证。`40004` 的进程内计数名叫 `pay_ledger_freeze_conflict_total`，不进 Prometheus，不进 `/metrics`，不写入 OPS-03 的表。`duplicated = true` 且 error 为 nil 视为成功。平台子账户缺失是可重试的 `10003`。退款确认返回 `40005` 时进 DLQ，不计入 `pay_ledger_freeze_conflict_total`，`40001` 仍重试。`F = A` 时按账户 id 升序加锁后再看商户状态。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
+| 2026-11-10 | v3.0 | MQ-05：`ReplayEvent` 按 `event_id`，或按 `biz_no` + `event_type`，把 SENT / DEAD 改回 PENDING。`now` 用注入时钟，截断到毫秒，东八区，不用 SQL `NOW()`。UPDATE 显式写 `updated_at`（该列 `ON UPDATE CURRENT_TIMESTAMP`），不改 `sent_at`、`last_error`。已是 PENDING 不改行。按 `event_id` 找不到是 `10002`，不重建。按业务单号多行取 `id` 最大。行已被删掉时，同一事务先锁单据再查一次 outbox，等锁期间已插入的行不再插；状态不符是 `30003`，单据不存在是 `10002`，未知 `event_type` 且没有行是 `10001`。重建调用已有的 `outbox.Add`。重放不直接记账，不消费 `pay.dlq`。管理端口 `POST /admin/outbox/replay` 调用该 RPC，不签名，不校验 `X-Admin-Token` 和 `X-Admin-Operator`，不写审计日志。服务端超时 2 秒，网关调用 1 秒。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
