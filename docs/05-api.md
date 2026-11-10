@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 3.3.16 |
+| 文档版本 | 3.3.17 |
 | API 版本 | v1（路径前缀 `/v1`） |
 | 最后修改 | 2026-11-10 |
 | 状态 | 设计基线，实现须与本文一致 |
@@ -83,6 +83,7 @@
 | 3.3.14 | 2026-11-08 | 网关已提供 §4.5、§4.6、§4.8、§4.9。`merchant_id` 只取验签结果。网关调用 `CreateRefund` 超时 5 秒、`CreateTransfer` 3 秒，查询 1 秒，不重试。payment 服务端超时不变。字段和错误码不变，不改 IDL | §1、§4.6、§4.9 | GW-09 |
 | 3.3.15 | 2026-11-10 | MQ-03 已在 payment、account 注册 Kafka 就绪检查和生产者刷新。broker 不可达时 `/readyz` 为 503，进程仍能启动。同一批前一条没提交就停，世代失效不空转提交；生产错误不带地址。没提交的分区会把拉取位置退回到该 offset，更高的 offset 不处理。不改字段，不改错误码，不改 IDL | §1、§12 | MQ-03 |
 | 3.3.16 | 2026-11-10 | 未实现时的固定 `10003` 已经去掉；依赖缺失和内部失败仍返回已有的 `10003`。按 `event_id` 或 `biz_no` + `event_type` 把 SENT / DEAD 改回 PENDING；按业务单号且行已删除时按单据重建。管理端口已注册 `POST /admin/outbox/replay`。不校验管理令牌和操作人。不改字段，不改错误码，不改 IDL | §1、§8.3、§10.2 | MQ-05 |
+| 3.3.17 | 2026-11-10 | NTF-01 已按 §6 写入通知记录。发送、签名、重试仍是 NTF-02。不新增字段 | §6 | NTF-01 |
 
 ## 1. 接口总览
 
@@ -110,7 +111,7 @@
 | `GET /v1/balance` 查询余额 | §4.7 | `AccountService.GetAccount` | ACC-02 | 1.0.0 | 2026-11-01 |
 | `POST /v1/transfers` 创建转账 | §4.8 | `PaymentService.CreateTransfer` | TRF-01~03 | 2.0.0 | 2026-11-08 |
 | `GET /v1/transfers/{transfer_no}`、`GET /v1/transfers?out_transfer_no=` 查询转账 | §4.9 | `PaymentService.QueryTransfer` | TRF-05 | 2.0.0 | 2026-11-08 |
-| 商户异步通知 | §6 | — | NTF-01、NTF-02 | 1.0.0 | 2026-10-12 |
+| 商户异步通知 | §6 | — | NTF-01、NTF-02 | 1.0.0 | 2026-11-10 |
 | `POST /callback/mockpay` 渠道回调入口 | §7 | `PaymentService.HandleChannelNotify` | GW-06、REF-03 | 1.0.0 | 2026-11-05 |
 | `POST /admin/recon/run` 执行对账 | §8.2 | `ReconService.RunBatch` | REC-01、REC-08 | 1.0.0 | 2026-10-27 |
 | `POST /admin/outbox/replay` 事件重放 | §8.3 | `PaymentService.ReplayEvent` | MQ-05 | 1.0.0 | 2026-11-10 |
@@ -573,6 +574,8 @@ payment 的 `QueryTransfer` 直接读 `transfer_order`，不缓存，不写行�
 ## 6. 商户异步通知
 
 `POST <notify_url>` · NTF-01、NTF-02
+
+NTF-01 只生成记录，HTTP 发送仍是 NTF-02。
 
 触发：支付成功、退款成功、退款失败、转账成功、转账失败。支付失败和关闭不通知，商户通过查询获得。支付、退款通知发往原支付单的 `notify_url`；转账通知只发给付款商户，地址取转账单的 `notify_url`，收款商户不通知。
 

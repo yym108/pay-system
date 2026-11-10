@@ -23,6 +23,7 @@ import (
 	"github.com/yym108/pay-system/service/payment/biz"
 	"github.com/yym108/pay-system/service/payment/handler"
 	"github.com/yym108/pay-system/service/payment/job"
+	"github.com/yym108/pay-system/service/payment/notify"
 )
 
 type closeFunc func() error
@@ -150,5 +151,15 @@ func serve(cfg config.Payment, logOut io.Writer) error {
 	deliver := outbox.NewDispatcher(db, outbox.NewMQSender(producer), clock.Real{})
 	admin.RegisterGroup(job.NewOutboxDeliver(deliver.RunBatch))
 	admin.RegisterGroup(job.NewOutboxGauge(deliver.RefreshGauges))
+	// payment-notify 只生成通知记录。连不上 Kafka 也要启动。Open 失败时关掉刚登记的生产者。
+	group, err := notify.Open(notify.Config{
+		Brokers:  mq.ParseBrokers(cfg.KafkaBrokers),
+		Recorder: payments,
+	})
+	if err != nil {
+		_ = producer.Close()
+		return err
+	}
+	admin.RegisterGroup(group)
 	return admin.Run(context.Background())
 }

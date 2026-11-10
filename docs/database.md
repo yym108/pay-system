@@ -736,7 +736,7 @@
 
 #### Operational Notes
 
-- **Backfill/migration considerations:** 无。
+- **Backfill/migration considerations:** 无。NTF-01 的 INSERT 显式写 `next_attempt_at`、`created_at`、`updated_at`，值来自注入时钟，截断到毫秒，固定东八区。无 DDL。
 - **Compatibility/deprecation notes:** `biz_type` 不加 CHECK，取值由 NTF-01 按事件类型映射。
 
 ### 4.13 `recon_batch` — 对账批次
@@ -986,6 +986,7 @@
 | 2026-11-08 | 无（仅文档） | transfer_order（Lifecycle） | TRF-04：按 `idx_status_next_retry_at` 用注入时钟参数抢占（不用 SQL NOW()），`FOR UPDATE SKIP LOCKED`，一轮最多 100 行；退避在 Go 里按加 1 后的 `retry_count` 计算；`updated_at` 显式写入，不改 `version`。不改列、不改 CHECK。无 DDL | 未执行迁移 |
 | 2026-11-10 | 无（仅文档） | outbox.updated_at（写路径说明） | MQ-02：领取和回写的 UPDATE 显式写注入时钟的 `updated_at`，避免 `ON UPDATE CURRENT_TIMESTAMP` 写成数据库时间。无 DDL | 未执行迁移 |
 | 2026-11-10 | 无（仅文档） | outbox.status、outbox.updated_at、outbox.next_retry_at（写路径说明） | MQ-05：SENT / DEAD 改回 PENDING 时显式写注入时钟的 `updated_at` 和 `next_retry_at`，不改 `sent_at`、`last_error`。按业务单号重建调用已有的 `outbox.Add`。无 DDL | 未执行迁移 |
+| 2026-11-10 | 无（仅文档） | merchant_notify.next_attempt_at、created_at、updated_at（写路径说明） | NTF-01：INSERT 显式写这三列，避免 DEFAULT 和 ON UPDATE CURRENT_TIMESTAMP 用数据库时间。无 DDL | 未执行迁移 |
 
 ## 6. Open Questions
 

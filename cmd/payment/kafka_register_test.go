@@ -4,6 +4,8 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"os"
+	"strings"
 	"testing"
 
 	"github.com/yym108/pay-system/pkg/mq"
@@ -48,5 +50,19 @@ func assertServeCalls(t *testing.T, path string) {
 	}
 	if !found {
 		t.Fatal("serve does not call mq.RegisterProducer")
+	}
+}
+
+func TestServeStartsPaymentNotify(t *testing.T) {
+	body, err := os.ReadFile("main.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := string(body)
+	if !strings.Contains(src, "payment-notify") || !strings.Contains(src, "notify.Open") {
+		t.Fatal("serve does not start payment-notify")
+	}
+	if strings.Contains(src, "account-ledger") || strings.Contains(src, "service/account/consumer") {
+		t.Fatal("payment serve starts the account ledger group")
 	}
 }

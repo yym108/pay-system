@@ -400,7 +400,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | MQ-04 | account 事件消费（逐条模式） | P0 | M5 | MQ-02、MQ-03、ACC-03、ACC-05、ACC-06、PAY-06、REF-03、BASE-15 | DONE |
 | MQ-05 | 死信与事件重放 | P0 | M5 | MQ-02、MQ-04 | DONE |
 | MQ-06 | outbox 清理 | P1 | M8 | MQ-02 | TODO |
-| NTF-01 | 通知记录生成 | P0 | M5 | MQ-03 | TODO |
+| NTF-01 | 通知记录生成 | P0 | M5 | MQ-03 | DONE |
 | NTF-02 | 通知发送与固定间隔重试 | P0 | M5 | NTF-01、BASE-13、TL-02 | TODO |
 | GW-01 | 网关骨架与统一响应 | P0 | M3 | BASE-12、BASE-13、TL-01 | DONE |
 | GW-02 | 商户 API 路由（支付与余额） | P0 | M3 | GW-01、GW-03、PAY-02/03/06/08、ACC-02、ACC-11 | DONE |
@@ -2240,11 +2240,13 @@ account 进程在现有生产者之外用同一组 broker 启动消费组 `accou
 规则：
 
 1. 消费组 `payment-notify`（payment 进程内）消费 `payment.succeeded`、`refund.succeeded`、`refund.failed`、`transfer.succeeded`、`transfer.failed`。
-2. 插入 `merchant_notify(PENDING)`，`event_id` 唯一，冲突即视为已处理；`notify_url` 取原支付单（退款事件同样取原支付单）或转账单的 `notify_url`，为空时取商户默认通知地址；转账只通知付款商户；`payload` 按 `docs/05-api.md` §6 组装。
+2. 插入 `merchant_notify(PENDING)`。`event_id` 唯一：冲突后再按 `event_id` 读取，逐字节相同才视为已处理；`notify_no` 冲突或再读到的字节不同，是已有的 `10003`，可重试，不当作已处理。`notify_url` 取原支付单（退款事件同样取原支付单）或转账单的 `notify_url`，为空时取商户默认通知地址；转账只通知付款商户；`payload` 按 `docs/05-api.md` §6 组装。
+
+生成时 `next_attempt_at`、`created_at`、`updated_at` 用注入时钟，截断到毫秒，固定东八区。订单地址为空且商户默认也空时仍插入空串。发送、签名、白名单和重试仍是 NTF-02。
 
 验收：
 
-- [ ] 同一事件消费 3 次，只有 1 条通知记录。
+- [x] 同一事件消费 3 次，只有 1 条通知记录。
 
 #### NTF-02 通知发送与重试
 
@@ -3319,3 +3321,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-10 | v3.0 | MQ-02：领取和回写的 UPDATE 显式写注入时钟的 `updated_at`（该列 `ON UPDATE CURRENT_TIMESTAMP`，不写会变成数据库时间）。退避用加 1 后的 `retry_count`：第 1 次失败间隔 2 秒，`newRetry >= 9` 封顶 5 分钟，第 20 次同一条 UPDATE 写成 DEAD。整批发送共用一次 5 秒超时。`pay_outbox_pending`、`pay_outbox_dead` 按 topic 存在进程内，刷新时用当前 COUNT 覆盖，掉到 0 的 topic 记为 0。不改资金流向，不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
 | 2026-11-10 | v3.0 | MQ-04：account 进程启动消费组 `account-ledger`，逐条消费支付成功、退款成功、退款失败，直接调用本进程 biz。一条消息一个分片事务。不读 `LEDGER_BATCH_ENABLED`。故障点 `ledger.after_commit` 在数据库事务提交成功之后、handler 返回 nil 之前。`fee_amount` 缺失、非整数、小于 0 或大于金额时进 DLQ，不记账。`fee_amount` 等于金额时省略金额为 0 的商户分录；该商户非 ACTIVE 时仍返回 `40005`，不写凭证。`40004` 的进程内计数名叫 `pay_ledger_freeze_conflict_total`，不进 Prometheus，不进 `/metrics`，不写入 OPS-03 的表。`duplicated = true` 且 error 为 nil 视为成功。平台子账户缺失是可重试的 `10003`。退款确认返回 `40005` 时进 DLQ，不计入 `pay_ledger_freeze_conflict_total`，`40001` 仍重试。`F = A` 时按账户 id 升序加锁后再看商户状态。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
 | 2026-11-10 | v3.0 | MQ-05：`ReplayEvent` 按 `event_id`，或按 `biz_no` + `event_type`，把 SENT / DEAD 改回 PENDING。`now` 用注入时钟，截断到毫秒，东八区，不用 SQL `NOW()`。UPDATE 显式写 `updated_at`（该列 `ON UPDATE CURRENT_TIMESTAMP`），不改 `sent_at`、`last_error`。已是 PENDING 不改行。按 `event_id` 找不到是 `10002`，不重建。按业务单号多行取 `id` 最大。行已被删掉时，同一事务先锁单据再查一次 outbox，等锁期间已插入的行不再插；状态不符是 `30003`，单据不存在是 `10002`，未知 `event_type` 且没有行是 `10001`。重建调用已有的 `outbox.Add`。重放不直接记账，不消费 `pay.dlq`。管理端口 `POST /admin/outbox/replay` 调用该 RPC，不签名，不校验 `X-Admin-Token` 和 `X-Admin-Operator`，不写审计日志。服务端超时 2 秒，网关调用 1 秒。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
+| 2026-11-10 | v3.0 | NTF-01：payment 进程消费组 `payment-notify` 为支付成功、退款成功、退款失败、转账成功、转账失败各插入一条 `PENDING` 通知。`event_id` 冲突再读，逐字节相同才当作已处理；`notify_no` 冲突或再读字节不同是已有的 `10003`。规则第 2 条写明这条再读。`next_attempt_at`、`created_at`、`updated_at` 用注入时钟，截断到毫秒，固定东八区。订单地址为空且商户默认也空时仍插入空串。发送、签名、白名单和重试仍是 NTF-02。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
