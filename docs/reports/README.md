@@ -68,3 +68,4 @@
 | MQ-02 | outbox 投递器 | 基础设施 | `3df960e` | 2026-11-10 | [MQ-02-outbox-dispatcher.md](MQ-02-outbox-dispatcher.md) |
 | MQ-04 | account 事件消费 | 基础设施 | `abc7149` | 2026-11-10 | [MQ-04-account-consume.md](MQ-04-account-consume.md) |
 | MQ-05 | 死信与事件重放 | 基础设施 | `d5a2d67` | 2026-11-10 | [MQ-05-replay.md](MQ-05-replay.md) |
+| NTF-01 | 通知记录生成 | 支付 | `7676d8f` | 2026-11-10 | [NTF-01-notify-record.md](NTF-01-notify-record.md) |
