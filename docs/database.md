@@ -1,6 +1,6 @@
 # Database Schema
 
-> **Last updated:** 2026-11-08
+> **Last updated:** 2026-11-11
 > **Database engine/version:** MySQL 8.4.11（InnoDB，utf8mb4 / utf8mb4_bin）
 > **Schema sources:** `migrations/account/000001_init.up.sql`（`pay_account_0` 与 `pay_account_1` 各执行一次）、`migrations/payment/000001_init.up.sql`、`migrations/payment/000002_merchant_fee_rate.up.sql`、`migrations/recon/000001_init.up.sql`、`migrations/channel_mock/000001_init.up.sql`。设计稿 `docs/schema/schema_draft.sql` 已在 BASE-03 删除。golang-migrate 还会在每个 schema 创建工具表 `schema_migrations`（`version`、`dirty`），不在业务清单里。
 > **Owner:** pay-system 项目作者
@@ -736,7 +736,7 @@
 
 #### Operational Notes
 
-- **Backfill/migration considerations:** 无。NTF-01 的 INSERT 显式写 `next_attempt_at`、`created_at`、`updated_at`，值来自注入时钟，截断到毫秒，固定东八区。无 DDL。
+- **Backfill/migration considerations:** 无。NTF-01 的 INSERT 显式写 `next_attempt_at`、`created_at`、`updated_at`，值来自注入时钟，截断到毫秒，固定东八区。NTF-02 抢占和回写也显式写 `updated_at`；抢占不改 `status`，回写只在 `status = 'PENDING'` 时改。无 DDL。
 - **Compatibility/deprecation notes:** `biz_type` 不加 CHECK，取值由 NTF-01 按事件类型映射。
 
 ### 4.13 `recon_batch` — 对账批次
@@ -987,6 +987,7 @@
 | 2026-11-10 | 无（仅文档） | outbox.updated_at（写路径说明） | MQ-02：领取和回写的 UPDATE 显式写注入时钟的 `updated_at`，避免 `ON UPDATE CURRENT_TIMESTAMP` 写成数据库时间。无 DDL | 未执行迁移 |
 | 2026-11-10 | 无（仅文档） | outbox.status、outbox.updated_at、outbox.next_retry_at（写路径说明） | MQ-05：SENT / DEAD 改回 PENDING 时显式写注入时钟的 `updated_at` 和 `next_retry_at`，不改 `sent_at`、`last_error`。按业务单号重建调用已有的 `outbox.Add`。无 DDL | 未执行迁移 |
 | 2026-11-10 | 无（仅文档） | merchant_notify.next_attempt_at、created_at、updated_at（写路径说明） | NTF-01：INSERT 显式写这三列，避免 DEFAULT 和 ON UPDATE CURRENT_TIMESTAMP 用数据库时间。无 DDL | 未执行迁移 |
+| 2026-11-11 | 无（仅文档） | merchant_notify.attempt_count、merchant_notify.next_attempt_at、merchant_notify.updated_at、merchant_notify.status（写路径说明） | NTF-02：抢占在同一事务里 `attempt_count + 1`、推后 `next_attempt_at`，并显式写 `updated_at`，不改 `status`。回写 CAS 带 `status = 'PENDING'`，SUCCESS / DEAD / 失败的 `last_error` 都显式写 `updated_at`。无 DDL | 未执行迁移 |
 
 ## 6. Open Questions
 

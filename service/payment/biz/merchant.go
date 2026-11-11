@@ -214,6 +214,36 @@ func (m *Merchants) MerchantConfig(ctx context.Context, merchantID string) (Merc
 	return cfg, nil
 }
 
+// MerchantSecret 按 merchant_id 解密 app_secret。不缓存。
+// 商户通知只有商户号，没有 app_id。DISABLED 仍返回非空密钥，调用方照常签名。
+// 商户不存在、密钥为空或解密失败返回 10003。日志只有 merchant_id，不含密钥和密文。
+func (m *Merchants) MerchantSecret(ctx context.Context, merchantID string) (Secret, error) {
+	if err := m.guard(ctx); err != nil {
+		return Secret{}, err
+	}
+	if m.box == nil || merchantID == "" {
+		return Secret{}, errno.ErrInternal
+	}
+	row, found, err := m.store.credentialByMerchantID(ctx, merchantID)
+	if err != nil {
+		return Secret{}, callErr(err)
+	}
+	if !found {
+		return Secret{}, errno.ErrInternal
+	}
+	plain, err := m.box.Open(row.Cipher)
+	if err != nil {
+		slog.ErrorContext(ctx, "decrypt merchant secret failed",
+			"merchant_id", row.MerchantID,
+		)
+		return Secret{}, errno.ErrInternal
+	}
+	if len(plain) == 0 {
+		return Secret{}, errno.ErrInternal
+	}
+	return NewSecret(string(plain)), nil
+}
+
 func (m *Merchants) cached(merchantID string, now time.Time) (MerchantConfig, bool) {
 	if m.ttl <= 0 {
 		return MerchantConfig{}, false
@@ -257,6 +287,7 @@ type credentialRow struct {
 // merchantStore 是商户读路径。只读，不开事务。假实现只给不连库的单元测试。
 type merchantStore interface {
 	credentialByAppID(ctx context.Context, appID string) (credentialRow, bool, error)
+	credentialByMerchantID(ctx context.Context, merchantID string) (credentialRow, bool, error)
 	configByID(ctx context.Context, merchantID string) (MerchantConfig, bool, error)
 	feeRateAt(ctx context.Context, merchantID string, at time.Time) (FeeRate, bool, error)
 }
@@ -270,6 +301,12 @@ const credentialByAppIDSQL = `
 SELECT app_id, merchant_id, status, app_secret_cipher, secret_version, notify_url
 FROM merchant
 WHERE app_id = ?`
+
+//nolint:gosec // G101 误报：这是查询语句，列名含 secret，不是硬编码凭证。
+const credentialByMerchantIDSQL = `
+SELECT merchant_id, status, app_secret_cipher, secret_version, notify_url
+FROM merchant
+WHERE merchant_id = ?`
 
 const configByIDSQL = `
 SELECT merchant_id, status, notify_url
@@ -301,6 +338,23 @@ func (s sqlMerchantStore) credentialByAppID(ctx context.Context, appID string) (
 	}
 	// X-App-Id 不在签名串里。大小写不同也能查到的话，同一请求换个大小写就能绕过按 app_id 记的 nonce。
 	if stored != appID {
+		return credentialRow{}, false, nil
+	}
+	return row, true, nil
+}
+
+func (s sqlMerchantStore) credentialByMerchantID(ctx context.Context, merchantID string) (credentialRow, bool, error) {
+	var row credentialRow
+	err := s.db.QueryRowContext(ctx, credentialByMerchantIDSQL, merchantID).
+		Scan(&row.MerchantID, &row.Status, &row.Cipher, &row.SecretVersion, &row.NotifyURL)
+	if errors.Is(err, sql.ErrNoRows) {
+		return credentialRow{}, false, nil
+	}
+	if err != nil {
+		return credentialRow{}, false, err
+	}
+	// 与 app_id 一样：排序规则可能忽略大小写，只认逐字节相同的商户号。
+	if row.MerchantID != merchantID {
 		return credentialRow{}, false, nil
 	}
 	return row, true, nil

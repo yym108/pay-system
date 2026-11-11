@@ -401,7 +401,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | MQ-05 | 死信与事件重放 | P0 | M5 | MQ-02、MQ-04 | DONE |
 | MQ-06 | outbox 清理 | P1 | M8 | MQ-02 | TODO |
 | NTF-01 | 通知记录生成 | P0 | M5 | MQ-03 | DONE |
-| NTF-02 | 通知发送与固定间隔重试 | P0 | M5 | NTF-01、BASE-13、TL-02 | TODO |
+| NTF-02 | 通知发送与固定间隔重试 | P0 | M5 | NTF-01、BASE-13、TL-02 | DONE |
 | GW-01 | 网关骨架与统一响应 | P0 | M3 | BASE-12、BASE-13、TL-01 | DONE |
 | GW-02 | 商户 API 路由（支付与余额） | P0 | M3 | GW-01、GW-03、PAY-02/03/06/08、ACC-02、ACC-11 | DONE |
 | GW-03 | 商户验签 | P0 | M3 | GW-01、PAY-01 | DONE |
@@ -2254,8 +2254,8 @@ account 进程在现有生产者之外用同一组 broker 启动消费组 `accou
 
 规则：
 
-1. 每秒抢占到期的 PENDING 记录（`FOR UPDATE SKIP LOCKED`，抢占时 `attempt_count + 1` 并推后 `next_attempt_at`，方式同 PAY-05），事务外以最多 20 个并发发送。
-2. 请求：`POST notify_url`，JSON body，按 BASE-13 平台签名方式签名；超时 5 秒；不跟随重定向；响应体最多读取 1KB。签名失败（如商户密钥为空，BASE-13 规则 8）按内部错误 `10003` 处理：本次不发送，打 ERROR 日志（不含密钥），`last_error` 只记 `internal error`，按发送失败进入第 4 条的重试与 DEAD 判定。
+1. 每秒抢占到期的 PENDING 记录（`FOR UPDATE SKIP LOCKED`，抢占时 `attempt_count + 1` 并推后 `next_attempt_at`，方式同 PAY-05 的抢占）。「方式同 PAY-05」只指这三步，不包含查单任务在本轮开始时发现下次时间已经到期则跳过。`NOTIFY_RETRY_INTERVAL` 允许为 0，跳过检查会让每一轮都丢弃刚抢到的行。事务外以最多 20 个并发发送。
+2. 请求：`POST notify_url`，JSON body，按 BASE-13 平台签名方式签名；超时 5 秒；不跟随重定向；响应体最多读取 1KB。密钥按 `merchant_id` 解密 `merchant.app_secret`，不走配置缓存；DISABLED 商户仍签名发送。签名失败（如商户密钥为空，BASE-13 规则 8）按内部错误 `10003` 处理：本次不发送，打 ERROR 日志（不含密钥），`last_error` 只记 `internal error`，按发送失败进入第 4 条的重试与 DEAD 判定。
 3. 成功判定：HTTP 200 且去除首尾空白后 body 为 `SUCCESS`，置为 SUCCESS。
 4. 固定间隔重试：首次立即发送，之后每隔 `NOTIFY_RETRY_INTERVAL`（默认 30 秒）重试，共 `NOTIFY_MAX_ATTEMPTS`（默认 5）次；5 次仍失败置为 DEAD，`pay_notify_attempts_total{result="dead"} + 1`。真实系统常用递增间隔（如 15s、15s、30s、3m …），本项目不是重点，简化为固定间隔。
 5. 发送前再次校验 `notify_url` 主机在白名单内（NFR-SEC-07）；不在白名单时不发送，直接置为 DEAD，`last_error` 记录原因，`pay_notify_attempts_total{result="dead"} + 1` 并告警（白名单不会因重试而改变）。
@@ -2264,10 +2264,10 @@ account 进程在现有生产者之外用同一组 broker 启动消费组 `accou
 
 验收：
 
-- [ ] merchant-demo 配置前 3 次返回失败，第 4 次成功，记录 SUCCESS 且 `attempt_count = 4`。
-- [ ] 发送期间测试把记录改为 SUCCESS（模拟另一实例已完成），本次失败结果回写影响 0 行，记录保持 SUCCESS，`last_error` 不变。
-- [ ] 一直失败时，Fake 时钟推进后共尝试 5 次，相邻两次间隔 30 秒，状态 DEAD。
-- [ ] merchant-demo 验证通知签名通过；篡改密钥后验签失败。
+- [x] merchant-demo 配置前 3 次返回失败，第 4 次成功，记录 SUCCESS 且 `attempt_count = 4`。
+- [x] 发送期间测试把记录改为 SUCCESS（模拟另一实例已完成），本次失败结果回写影响 0 行，记录保持 SUCCESS，`last_error` 不变。
+- [x] 一直失败时，Fake 时钟推进后共尝试 5 次，相邻两次间隔 30 秒，状态 DEAD。
+- [x] merchant-demo 验证通知签名通过；篡改密钥后验签失败。
 
 ### 4.9 网关（GW）
 
@@ -3325,3 +3325,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-10 | v3.0 | MQ-05：`ReplayEvent` 按 `event_id`，或按 `biz_no` + `event_type`，把 SENT / DEAD 改回 PENDING。`now` 用注入时钟，截断到毫秒，东八区，不用 SQL `NOW()`。UPDATE 显式写 `updated_at`（该列 `ON UPDATE CURRENT_TIMESTAMP`），不改 `sent_at`、`last_error`。已是 PENDING 不改行。按 `event_id` 找不到是 `10002`，不重建。按业务单号多行取 `id` 最大。行已被删掉时，同一事务先锁单据再查一次 outbox，等锁期间已插入的行不再插；状态不符是 `30003`，单据不存在是 `10002`，未知 `event_type` 且没有行是 `10001`。重建调用已有的 `outbox.Add`。重放不直接记账，不消费 `pay.dlq`。管理端口 `POST /admin/outbox/replay` 调用该 RPC，不签名，不校验 `X-Admin-Token` 和 `X-Admin-Operator`，不写审计日志。服务端超时 2 秒，网关调用 1 秒。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
 | 2026-11-10 | v3.0 | NTF-01：payment 进程消费组 `payment-notify` 为支付成功、退款成功、退款失败、转账成功、转账失败各插入一条 `PENDING` 通知。`event_id` 冲突再读，逐字节相同才当作已处理；`notify_no` 冲突或再读字节不同是已有的 `10003`。规则第 2 条写明这条再读。`next_attempt_at`、`created_at`、`updated_at` 用注入时钟，截断到毫秒，固定东八区。订单地址为空且商户默认也空时仍插入空串。发送、签名、白名单和重试仍是 NTF-02。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
 | 2026-11-11 | v3.0 | TL-02：merchant-demo 在 `:9100` 提供 `POST /notify` 与 `GET /stats`。验签密钥用通知 body 的 `merchant_id` 代入已有的 `DEMO_APP_SECRET_FORMAT`，不新增环境变量。签名失败返回 401 且不计数；密钥为空返回 500。`FAIL_FIRST_N` 的 500 计入次数。统计只在内存。请求体超过 65536 字节返回 413。compose 里的 merchant-demo 仍是占位。不新增错误码，不改表，不改 IDL。§3 改为 DONE。发送与重试仍是 NTF-02。 |
+| 2026-11-11 | v3.0 | NTF-02：payment 每秒任务 `notify_send` 抢占到期的 `PENDING` 通知，事务外最多 20 并发 POST。抢占同 PAY-05 的 `SKIP LOCKED`、次数加 1、推后 `next_attempt_at`，不照搬查单的“下次时间已到期则跳过”。密钥按 `merchant_id` 解密，不缓存。成功是 HTTP 200 且去掉首尾空白后为 `SUCCESS`。回写 CAS 的源状态只有 `PENDING`，影响 0 行丢弃。白名单失败和第 5 次失败置 `DEAD` 时，进程内 `pay_notify_attempts_total{result="dead"}` 加 1。不新增错误码，不改表，不改 IDL，不新增环境变量。§3 改为 DONE。 |

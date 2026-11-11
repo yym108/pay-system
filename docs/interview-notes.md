@@ -14,6 +14,13 @@
 - 密钥为空是本端配置问题，返回 HTTP 500，不返回 401。401 不计入 `FAIL_FIRST_N`，否则错误签名会把失败窗口提前用掉。
 - 现有 `run` 测试要求配置打印后返回。真正的监听放在可替换的 `start` 里，验收用 Hertz 的内存请求，不占用 9100。
 
+## NTF-02 通知发送
+
+- 「方式同 PAY-05」只拿 `SKIP LOCKED`、次数加 1、推后下次时间。查单任务会在本轮开始时丢掉已经到期的租约，通知不能照搬：`NOTIFY_RETRY_INTERVAL` 允许为 0，照搬之后每一轮都会把刚抢到的行丢掉。
+- 通知行只有 `merchant_id`。密钥用这个号解密 `app_secret`，不放进会缓存的商户配置。配置缓存里没有密钥。
+- `pay_notify_attempts_total{result="dead"}` 先做进程内计数。HTTP `/metrics` 仍是 OPS-03。只有 CAS 真正写成 `DEAD` 才加 1。
+- 验收 1 和 4 启动真实的 `cmd/merchant-demo`，听 `:9100`。时钟用 Fake 一次跳 30 秒，不睡墙钟。
+
 ## GW-01 网关骨架
 
 - compose 的 apps profile 仍是占位，应用容器不在 `make up` 里启动，占位进程保持退出码 1。这次没有改 compose。

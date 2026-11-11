@@ -108,6 +108,7 @@ func serve(cfg config.Payment, logOut io.Writer) error {
 	}
 	payments.UseRefund(biz.NewAccountRefundFreezer(accountCli), channelClient, payments, cfg.ChannelNotifyURL)
 	payments.UseQuery(channelClient, biz.QueryPolicy{Backoff: cfg.QueryBackoff})
+	payments.UseNotify(cfg.NotifyRetryInterval, cfg.NotifyMaxAttempts)
 	// LOCAL 走 TransferLocal。TCC 在本请求内协调。停住的 TRYING、CONFIRMING、CANCELLING 由 transfer_recover 按 next_retry_at 推进。
 	payments.UseTransfer(cfg.TransferRecoverDelay, nil)
 	payments.UseLocalTransfer(biz.NewAccountLocalTransfer(accountCli))
@@ -142,6 +143,7 @@ func serve(cfg config.Payment, logOut io.Writer) error {
 	admin.RegisterGroup(refundLoop)
 	admin.RegisterGroup(closeLoop)
 	admin.RegisterGroup(transferLoop)
+	admin.RegisterGroup(job.NewNotifySend(payments.RunNotifyBatch))
 	// 连不上 Kafka 也要启动。只有 broker 列表为空才在这里失败。
 	// 投递用这次返回的同一个生产者，退出时仍由已登记的 Flush 和 Close 处理。
 	producer, err := mq.RegisterProducer(admin, cfg.KafkaBrokers)

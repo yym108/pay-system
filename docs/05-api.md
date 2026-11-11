@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 3.4.0 |
+| 文档版本 | 3.4.1 |
 | API 版本 | v1（路径前缀 `/v1`） |
 | 最后修改 | 2026-11-11 |
 | 状态 | 设计基线，实现须与本文一致 |
@@ -85,6 +85,7 @@
 | 3.3.16 | 2026-11-10 | 未实现时的固定 `10003` 已经去掉；依赖缺失和内部失败仍返回已有的 `10003`。按 `event_id` 或 `biz_no` + `event_type` 把 SENT / DEAD 改回 PENDING；按业务单号且行已删除时按单据重建。管理端口已注册 `POST /admin/outbox/replay`。不校验管理令牌和操作人。不改字段，不改错误码，不改 IDL | §1、§8.3、§10.2 | MQ-05 |
 | 3.3.17 | 2026-11-10 | NTF-01 已按 §6 写入通知记录。发送、签名、重试仍是 NTF-02。不新增字段 | §6 | NTF-01 |
 | 3.4.0 | 2026-11-11 | 新增 merchant-demo 的 `POST /notify` 与 `GET /stats`（§6.1）。验签密钥用 body 的 `merchant_id` 代入已有的 `DEMO_APP_SECRET_FORMAT`。不改平台通知字段，不新增错误码 | §1、§6.1 | TL-02 |
+| 3.4.1 | 2026-11-11 | payment 的 `notify_send` 已按 §6 发送商户通知。不新增字段，不新增错误码，不改 IDL | §1、§6 | NTF-02 |
 
 ## 1. 接口总览
 
@@ -113,7 +114,7 @@
 | `GET /v1/balance` 查询余额 | §4.7 | `AccountService.GetAccount` | ACC-02 | 1.0.0 | 2026-11-01 |
 | `POST /v1/transfers` 创建转账 | §4.8 | `PaymentService.CreateTransfer` | TRF-01~03 | 2.0.0 | 2026-11-08 |
 | `GET /v1/transfers/{transfer_no}`、`GET /v1/transfers?out_transfer_no=` 查询转账 | §4.9 | `PaymentService.QueryTransfer` | TRF-05 | 2.0.0 | 2026-11-08 |
-| 商户异步通知 | §6 | — | NTF-01、NTF-02 | 1.0.0 | 2026-11-10 |
+| 商户异步通知 | §6 | — | NTF-01、NTF-02 | 1.0.0 | 2026-11-11 |
 | merchant-demo `POST /notify`、`GET /stats` | §6.1 | — | TL-02 | 3.4.0 | 2026-11-11 |
 | `POST /callback/mockpay` 渠道回调入口 | §7 | `PaymentService.HandleChannelNotify` | GW-06、REF-03 | 1.0.0 | 2026-11-05 |
 | `POST /admin/recon/run` 执行对账 | §8.2 | `ReconService.RunBatch` | REC-01、REC-08 | 1.0.0 | 2026-10-27 |
@@ -578,7 +579,7 @@ payment 的 `QueryTransfer` 直接读 `transfer_order`，不缓存，不写行�
 
 `POST <notify_url>` · NTF-01、NTF-02
 
-NTF-01 只生成记录，HTTP 发送仍是 NTF-02。
+NTF-01 生成记录。payment 的 `notify_send` 每秒抢占到期记录并 POST：JSON body、平台签名（§3.4）、超时 5 秒、不跟随重定向、响应体最多读 1KB。成功是 HTTP 200 且去掉首尾空白后恰好为 `SUCCESS`。
 
 触发：支付成功、退款成功、退款失败、转账成功、转账失败。支付失败和关闭不通知，商户通过查询获得。支付、退款通知发往原支付单的 `notify_url`；转账通知只发给付款商户，地址取转账单的 `notify_url`，收款商户不通知。
 

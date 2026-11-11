@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
 	"net/url"
 	"regexp"
 	"strings"
@@ -126,6 +127,12 @@ type Payments struct {
 	tccParallel bool
 	// transferRecoverDelay 是 TRANSFER_RECOVER_DELAY，由 UseTransfer 覆盖。
 	transferRecoverDelay time.Duration
+	// notifyOn 为真时 RunNotifyBatch 才抢占。间隔和次数来自已有配置，由 UseNotify 装上。
+	notifyOn          bool
+	notifyInterval    time.Duration
+	notifyMaxAttempts int
+	notifyHTTP        *http.Client
+	notifyNonce       func() (string, error)
 }
 
 // App 把商户读取和支付单创建合成 handler 使用的服务。

@@ -246,6 +246,14 @@ func TestNewOutboxLoops(t *testing.T) {
 	}
 }
 
+// NTF-02 规则 1：通知发送每秒扫描一次。重试间隔不在这个循环上。
+func TestNewNotifySend(t *testing.T) {
+	l := NewNotifySend(func(context.Context) error { return nil })
+	if l.name != "notify_send" || l.interval != NotifySendInterval || NotifySendInterval != time.Second {
+		t.Fatalf("loop = %s %s", l.name, l.interval)
+	}
+}
+
 // TRF-04：循环名 transfer_recover，间隔用传入的配置；小于等于 0 时 NewLoop 改成 1 秒。
 func TestNewTransferRecover(t *testing.T) {
 	l := NewTransferRecover(2*time.Second, func(context.Context) error { return nil })

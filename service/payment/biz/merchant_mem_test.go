@@ -127,6 +127,22 @@ func (st *merchantMem) query(query string, args []driver.NamedValue) (driver.Row
 			rows.data = [][]driver.Value{rateValues(best, st.badScan)}
 		}
 		return rows, nil
+	case strings.Contains(query, "app_secret_cipher") && strings.Contains(query, "WHERE merchant_id = ?"):
+		key, err := oneString(args)
+		if err != nil {
+			return nil, err
+		}
+		rows := &memRows{cols: []string{"merchant_id", "status", "app_secret_cipher", "secret_version", "notify_url"}}
+		for _, row := range st.rows {
+			if strings.EqualFold(row.id, key) {
+				version := driver.Value(row.version)
+				if st.badScan {
+					version = "bad"
+				}
+				rows.data = [][]driver.Value{{row.id, row.status, row.cipher, version, row.notify}}
+			}
+		}
+		return rows, nil
 	case strings.Contains(query, "WHERE merchant_id = ?"):
 		key, err := oneString(args)
 		if err != nil {
@@ -176,6 +192,15 @@ func TestMemMerchantStore(t *testing.T) {
 	// 库的排序规则不区分大小写，只认完全相同的 app_id。
 	_, err = m.GetMerchantCredential(ctx, "APP_M100001")
 	assertErrno(t, err, errno.ErrMerchantInvalid)
+
+	sec, err := m.MerchantSecret(ctx, "M100001")
+	if err != nil || sec.Reveal() != demoSecret {
+		t.Fatalf("secret err=%v", err)
+	}
+	_, err = m.MerchantSecret(ctx, "M100099")
+	assertErrno(t, err, errno.ErrInternal)
+	_, err = m.MerchantSecret(ctx, "m100001")
+	assertErrno(t, err, errno.ErrInternal)
 
 	cfg, err := m.MerchantConfig(ctx, "M100001")
 	if err != nil || cfg != (MerchantConfig{MerchantID: "M100001", Status: "ACTIVE", DefaultNotifyURL: "http://merchant-demo/n"}) {

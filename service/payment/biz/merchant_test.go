@@ -70,6 +70,21 @@ func (f *fakeMerchantStore) credentialByAppID(_ context.Context, appID string) (
 	return row, ok, nil
 }
 
+func (f *fakeMerchantStore) credentialByMerchantID(_ context.Context, merchantID string) (credentialRow, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.credRead++
+	if f.err != nil {
+		return credentialRow{}, false, f.err
+	}
+	for _, row := range f.byApp {
+		if row.MerchantID == merchantID {
+			return row, true, nil
+		}
+	}
+	return credentialRow{}, false, nil
+}
+
 func (f *fakeMerchantStore) configByID(_ context.Context, merchantID string) (MerchantConfig, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

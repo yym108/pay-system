@@ -315,6 +315,7 @@ func TestCreatePaymentGuards(t *testing.T) {
 
 type fakeMerchants struct {
 	cfg         MerchantConfig
+	secret      Secret
 	cfgErr      error
 	rate        FeeRate
 	found       bool
@@ -333,6 +334,14 @@ func (f *fakeMerchants) MerchantConfig(_ context.Context, merchantID string) (Me
 		return MerchantConfig{}, f.cfgErr
 	}
 	return f.cfg, nil
+}
+
+// MerchantSecret 返回测试预先放好的密钥。不改 configCalls：并发发送会同时读它。
+func (f *fakeMerchants) MerchantSecret(_ context.Context, merchantID string) (Secret, error) {
+	if merchantID == "" || merchantID != f.cfg.MerchantID {
+		return Secret{}, errno.ErrInternal
+	}
+	return f.secret, nil
 }
 
 func (f *fakeMerchants) FeeRateAt(_ context.Context, _ string, at time.Time) (FeeRate, bool, error) {
