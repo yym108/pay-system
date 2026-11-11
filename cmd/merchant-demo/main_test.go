@@ -2,9 +2,16 @@ package main
 
 import (
 	"bytes"
+	"io"
 	"strings"
 	"testing"
+
+	"github.com/yym108/pay-system/pkg/config"
 )
+
+func runStopped(environ []string, stdout, stderr io.Writer) int {
+	return runWith(environ, stdout, stderr, func(config.MerchantDemo) error { return nil })
+}
 
 func TestMerchantDemoRunRejectsMissingWorker(t *testing.T) {
 	var stdout, stderr bytes.Buffer
@@ -30,7 +37,7 @@ func TestMerchantDemoFaultPointsCheckedBeforeStart(t *testing.T) {
 
 	stdout.Reset()
 	stderr.Reset()
-	code = run([]string{"WORKER_ID=6"}, &stdout, &stderr)
+	code = runStopped([]string{"WORKER_ID=6"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("empty FAULT_POINTS: code=%d stderr=%s", code, stderr.String())
 	}
@@ -41,12 +48,29 @@ func TestMerchantDemoFaultPointsCheckedBeforeStart(t *testing.T) {
 
 func TestMerchantDemoRunDefaults(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := run([]string{"WORKER_ID=6"}, &stdout, &stderr)
+	code := runStopped([]string{"WORKER_ID=6"}, &stdout, &stderr)
 	if code != 0 {
 		t.Fatalf("exit code = %d", code)
 	}
 	out := stdout.String()
 	if !strings.Contains(out, "WORKER_ID=6") || !strings.Contains(out, "FAIL_FIRST_N=0") {
 		t.Fatal("merchant demo startup output missing plain fields")
+	}
+	if !strings.Contains(out, "DEMO_APP_SECRET_FORMAT=***") || strings.Contains(out, "demo_secret_") {
+		t.Fatalf("secret format was not redacted: %s", out)
+	}
+}
+
+func TestMerchantDemoRejectsBadSecretFormat(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run([]string{"WORKER_ID=6", "DEMO_APP_SECRET_FORMAT=super-secret-%s-%s"}, &stdout, &stderr)
+	if code == 0 {
+		t.Fatal("exit code = 0, want non-zero")
+	}
+	if !strings.Contains(stderr.String(), "DEMO_APP_SECRET_FORMAT") {
+		t.Fatalf("stderr = %q", stderr.String())
+	}
+	if strings.Contains(stdout.String(), "super-secret") || strings.Contains(stderr.String(), "super-secret") {
+		t.Fatalf("format leaked stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
 }

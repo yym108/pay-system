@@ -567,8 +567,8 @@ func TestLoadMerchantDemo(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadMerchantDemo: %v", err)
 	}
-	if cfg.WorkerID != 6 || cfg.FailFirstN != 0 || cfg.OTELExporterOTLPEndpoint != "jaeger:4317" || cfg.FaultPoints != "" {
-		t.Fatalf("merchant demo defaults worker=%d fail=%d otel=%q fault=%q", cfg.WorkerID, cfg.FailFirstN, cfg.OTELExporterOTLPEndpoint, cfg.FaultPoints)
+	if cfg.WorkerID != 6 || cfg.FailFirstN != 0 || cfg.OTELExporterOTLPEndpoint != "jaeger:4317" || cfg.FaultPoints != "" || cfg.AppSecretFormat != "demo_secret_%s_0123456789ab" {
+		t.Fatalf("merchant demo defaults worker=%d fail=%d otel=%q fault=%q format=%q", cfg.WorkerID, cfg.FailFirstN, cfg.OTELExporterOTLPEndpoint, cfg.FaultPoints, cfg.AppSecretFormat)
 	}
 	env := map[string]string{"WORKER_ID": "0", "FAIL_FIRST_N": "4", "FAULT_POINTS": "drop_notify", "OTEL_EXPORTER_OTLP_ENDPOINT": ""}
 	cfg, err = LoadMerchantDemo(environ(env))
@@ -582,6 +582,15 @@ func TestLoadMerchantDemo(t *testing.T) {
 	assertInvalid(t, err, "FAIL_FIRST_N")
 	_, err = LoadMerchantDemo(nil)
 	assertInvalid(t, err, "WORKER_ID")
+	// 空串由 env 库当成未设置，回落到默认格式。非法格式必须失败，且错误里不带原文。
+	for _, format := range []string{"%s%s", "no-placeholder", "a%d", "x%sy%"} {
+		_, err = LoadMerchantDemo(environ(map[string]string{"WORKER_ID": "6", "DEMO_APP_SECRET_FORMAT": format}))
+		assertInvalid(t, err, "DEMO_APP_SECRET_FORMAT", format)
+	}
+	cfg, err = LoadMerchantDemo(environ(map[string]string{"WORKER_ID": "6", "DEMO_APP_SECRET_FORMAT": "%s"}))
+	if err != nil || cfg.AppSecretFormat != "%s" {
+		t.Fatalf("single %%s format: %+v %v", cfg.AppSecretFormat, err)
+	}
 }
 
 func TestLoadSeed(t *testing.T) {

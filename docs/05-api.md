@@ -2,9 +2,9 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 3.3.17 |
+| 文档版本 | 3.4.0 |
 | API 版本 | v1（路径前缀 `/v1`） |
-| 最后修改 | 2026-11-10 |
+| 最后修改 | 2026-11-11 |
 | 状态 | 设计基线，实现须与本文一致 |
 
 关联文档：需求 `docs/02-requirements.md`（各接口的业务规则以功能点为准）、约定 `docs/03-conventions.md`（错误码、单号、时间格式）。
@@ -84,6 +84,7 @@
 | 3.3.15 | 2026-11-10 | MQ-03 已在 payment、account 注册 Kafka 就绪检查和生产者刷新。broker 不可达时 `/readyz` 为 503，进程仍能启动。同一批前一条没提交就停，世代失效不空转提交；生产错误不带地址。没提交的分区会把拉取位置退回到该 offset，更高的 offset 不处理。不改字段，不改错误码，不改 IDL | §1、§12 | MQ-03 |
 | 3.3.16 | 2026-11-10 | 未实现时的固定 `10003` 已经去掉；依赖缺失和内部失败仍返回已有的 `10003`。按 `event_id` 或 `biz_no` + `event_type` 把 SENT / DEAD 改回 PENDING；按业务单号且行已删除时按单据重建。管理端口已注册 `POST /admin/outbox/replay`。不校验管理令牌和操作人。不改字段，不改错误码，不改 IDL | §1、§8.3、§10.2 | MQ-05 |
 | 3.3.17 | 2026-11-10 | NTF-01 已按 §6 写入通知记录。发送、签名、重试仍是 NTF-02。不新增字段 | §6 | NTF-01 |
+| 3.4.0 | 2026-11-11 | 新增 merchant-demo 的 `POST /notify` 与 `GET /stats`（§6.1）。验签密钥用 body 的 `merchant_id` 代入已有的 `DEMO_APP_SECRET_FORMAT`。不改平台通知字段，不新增错误码 | §1、§6.1 | TL-02 |
 
 ## 1. 接口总览
 
@@ -91,6 +92,7 @@
 |---|---|---|---|
 | 商户 API | gateway :8080 | 商户 HMAC 签名 | 商户、paycli、k6 |
 | 商户通知 | payment → `notify_url` | 平台签名 | 商户（merchant-demo） |
+| 商户演示接收 | merchant-demo :9100 | `POST /notify` 验平台签名；`GET /stats` 不签名 | 平台 payment；测试可直接调用 |
 | 渠道回调入口 | gateway :8080 | 渠道签名 | channel-mock |
 | 管理 API | gateway :8090（仅 127.0.0.1） | `X-Admin-Token` | 运营、paycli admin |
 | 模拟渠道 API | channel-mock :9080；管理 :6064 | 渠道签名；管理端口不鉴权（仅 127.0.0.1） | payment、recon、测试 |
@@ -112,6 +114,7 @@
 | `POST /v1/transfers` 创建转账 | §4.8 | `PaymentService.CreateTransfer` | TRF-01~03 | 2.0.0 | 2026-11-08 |
 | `GET /v1/transfers/{transfer_no}`、`GET /v1/transfers?out_transfer_no=` 查询转账 | §4.9 | `PaymentService.QueryTransfer` | TRF-05 | 2.0.0 | 2026-11-08 |
 | 商户异步通知 | §6 | — | NTF-01、NTF-02 | 1.0.0 | 2026-11-10 |
+| merchant-demo `POST /notify`、`GET /stats` | §6.1 | — | TL-02 | 3.4.0 | 2026-11-11 |
 | `POST /callback/mockpay` 渠道回调入口 | §7 | `PaymentService.HandleChannelNotify` | GW-06、REF-03 | 1.0.0 | 2026-11-05 |
 | `POST /admin/recon/run` 执行对账 | §8.2 | `ReconService.RunBatch` | REC-01、REC-08 | 1.0.0 | 2026-10-27 |
 | `POST /admin/outbox/replay` 事件重放 | §8.3 | `PaymentService.ReplayEvent` | MQ-05 | 1.0.0 | 2026-11-10 |
@@ -614,6 +617,25 @@ NTF-01 只生成记录，HTTP 发送仍是 NTF-02。
 商户应答：HTTP 200，body 为 `SUCCESS`（允许首尾空白）表示接收成功；其他情况按固定间隔 30 秒重试，共发送 5 次（含首次，`NOTIFY_RETRY_INTERVAL`、`NOTIFY_MAX_ATTEMPTS`），仍失败则不再发送。平台不跟随重定向，超时 5 秒，响应体最多读取 1KB。
 
 商户必须：先验签再处理；按 `pay_no` / `refund_no` / `transfer_no` 幂等处理（平台不保证只通知一次）；以查询结果为最终依据。
+
+### 6.1 merchant-demo 接收通知
+
+`POST /notify`、`GET /stats?biz_no=` · TL-02 · 监听 `:9100`（所有接口）。没有管理端口。
+
+`POST /notify` 的请求头和 body 与本节上文相同。验签密钥不另设：把 body 中的 `merchant_id` 代入 `DEMO_APP_SECRET_FORMAT`（默认 `demo_secret_%s_0123456789ab`）得到 `app_secret`，再按 §3.4 调用平台验签。未设置或空串的格式用默认值；格式不是恰好一个 `%s`、且没有其他 `%` 时进程启动失败。
+
+| 情况 | HTTP | body |
+|---|---|---|
+| 验签通过，且该单号已收到的次数大于 `FAIL_FIRST_N` | 200 | `SUCCESS` |
+| 验签通过，且该单号次数仍在 `FAIL_FIRST_N` 以内（默认 0，即第一次就成功） | 500 | `FAIL` |
+| 算出的密钥为空 | 500 | 空 |
+| 签名错误，或 body 不是单个 JSON 对象，或 `merchant_id` 缺失、不是字符串 | 401 | 空 |
+| 验签通过但取不到单号 | 400 | 空 |
+| 请求体超过 65536 字节 | 413 | 空 |
+
+单号：`payment.succeeded` 取 `data.pay_no`；`refund.succeeded`、`refund.failed` 取 `data.refund_no`；`transfer.succeeded`、`transfer.failed` 取 `data.transfer_no`。其他 `event_type` 依次用这三个字段里的第一个非空字符串。不做时间窗口，也不做 nonce 去重。401、400、413 和密钥为空的 500 不计入次数；规则表中 body 为 `FAIL` 的 500 计入次数，并成为 `last_body`。
+
+`GET /stats?biz_no=` 不签名。响应是 JSON 对象 `{"count":<int>,"last_body":"<最后一次原始 body>"}`。没有收到过的单号 `count` 为 0，`last_body` 为空串。缺少 `biz_no` 或值为空串时 HTTP 400、空 body。计数只在本进程内存，重启后清空。
 
 ## 7. 渠道回调入口
 

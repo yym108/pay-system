@@ -1,6 +1,6 @@
 # pay-system 需求规格说明书
 
-> 版本：v3.0　最后修改：2026-11-10
+> 版本：v3.0　最后修改：2026-11-11
 > 状态：v3.0 重新聚焦支付、退款、转账三条资金链路（变更见 §8.2），2026-10-13 已确认为开发基线；开发按 §3 功能点总表逐项推进
 > 上游：`PROJECT_GOALS.md`（目标与约束）、`docs/01-tech-decisions.md`（技术选型与版本）
 > 关联：`docs/03-conventions.md`（编号、错误码、命名等全局约定）、`docs/05-api.md`（接口文档）、`docs/database.md`（表结构）、`docs/04-dev-plan.md`（周计划）、`docs/06-flows.md`（流程图）
@@ -430,7 +430,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | OPT-04 | 链路延迟优化 | P0 | M7 | OPT-01、QA-02 | TODO |
 | OPT-05 | 平台账户缓冲入账 | P2 | M8 | OPT-03 | TODO |
 | TL-01 | paycli | P0 | M3 | BASE-13 | DONE |
-| TL-02 | merchant-demo | P0 | M5 | BASE-13 | TODO |
+| TL-02 | merchant-demo | P0 | M5 | BASE-13 | DONE |
 | TL-03 | 一键演示脚本 | P1 | M8 | TL-01、GW-07、GW-09、MQ-04、REF-03、TRF-02、TRF-03、REC-08 | TODO |
 | TL-04 | OpenAPI 文档 | P1 | M8 | GW-02、GW-09 | TODO |
 | QA-01 | 故障演练 | P0 | M7 | BASE-15、QA-02、CH-06、GW-04、GW-06、GW-07、GW-09、PAY-05、REF-04、TRF-04、MQ-02、MQ-04、OPT-02、REC-03、REC-05、OPS-01 | TODO |
@@ -2844,15 +2844,17 @@ ACC-10 只在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（
 
 规则：
 
-1. `POST /notify` 验证平台签名，失败返回 401；成功返回 `SUCCESS`。
-2. 环境变量 `FAIL_FIRST_N` 控制每个单号前 N 次通知返回 500。
-3. `GET /stats?biz_no=` 返回收到的通知次数和最后一次内容（内存保存）。
+1. `POST /notify` 验证平台签名（接口 §3.4）。不新增密钥环境变量：用 body 里的 `merchant_id` 代入已有的 `DEMO_APP_SECRET_FORMAT`（约定 §8，与种子相同）。merchant-demo 加载时该格式必须恰好含一个 `%s`，且没有其他 `%`；未设置或空串用默认值。算出的密钥为空时返回 HTTP 500、空 body，不验签、不计数，ERROR 日志不含密钥和签名。验签失败（签名格式不对、不匹配、时间戳或 nonce 含换行）返回 HTTP 401、空 body，不计数。body 不是单个 JSON 对象、缺少 `merchant_id`，或 `merchant_id` 不是 JSON 字符串时，无法确定密钥，同样返回 401，不计数。伪造的 `merchant_id` 只有在签名也用该商户密钥计算时才能通过。
+2. 验签通过后按 `event_type` 取单号：`payment.succeeded` 用 `data.pay_no`，`refund.succeeded` 与 `refund.failed` 用 `data.refund_no`，`transfer.succeeded` 与 `transfer.failed` 用 `data.transfer_no`。其他 `event_type` 依次尝试这三个字段里的第一个非空字符串。取不到时返回 HTTP 400、空 body，不计数。不做时间窗口，也不做 nonce 去重。
+3. `FAIL_FIRST_N`（默认 0）只计验签通过并取到单号的通知。同一单号的前 N 次返回 HTTP 500，body 字节为 `FAIL`；第 N+1 次起返回 HTTP 200，body 字节为 `SUCCESS`。这 N 次 500 也计入次数和最后一次 body。
+4. `GET /stats?biz_no=` 从内存返回 JSON `{"count":<次数>,"last_body":"<最后一次请求的原始 body>"}`。没收到过的单号次数为 0，`last_body` 为空串。缺少 `biz_no` 或值为空串时返回 HTTP 400。进程重启后内存清空。不签名。
+5. 请求体超过 65536 字节返回 HTTP 413、空 body，不验签、不计数；恰好 65536 字节继续处理。merchant-demo 不使用错误码 JSON。监听 `:9100`（所有接口，不写成 `127.0.0.1`）。没有管理端口。`deploy/docker-compose.yml` 里的 merchant-demo 仍是 profile `apps` 的占位命令，本次不改。
 
 验收：
 
-- [ ] `FAIL_FIRST_N=3`：同一单号的前 3 次正确签名通知返回 500，第 4 次返回 200、body `SUCCESS`。
-- [ ] 签名错误的通知（用另一单号）返回 401。
-- [ ] 第 1 条的 4 次通知之后，`GET /stats?biz_no=<该单号>` 返回次数 4 和第 4 次通知的 body。
+- [x] `FAIL_FIRST_N=3`：同一单号的前 3 次正确签名通知返回 500，第 4 次返回 200、body `SUCCESS`。
+- [x] 签名错误的通知（用另一单号）返回 401。
+- [x] 第 1 条的 4 次通知之后，`GET /stats?biz_no=<该单号>` 返回次数 4 和第 4 次通知的 body。
 
 #### TL-03 一键演示脚本
 
@@ -3322,3 +3324,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-10 | v3.0 | MQ-04：account 进程启动消费组 `account-ledger`，逐条消费支付成功、退款成功、退款失败，直接调用本进程 biz。一条消息一个分片事务。不读 `LEDGER_BATCH_ENABLED`。故障点 `ledger.after_commit` 在数据库事务提交成功之后、handler 返回 nil 之前。`fee_amount` 缺失、非整数、小于 0 或大于金额时进 DLQ，不记账。`fee_amount` 等于金额时省略金额为 0 的商户分录；该商户非 ACTIVE 时仍返回 `40005`，不写凭证。`40004` 的进程内计数名叫 `pay_ledger_freeze_conflict_total`，不进 Prometheus，不进 `/metrics`，不写入 OPS-03 的表。`duplicated = true` 且 error 为 nil 视为成功。平台子账户缺失是可重试的 `10003`。退款确认返回 `40005` 时进 DLQ，不计入 `pay_ledger_freeze_conflict_total`，`40001` 仍重试。`F = A` 时按账户 id 升序加锁后再看商户状态。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
 | 2026-11-10 | v3.0 | MQ-05：`ReplayEvent` 按 `event_id`，或按 `biz_no` + `event_type`，把 SENT / DEAD 改回 PENDING。`now` 用注入时钟，截断到毫秒，东八区，不用 SQL `NOW()`。UPDATE 显式写 `updated_at`（该列 `ON UPDATE CURRENT_TIMESTAMP`），不改 `sent_at`、`last_error`。已是 PENDING 不改行。按 `event_id` 找不到是 `10002`，不重建。按业务单号多行取 `id` 最大。行已被删掉时，同一事务先锁单据再查一次 outbox，等锁期间已插入的行不再插；状态不符是 `30003`，单据不存在是 `10002`，未知 `event_type` 且没有行是 `10001`。重建调用已有的 `outbox.Add`。重放不直接记账，不消费 `pay.dlq`。管理端口 `POST /admin/outbox/replay` 调用该 RPC，不签名，不校验 `X-Admin-Token` 和 `X-Admin-Operator`，不写审计日志。服务端超时 2 秒，网关调用 1 秒。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
 | 2026-11-10 | v3.0 | NTF-01：payment 进程消费组 `payment-notify` 为支付成功、退款成功、退款失败、转账成功、转账失败各插入一条 `PENDING` 通知。`event_id` 冲突再读，逐字节相同才当作已处理；`notify_no` 冲突或再读字节不同是已有的 `10003`。规则第 2 条写明这条再读。`next_attempt_at`、`created_at`、`updated_at` 用注入时钟，截断到毫秒，固定东八区。订单地址为空且商户默认也空时仍插入空串。发送、签名、白名单和重试仍是 NTF-02。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
+| 2026-11-11 | v3.0 | TL-02：merchant-demo 在 `:9100` 提供 `POST /notify` 与 `GET /stats`。验签密钥用通知 body 的 `merchant_id` 代入已有的 `DEMO_APP_SECRET_FORMAT`，不新增环境变量。签名失败返回 401 且不计数；密钥为空返回 500。`FAIL_FIRST_N` 的 500 计入次数。统计只在内存。请求体超过 65536 字节返回 413。compose 里的 merchant-demo 仍是占位。不新增错误码，不改表，不改 IDL。§3 改为 DONE。发送与重试仍是 NTF-02。 |

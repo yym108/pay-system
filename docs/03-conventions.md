@@ -1,6 +1,6 @@
 # pay-system 全局约定与编号规范
 
-> 版本：v2.29　最后修改：2026-11-06
+> 版本：v2.30　最后修改：2026-11-11
 > 适用：全部代码、文档、配置。需求见 `docs/02-requirements.md`，接口见 `docs/05-api.md`，表结构见 `docs/database.md`。
 
 本文集中登记会被多个功能点共用的约定：编号体系、业务单号、金额、时间、错误码、幂等与事务规则、命名规范、配置项。新增或修改这些内容时，先改本文并在 §9 记录，再改代码。
@@ -391,7 +391,7 @@ Hertz `hlog` 和 Kitex `klog` 经适配器写入同一个 slog handler。`SetDef
 | `MYSQL_RECON_PASSWORD` | bootstrap、recon | 无（必填，secret） | `svc_recon` 口令。recon 装配出的四条 DSN 都用这个口令，必须与 bootstrap 创建的账号一致 |
 | `MYSQL_CHANNEL_MOCK_PASSWORD` | bootstrap、channel-mock | 无（必填，secret） | `svc_channel_mock` 口令。channel-mock 装配出的 DSN 用这个口令，必须与 bootstrap 创建的账号一致 |
 | `MYSQL_MIGRATOR_PASSWORD` | bootstrap、migrate | 无（必填，secret） | `migrator` 口令，只给迁移容器做 DDL |
-| `DEMO_APP_SECRET_FORMAT` | seed | `demo_secret_%s_0123456789ab` | 种子商户明文，`%s` 为商户号。种子加密后写入，明文只出现在环境文件。secret |
+| `DEMO_APP_SECRET_FORMAT` | seed、merchant-demo | `demo_secret_%s_0123456789ab` | 种子商户明文，`%s` 为商户号。种子加密后写入，明文只出现在环境文件。merchant-demo 用通知 body 里的 `merchant_id` 代入同一格式验平台签名，不另设密钥。未设置或空串用默认值。merchant-demo 加载时必须恰好一个 `%s` 且没有其他 `%`；seed 不额外校验。错误文本不含格式原文。secret |
 | `SEED_LOAD` | seed | `0` | `1` 时额外创建 `M200000`–`M200099`。不入账。`deploy/seed.sh` 读环境文件时，调用方已设的 `SEED_LOAD` 优先（`make seed-load` 据此设为 `1`）；其他变量仍以环境文件为准 |
 | `PAYCLI_GATEWAY_URL` | paycli | 无 | 网关根地址。加载时可以为空，执行命令时缺失则退出 1。`--gateway` 覆盖 |
 | `PAYCLI_APP_ID` | paycli | 无 | 商户 `app_id`。仅商户命令必填。`--app-id` 覆盖 |
@@ -448,3 +448,4 @@ BASE-09 只拼 DSN 文本，不连接数据库，也不调用驱动的 `ParseDSN
 | v2.27 | 2026-11-06 | PAY-05 审查修复：§7.5 登记日志字段 `job`（进程内定时任务名，如 `query_compensate`），与 `source = JOB` 区分。不新增错误码、前缀或配置项 |
 | v2.28 | 2026-11-06 | PAY-05 审查修复：§8 `QUERY_BACKOFF` 每项下限 1 秒，小于 1 秒时 `LoadPayment` 返回配置错误（错误文本含变量名），进程不启动；理由是查单任务的跳过检查要求间隔远大于抢占和启动任务的耗时。默认值与 `deploy/.env.example` 都不小于 10 秒，不受影响。不新增配置项、错误码或前缀 |
 | v2.29 | 2026-11-06 | PAY-07：§7.5 日志字段 `job` 增加取值 `timeout_close`（超时关单）。超时关单经渠道关单写入结果时 `source = JOB`，沿用已有来源名。审查修复（同版本内追加）：§7.5 写明 `source` 按发起流程取值，逐个列出 NOTIFY / QUERY / CLOSE / JOB / ADMIN / SYNC 对应的流程。同版本内追加，REF-04 补登记：§7.5 日志字段 `job` 增加取值 `refund_recover`（退款卡单恢复，`job.NewRefundRecover`），REF-04 落地时漏登。不新增错误码、前缀或配置项 |
+| v2.30 | 2026-11-11 | TL-02：`DEMO_APP_SECRET_FORMAT` 的使用方增加 merchant-demo。变量名、默认值和 secret 标记不变，不新增环境变量。merchant-demo 加载时要求恰好一个 `%s` 且没有其他 `%`。不新增错误码、前缀。 |

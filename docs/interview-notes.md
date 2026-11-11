@@ -8,6 +8,12 @@
 - 商户响应按接口 §3.3 验签；管理接口 §8 写明不签名，没有 `X-Signature` 不算失败。`code ≠ 0` 仍把 JSON 写到 stdout，退出码为 1。
 - 客户端总超时不另造：按需求 §5.4.1 网关调用超时，默认 1 秒，`pay` / `close` / `refund` 5 秒，`transfer` 3 秒，`admin recon-run` 与 `admin check` 120 秒。
 
+## TL-02 merchant-demo
+
+- 不新增 `APP_SECRET`。`DEMO_APP_SECRET_FORMAT` 已经按商户号生成种子密钥，merchant-demo 用通知 body 里的 `merchant_id` 代入同一格式再验签。伪造的商户号对不上那个商户的签名。
+- 密钥为空是本端配置问题，返回 HTTP 500，不返回 401。401 不计入 `FAIL_FIRST_N`，否则错误签名会把失败窗口提前用掉。
+- 现有 `run` 测试要求配置打印后返回。真正的监听放在可替换的 `start` 里，验收用 Hertz 的内存请求，不占用 9100。
+
 ## GW-01 网关骨架
 
 - compose 的 apps profile 仍是占位，应用容器不在 `make up` 里启动，占位进程保持退出码 1。这次没有改 compose。
