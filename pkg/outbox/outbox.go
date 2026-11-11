@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/jmoiron/sqlx"
@@ -463,5 +464,54 @@ func insert(ctx context.Context, tx *sqlx.Tx, row prepared) error {
 	if err := dbx.MustAffectOne(res); err != nil {
 		return fmt.Errorf("outbox: insert: %w", err)
 	}
+	noteCollected(ctx, row.eventID)
 	return nil
+}
+
+type collectedKey struct{}
+
+type collectedIDs struct {
+	mu  sync.Mutex
+	ids []string
+}
+
+// WithCollected 让这次 ctx 上的 Add 在插入成功后记住 event_id。
+// 外层事务回滚时调用方应忽略这些 id，不要据此开始等待。
+func WithCollected(ctx context.Context) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if box, ok := ctx.Value(collectedKey{}).(*collectedIDs); ok && box != nil {
+		return ctx
+	}
+	return context.WithValue(ctx, collectedKey{}, &collectedIDs{})
+}
+
+// CollectedIDs 返回本次 ctx 上已经插入成功的 event_id。没有收集器时返回 nil。
+func CollectedIDs(ctx context.Context) []string {
+	if ctx == nil {
+		return nil
+	}
+	box, _ := ctx.Value(collectedKey{}).(*collectedIDs)
+	if box == nil {
+		return nil
+	}
+	box.mu.Lock()
+	defer box.mu.Unlock()
+	out := make([]string, len(box.ids))
+	copy(out, box.ids)
+	return out
+}
+
+func noteCollected(ctx context.Context, id string) {
+	if ctx == nil || id == "" {
+		return
+	}
+	box, _ := ctx.Value(collectedKey{}).(*collectedIDs)
+	if box == nil {
+		return
+	}
+	box.mu.Lock()
+	box.ids = append(box.ids, id)
+	box.mu.Unlock()
 }

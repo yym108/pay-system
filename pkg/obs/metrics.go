@@ -110,7 +110,7 @@ var (
 	}, []string{"shard"})
 	stageDuration = prometheus.NewHistogramVec(prometheus.HistogramOpts{
 		Name:    "pay_stage_duration_seconds",
-		Help:    "Stage duration in seconds. Instrumentation belongs to OPT-01.",
+		Help:    "Stage duration in seconds.",
 		Buckets: LatencyBuckets,
 	}, []string{"chain", "stage"})
 	transferStuck = prometheus.NewGaugeVec(prometheus.GaugeOpts{

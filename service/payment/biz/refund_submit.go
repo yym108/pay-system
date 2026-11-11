@@ -10,6 +10,7 @@ import (
 	"github.com/yym108/pay-system/pkg/errno"
 	"github.com/yym108/pay-system/pkg/fault"
 	"github.com/yym108/pay-system/pkg/money"
+	"github.com/yym108/pay-system/pkg/obs"
 )
 
 const (
@@ -94,7 +95,9 @@ func (p *Payments) submitRefund(ctx context.Context, row RefundOrder) (RefundOrd
 	if p.refundFreezer == nil {
 		return row, nil
 	}
+	endFreeze := obs.Begin(ctx, obs.ChainRefund, obs.StageRPCFreeze)
 	fr, err := p.refundFreezer.FreezeRefund(ctx, row.MerchantID, row.RefundNo, row.Amount)
+	endFreeze()
 	if err != nil {
 		// 冻结超时或不可用时结果未知。即使调用方 ctx 已经到期，也返回刚插入的 INIT，不调用渠道。
 		if errors.Is(err, errno.ErrUnavailable) {
@@ -125,7 +128,9 @@ func (p *Payments) submitRefund(ctx context.Context, row RefundOrder) (RefundOrd
 	// 冻结已经成功。故障点放在 PROCESSING 事务之前，进程被杀掉时退款单仍是 INIT。
 	fault.Point(ctx, faultRefundAfterFreeze)
 	now := p.clk.Now().Truncate(time.Millisecond)
+	endTx := obs.Begin(ctx, obs.ChainRefund, obs.StageDBTx)
 	won, err := p.orders.casRefundProcessing(ctx, row, now)
+	endTx()
 	if err != nil {
 		return RefundOrder{}, callErr(err)
 	}

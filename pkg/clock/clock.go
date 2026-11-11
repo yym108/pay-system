@@ -27,9 +27,16 @@ type Real struct{}
 
 // Now 返回当前瞬间的东八区时间。地点名是 Asia/Shanghai，偏移固定为 +8 小时。
 // 先取 time.Now() 再换地点：整段 time.Now().In 会让 forbidigo 的排除规则对不上。
+// In 会丢掉单调钟。要和 time.Since 比较时用 Mono。
 func (Real) Now() time.Time {
 	now := time.Now()
 	return now.In(shanghai)
+}
+
+// Mono 返回当前瞬间，不换时区，保留单调钟。
+// Real.Now 经过 In 之后只剩墙钟，不能和 pkg/obs 里的 time.Since 放在一起相减。
+func Mono() time.Time {
+	return time.Now()
 }
 
 // Fake 是测试时钟。零值的当前时间是 Go 零时间。

@@ -10,6 +10,7 @@ import (
 
 	"github.com/yym108/pay-system/pkg/errno"
 	"github.com/yym108/pay-system/pkg/idgen"
+	"github.com/yym108/pay-system/pkg/obs"
 )
 
 const (
@@ -169,11 +170,22 @@ func (p *Payments) advanceRecovered(ctx context.Context, row TransferOrder) (Tra
 		if p.localTransfer == nil {
 			return TransferOrder{}, errno.ErrInternal
 		}
+		// Begin 的链参数是空的，结束时读这里的链。nil 不能进 WithChain，否则会换成 Background。
+		if ctx != nil {
+			var closeSlot func()
+			ctx, closeSlot = adoptSlot(ctx, obs.ChainTransferLocal)
+			defer closeSlot()
+		}
 		return p.executeLocal(ctx, row)
 	case row.Mode == transferModeTCC && (row.Status == transferStatusTrying ||
 		row.Status == transferStatusConfirming || row.Status == transferStatusCancelling):
 		if p.tccTransfer == nil {
 			return TransferOrder{}, errno.ErrInternal
+		}
+		if ctx != nil {
+			var closeSlot func()
+			ctx, closeSlot = adoptSlot(ctx, obs.ChainTransferTCC)
+			defer closeSlot()
 		}
 		return p.advanceTCCRecover(ctx, row, gen)
 	default:
@@ -186,7 +198,9 @@ func (p *Payments) advanceTCCRecover(ctx context.Context, row TransferOrder, gen
 	switch row.Status {
 	case transferStatusTrying:
 		at := p.clk.Now().Truncate(time.Millisecond)
+		endDecision := obs.Begin(ctx, "", obs.StageDBDecision)
 		got, applied, err := p.transfers.decideTransfer(ctx, row, transferStatusCancelling, transferFailTryTimeout, at)
+		obs.KeepOrEnd(ctx, endDecision)
 		if err != nil {
 			return TransferOrder{}, tccStoreErr(err)
 		}

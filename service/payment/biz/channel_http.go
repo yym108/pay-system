@@ -176,7 +176,9 @@ func (c *ChannelClient) Accept(ctx context.Context, req ChannelAcceptRequest) (C
 	httpReq.Header.Set(sign.HeaderMockSignature, sig)
 	setTraceparent(ctx, httpReq)
 	start := c.clk.Now()
+	endCall := stopChannelStage(ctx, obs.ChainPaySubmit)
 	resp, err := c.http.Do(httpReq) //nolint:gosec // 地址在 NewChannelClient 限定为配置的 http/https 主机，不取商户传入的 URL。
+	endCall()
 	result := "ERROR"
 	defer func() { obs.ObserveChannel("pay", result, c.clk.Now().Sub(start)) }()
 	if err != nil {
@@ -449,7 +451,9 @@ func (c *ChannelClient) exchange(ctx context.Context, api, endpoint, payNo, refu
 	httpReq.Header.Set(sign.HeaderMockSignature, sig)
 	setTraceparent(ctx, httpReq)
 	start := c.clk.Now()
+	endCall := stopChannelStage(ctx, obs.ChainRefund)
 	resp, err := c.http.Do(httpReq) //nolint:gosec // 地址在 NewChannelClient 限定为配置的 http/https 主机。
+	endCall()
 	result := "error"
 	defer func() { obs.ObserveChannel(api, result, c.clk.Now().Sub(start)) }()
 	if err != nil {
@@ -471,6 +475,14 @@ func (c *ChannelClient) exchange(ctx context.Context, api, endpoint, payNo, refu
 	}
 	result = "ok"
 	return body, false, nil
+}
+
+// stopChannelStage 只包真正发出的 HTTP。链名不符时不记 channel_call，避免查单和关单混进退款。
+func stopChannelStage(ctx context.Context, chain string) func() {
+	if obs.ChainOf(ctx) != chain {
+		return func() {}
+	}
+	return obs.Stage(ctx, chain, obs.StageChannelCall)
 }
 
 func setTraceparent(ctx context.Context, req *http.Request) {

@@ -57,6 +57,17 @@ func TestFakeConcurrentAdvance(t *testing.T) {
 	}
 }
 
+func TestMonoKeepsLocalZone(t *testing.T) {
+	t.Parallel()
+	start := Mono()
+	if start.Location() != time.Local {
+		t.Fatalf("Location = %v", start.Location())
+	}
+	if time.Since(start) < 0 {
+		t.Fatal("monotonic reading missing")
+	}
+}
+
 // BASE-07 验收 2：Real.Now().Location() 为 Asia/Shanghai，且不调用 LoadLocation，偏移为 +8 小时。
 func TestRealLocationAsiaShanghai(t *testing.T) {
 	t.Parallel()

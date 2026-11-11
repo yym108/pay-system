@@ -145,6 +145,8 @@ func (p *Payments) Pay(ctx context.Context, in *PayInput) (PaymentOrder, error) 
 	if err := p.ready(ctx); err != nil {
 		return PaymentOrder{}, err
 	}
+	ctx, closeSlot := adoptSlot(ctx, obs.ChainPaySubmit)
+	defer closeSlot()
 	order, ok, err := p.orders.paymentByPayNo(ctx, in.PayNo)
 	if err != nil {
 		return PaymentOrder{}, callErr(err)
@@ -169,7 +171,9 @@ func (p *Payments) Pay(ctx context.Context, in *PayInput) (PaymentOrder, error) 
 	if p.channel == nil {
 		return PaymentOrder{}, errno.ErrInternal
 	}
+	endTx1 := obs.Begin(ctx, obs.ChainPaySubmit, obs.StageDBTx1)
 	won, err := p.orders.casInitToPaying(ctx, order, now)
+	endTx1()
 	if err != nil {
 		return PaymentOrder{}, callErr(err)
 	}
@@ -228,15 +232,19 @@ func (p *Payments) callChannel(ctx context.Context, order PaymentOrder) (Payment
 		if res.ChannelTxnNo == "" {
 			return order, nil
 		}
+		endTx2 := obs.Begin(ctx, obs.ChainPaySubmit, obs.StageDBTx2)
 		n, fillErr := p.orders.fillChannelTxnNo(ctx, order.PayNo, res.ChannelTxnNo)
 		if fillErr != nil {
+			endTx2()
 			return PaymentOrder{}, callErr(fillErr)
 		}
 		if n == 0 {
 			if _, _, readErr := p.orders.channelTxnByBizNo(ctx, order.PayNo); readErr != nil {
+				endTx2()
 				return PaymentOrder{}, callErr(readErr)
 			}
 		}
+		obs.KeepOrEnd(ctx, endTx2)
 		return order, nil
 	case acceptRejected:
 		if p.applier == nil {

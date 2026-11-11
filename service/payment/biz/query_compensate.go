@@ -306,6 +306,10 @@ func (p *Payments) resubmitRefund(ctx context.Context, task queryTask) {
 		)
 		return
 	}
+	// 只给重新提交的渠道调用写 refund。查单和关单不走这里。
+	if ctx != nil {
+		ctx = obs.WithChain(ctx, obs.ChainRefund)
+	}
 	if _, err = p.callRefundChannel(ctx, row); err != nil && !errors.Is(err, errno.ErrChannelRejected) {
 		p.logQueryErr(ctx, task, "channel query refund resubmit", err)
 	}

@@ -89,6 +89,11 @@ func (c Config) middleware() endpoint.Middleware {
 			if tp, ok := metainfo.GetPersistentValue(ctx, "traceparent"); ok && tp != "" {
 				ctx = obs.ExtractMap(ctx, map[string]string{"traceparent": tp})
 			}
+			// 槽包住整个处理方法。响应转换留在最后一段里，span 结束前才关。
+			slotted := stageMethod(method)
+			if slotted {
+				ctx = obs.WithSlot(ctx)
+			}
 			ctx, cancel := context.WithTimeout(ctx, c.timeoutFor(method))
 			defer cancel()
 			ctx, endSpan := tr.Start(ctx, method)
@@ -103,7 +108,12 @@ func (c Config) middleware() endpoint.Middleware {
 				status, code := errFields(observed)
 				access(ctx, method, status, time.Since(start), "", code)
 				mt.Observe(method, toI32(status), time.Since(start))
+				if slotted {
+					obs.CloseSlot(ctx)
+				}
 				endSpan(observed)
+				// 关槽之后再回传，最后一段已经记进阶段，不会再加进网关的 gw_auth。
+				obs.SendHandlerNS(ctx, time.Since(start))
 			}()
 			err = next(ctx, req, resp)
 			return err
@@ -154,6 +164,16 @@ func errFields(err error) (int, string) {
 	}
 	e := errno.From(err)
 	return int(e.Code), strconv.Itoa(int(e.Code))
+}
+
+// stageMethod 是会写本进程阶段槽的四个写方法。查询不记这些阶段。
+func stageMethod(method string) bool {
+	switch method {
+	case "CreatePayment", "Pay", "CreateRefund", "CreateTransfer":
+		return true
+	default:
+		return false
+	}
 }
 
 func methodName(ctx context.Context) string {

@@ -14,6 +14,7 @@ import (
 	"github.com/yym108/pay-system/kitex_gen/payment"
 	"github.com/yym108/pay-system/pkg/errno"
 	"github.com/yym108/pay-system/pkg/money"
+	"github.com/yym108/pay-system/pkg/obs"
 	"github.com/yym108/pay-system/service/payment/biz"
 )
 
@@ -238,6 +239,8 @@ func (h *Handler) QueryRefund(ctx context.Context, req *payment.QueryRefundReque
 // 其余业务错误走 BizStatusError，不带转账单。可选字段把指针原样交给 biz。
 func (h *Handler) CreateTransfer(ctx context.Context, req *payment.CreateTransferRequest) (r *payment.CreateTransferResponse, err error) {
 	defer recoverBiz(ctx, &err)
+	// db_insert 从方法入口开始，解码之后、进 biz 之前的时间算在这一段。
+	ctx = openTransferInsert(ctx)
 	if err = h.ready(); err != nil {
 		return nil, err
 	}
@@ -263,6 +266,19 @@ func (h *Handler) CreateTransfer(ctx context.Context, req *payment.CreateTransfe
 		return nil, statusErr(ctx, callErr)
 	}
 	return &payment.CreateTransferResponse{BizCode: 0, Transfer: toTransfer(got)}, nil
+}
+
+// openTransferInsert 在已有阶段槽上开始 db_insert。
+// 没有槽时原样返回：单元测试不经中间件，nil 也不能换成 Background，交给 biz 自己建槽。
+func openTransferInsert(ctx context.Context) context.Context {
+	if !obs.HasSlot(ctx) {
+		return ctx
+	}
+	ctx = obs.WithChain(ctx, "")
+	if obs.CurrentStage(ctx) != obs.StageDBInsert {
+		obs.Begin(ctx, "", obs.StageDBInsert)
+	}
+	return ctx
 }
 
 // QueryTransfer 读取转账单（TRF-05），只有付款商户可以查询，规则同 QueryRefund。响应是 Transfer，不带 biz_code。

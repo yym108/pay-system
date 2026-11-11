@@ -27,6 +27,10 @@ const (
 	signSecretKey = "gw.sign_secret"
 	// skipHandlerKey 表示错误 JSON 已写好，platformSign 只签名，不再进入路由。
 	skipHandlerKey = "gw.skip_handler"
+	// gwAuthKey 保存还在计时的网关耗时。RPC 前后停表和续表，响应写完才 Observe。
+	gwAuthKey = "gw.auth_watch"
+	// gwTransferModeKey 是 CreateTransfer 响应里的 Mode。转账链名要等它。
+	gwTransferModeKey = "gw.transfer_mode"
 
 	nonceLen      = 16
 	nonceAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"

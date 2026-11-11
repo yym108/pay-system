@@ -9,6 +9,7 @@ import (
 	"github.com/yym108/pay-system/pkg/errno"
 	"github.com/yym108/pay-system/pkg/idgen"
 	"github.com/yym108/pay-system/pkg/money"
+	"github.com/yym108/pay-system/pkg/obs"
 )
 
 const (
@@ -68,6 +69,8 @@ func (p *Payments) CreateRefund(ctx context.Context, in *CreateRefundInput) (Ref
 	if err := p.refundReady(ctx); err != nil {
 		return RefundOrder{}, err
 	}
+	ctx, closeSlot := adoptSlot(ctx, obs.ChainRefund)
+	defer closeSlot()
 	order, err := p.loadRefundPayment(ctx, in)
 	if err != nil {
 		return RefundOrder{}, err
@@ -103,7 +106,9 @@ func (p *Payments) CreateRefund(ctx context.Context, in *CreateRefundInput) (Ref
 		CreatedAt:   now,
 		UpdatedAt:   now,
 	}
+	endQuota := obs.Begin(ctx, obs.ChainRefund, obs.StageDBQuotaTx)
 	affected, duplicate, err := p.orders.occupyRefund(ctx, order, row)
+	endQuota()
 	if err != nil {
 		return RefundOrder{}, callErr(err)
 	}

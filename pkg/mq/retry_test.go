@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -636,5 +637,20 @@ func TestMQ02ProduceBatchHidesAddress(t *testing.T) {
 	}
 	if strings.Contains(err.Error(), "127.0.0.1") || strings.Contains(err.Error(), "dial") {
 		t.Fatal("empty broker error text contains an address")
+	}
+}
+
+func TestMessageRecordProducedAt(t *testing.T) {
+	before := time.Now()
+	rec := messageRecord(Message{Topic: "t", EventID: "EV1", EventType: "payment.succeeded", Traceparent: "tp"})
+	after := time.Now()
+	raw := headerString(rec, HeaderProducedAt)
+	ns, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || ns < before.UnixNano() || ns > after.UnixNano() {
+		t.Fatalf("produced_at_ns=%q", raw)
+	}
+	out := toRecord(rec)
+	if out.ProducedAt != raw || out.EventID != "EV1" || out.Traceparent != "tp" {
+		t.Fatalf("%+v", out)
 	}
 }

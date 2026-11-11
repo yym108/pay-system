@@ -18,6 +18,7 @@ import (
 	"github.com/yym108/pay-system/kitex_gen/account"
 	"github.com/yym108/pay-system/kitex_gen/payment"
 	"github.com/yym108/pay-system/pkg/errno"
+	"github.com/yym108/pay-system/pkg/obs"
 )
 
 // paymentAPI 是商户端口要调的支付方法。生产实现是 Kitex 客户端。
@@ -123,7 +124,11 @@ func (h *Handler) createPayment(ctx context.Context, c *app.RequestContext) {
 		h.writeRoute(c, errno.ErrInternal, nil)
 		return
 	}
+	ctx, doneAuth := pauseRPC(c, ctx)
+	endRPC := obs.Begin(ctx, obs.ChainPayCreate, obs.StageRPC)
 	order, err := h.payment.CreatePayment(ctx, req, callopt.WithRPCTimeout(RPCTimeout("CreatePayment")))
+	endRPC()
+	doneAuth()
 	if err != nil {
 		h.writeRoute(c, mapRouteErr(err), nil)
 		return
@@ -162,11 +167,13 @@ func (h *Handler) payPayment(ctx context.Context, c *app.RequestContext) {
 		h.writeRoute(c, errno.ErrInternal, nil)
 		return
 	}
+	ctx, doneAuth := pauseRPC(c, ctx)
 	resp, err := h.payment.Pay(ctx, &payment.PayRequest{
 		MerchantId: mid,
 		PayNo:      payNo,
 		Channel:    channel,
 	}, callopt.WithRPCTimeout(RPCTimeout("Pay")))
+	doneAuth()
 	if err != nil {
 		h.writeRoute(c, mapRouteErr(err), nil)
 		return
@@ -319,7 +326,9 @@ func (h *Handler) createRefund(ctx context.Context, c *app.RequestContext) {
 		h.writeRoute(c, errno.ErrInternal, nil)
 		return
 	}
+	ctx, doneAuth := pauseRPC(c, ctx)
 	resp, err := h.payment.CreateRefund(ctx, req, callopt.WithRPCTimeout(RPCTimeout("CreateRefund")))
+	doneAuth()
 	if err != nil {
 		h.writeRoute(c, mapRouteErr(err), nil)
 		return
@@ -402,7 +411,10 @@ func (h *Handler) createTransfer(ctx context.Context, c *app.RequestContext) {
 		h.writeRoute(c, errno.ErrInternal, nil)
 		return
 	}
+	ctx, doneAuth := pauseRPC(c, ctx)
 	resp, err := h.payment.CreateTransfer(ctx, req, callopt.WithRPCTimeout(RPCTimeout("CreateTransfer")))
+	doneAuth()
+	noteTransferMode(c, resp)
 	if err != nil {
 		h.writeRoute(c, mapRouteErr(err), nil)
 		return
@@ -481,6 +493,14 @@ func (h *Handler) writeRoute(c *app.RequestContext, e *errno.Error, data any) {
 		return
 	}
 	writeErrno(c, e.HTTPStatus, e, requestID(c), raw)
+}
+
+// noteTransferMode 留下响应里的 Mode。gw_auth 等响应写完再按它记，RPC 等待不在这段里。
+func noteTransferMode(c *app.RequestContext, resp *payment.CreateTransferResponse) {
+	if c == nil || resp == nil || resp.Transfer == nil {
+		return
+	}
+	c.Set(gwTransferModeKey, resp.Transfer.Mode)
 }
 
 func (h *Handler) writeBizOrder(c *app.RequestContext, code int32, order *payment.PaymentOrder) {

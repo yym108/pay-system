@@ -18,6 +18,7 @@ import (
 	"github.com/yym108/pay-system/pkg/errno"
 	"github.com/yym108/pay-system/pkg/idgen"
 	"github.com/yym108/pay-system/pkg/money"
+	"github.com/yym108/pay-system/pkg/obs"
 )
 
 const (
@@ -257,6 +258,10 @@ func (p *Payments) CreatePayment(ctx context.Context, in *CreatePaymentInput) (P
 	if err = p.ready(ctx); err != nil {
 		return PaymentOrder{}, err
 	}
+	ctx, closeSlot := adoptSlot(ctx, obs.ChainPayCreate)
+	defer closeSlot()
+	endInsert := obs.Begin(ctx, obs.ChainPayCreate, obs.StageDBInsert)
+	defer obs.KeepOrEnd(ctx, endInsert)
 	// DATETIME(3) 的四舍五入会和取档时刻错开，先截到毫秒再取档、再写入。
 	now := p.clk.Now().Truncate(time.Millisecond)
 	cfg, err := p.merchants.MerchantConfig(ctx, filled.merchantID)

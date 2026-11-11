@@ -293,8 +293,10 @@ func sendErrAt(errs []error, i int) error {
 func (d *Dispatcher) writeOne(ctx context.Context, row claimed, lease time.Time, sendErr error) error {
 	now := d.now()
 	var logged bool
+	var wroteSent bool
 	err := dbx.WithTx(ctx, d.db, func(tx *sqlx.Tx) error {
 		logged = false
+		wroteSent = false
 		res, err := execWrite(ctx, tx, row, lease, now, sendErr)
 		if err != nil {
 			return err
@@ -307,10 +309,14 @@ func (d *Dispatcher) writeOne(ctx context.Context, row claimed, lease time.Time,
 			return nil
 		}
 		logged = sendErr != nil
+		wroteSent = sendErr == nil
 		return nil
 	})
 	if err != nil {
 		return err
+	}
+	if wroteSent {
+		obs.FinishWait(ctx, obs.OutboxWaitKey(row.eventID))
 	}
 	if logged {
 		// 不写 payload，也不写 last_error：错误文本可能带地址。哨兵文本留在列里。

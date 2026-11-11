@@ -7,7 +7,9 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/bytedance/gopkg/cloud/metainfo"
 	"github.com/cloudwego/hertz/pkg/app"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
@@ -110,6 +112,14 @@ func (h *Handler) requestID(ctx context.Context, c *app.RequestContext) {
 // trace 先提取入站 traceparent，再开一个 span。导出器由进程启动时的 obs.Install 安装，这里不安装。
 func (h *Handler) trace(ctx context.Context, c *app.RequestContext) {
 	appendName(c, nameTrace)
+	path := string(c.Request.URI().Path())
+	chain, timed := merchantStage(string(c.Method()), path)
+	var watch *obs.AuthWatch
+	if timed {
+		// 商户写路由从这里开始记 gw_auth。RPC 等待由路由里 Pause，响应写完再 Observe。
+		watch = obs.StartAuth()
+		c.Set(gwAuthKey, watch)
+	}
 	header := map[string]string{}
 	if v := c.Request.Header.Peek("traceparent"); len(v) > 0 {
 		header["traceparent"] = string(v)
@@ -118,10 +128,43 @@ func (h *Handler) trace(ctx context.Context, c *app.RequestContext) {
 		header["tracestate"] = string(v)
 	}
 	ctx = obs.ExtractMap(ctx, header)
-	path := string(c.Request.URI().Path())
 	ctx, span := otel.Tracer("gateway").Start(ctx, path)
 	defer span.End()
 	c.Next(ctx)
+	if watch == nil {
+		return
+	}
+	if chain != "" {
+		watch.Observe(ctx, chain)
+		return
+	}
+	mode, _ := c.Get(gwTransferModeKey)
+	text, _ := mode.(string)
+	watch.ObserveTransfer(ctx, text)
+}
+
+// merchantStage 按商户写路由选择链。转账在验签时还不知道分片，chain 留空。
+func merchantStage(method, path string) (string, bool) {
+	if method != http.MethodPost {
+		return "", false
+	}
+	switch path {
+	case "/v1/payments":
+		return obs.ChainPayCreate, true
+	case "/v1/refunds":
+		return obs.ChainRefund, true
+	case "/v1/transfers":
+		return "", true
+	}
+	const prefix = "/v1/payments/"
+	const suffix = "/pay"
+	if strings.HasPrefix(path, prefix) && strings.HasSuffix(path, suffix) {
+		payNo := path[len(prefix) : len(path)-len(suffix)]
+		if payNo != "" && !strings.Contains(payNo, "/") {
+			return obs.ChainPaySubmit, true
+		}
+	}
+	return "", false
 }
 
 func setPayNo(ctx context.Context, payNo string) {
@@ -254,6 +297,55 @@ func (h *Handler) verifySign(ctx context.Context, c *app.RequestContext) {
 	c.Next(ctx)
 }
 
+func authWatch(c *app.RequestContext) *obs.AuthWatch {
+	if c == nil {
+		return nil
+	}
+	v, _ := c.Get(gwAuthKey)
+	w, _ := v.(*obs.AuthWatch)
+	return w
+}
+
+func pauseAuth(c *app.RequestContext) {
+	authWatch(c).Pause()
+}
+
+func resumeAuth(c *app.RequestContext) {
+	authWatch(c).Resume()
+}
+
+// pauseRPC 在真实 payment 调用前停表，并装上 BackwardValues，否则服务端写不回 pay_handler_ns。
+// 结束函数仍在停表时把墙钟减去处理方法耗时的正差额加进 gw_auth，然后继续计时。
+// 键不存在或解析失败不加。假客户端不写这个键，停表区间与原来相同。
+func pauseRPC(c *app.RequestContext, ctx context.Context) (context.Context, func()) {
+	ctx = metainfo.WithBackwardValues(ctx)
+	pauseAuth(c)
+	start := time.Now()
+	return ctx, func() {
+		addCodecGap(c, ctx, time.Since(start))
+		resumeAuth(c)
+	}
+}
+
+func addCodecGap(c *app.RequestContext, ctx context.Context, wall time.Duration) {
+	if ctx == nil {
+		return
+	}
+	raw, ok := metainfo.RecvBackwardValue(ctx, obs.HeaderPayHandlerNS)
+	if !ok {
+		return
+	}
+	ns, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil || ns <= 0 {
+		return
+	}
+	gap := wall - time.Duration(ns)
+	if gap <= 0 {
+		return
+	}
+	authWatch(c).Add(gap)
+}
+
 func v1Path(path string) bool {
 	return path == "/v1" || strings.HasPrefix(path, "/v1/")
 }
@@ -371,13 +463,25 @@ func (h *Handler) nonce(ctx context.Context, c *app.RequestContext) {
 	}
 	appID := string(c.GetHeader(sign.HeaderAppID))
 	nonce := string(c.GetHeader(sign.HeaderNonce))
+	var endNonce func()
+	if chain, ok := merchantStage(string(c.Method()), string(c.Request.URI().Path())); ok && chain == obs.ChainPayCreate {
+		endNonce = obs.Begin(ctx, obs.ChainPayCreate, obs.StageGWNonce)
+	}
+	finishNonce := func() {
+		if endNonce != nil {
+			endNonce()
+			endNonce = nil
+		}
+	}
 	if h.nonces == nil {
+		finishNonce()
 		nonceUnavailable.Add(1)
 		obs.AddNonceUnavailable()
 		h.failNonce(ctx, c, appID, errno.ErrUnavailable)
 		return
 	}
 	claimed, err := h.nonces.Reserve(ctx, appID, nonce)
+	finishNonce()
 	if err != nil {
 		nonceUnavailable.Add(1)
 		obs.AddNonceUnavailable()

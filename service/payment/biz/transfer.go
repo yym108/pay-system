@@ -6,11 +6,14 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/yym108/pay-system/pkg/clock"
 	"github.com/yym108/pay-system/pkg/dbx"
 	"github.com/yym108/pay-system/pkg/errno"
 	"github.com/yym108/pay-system/pkg/idgen"
 	"github.com/yym108/pay-system/pkg/money"
+	"github.com/yym108/pay-system/pkg/obs"
 	"github.com/yym108/pay-system/pkg/shard"
 )
 
@@ -148,15 +151,34 @@ func (p *Payments) CreateTransfer(ctx context.Context, in *CreateTransferInput) 
 	if err != nil {
 		return TransferOrder{}, err
 	}
+	chain := obs.ChainTransferTCC
+	if req.payerShard == req.payeeShard {
+		chain = obs.ChainTransferLocal
+	}
+	// 先看 ctx 是不是 nil 或已取消。WithChain 会把 nil 换成 Background，不能放在这之前。
 	if err := p.transferReady(ctx); err != nil {
 		return TransferOrder{}, err
 	}
-	// 幂等读在收款方校验之前：建单后收款方被停用，相同参数重试仍应拿到已有单。
+	ctx, closeSlot := adoptSlot(ctx, chain)
+	defer closeSlot()
+	// 处理方法入口已经开了 db_insert 时不再 Begin，否则同名事件会出现两次。
+	// 幂等读、收款方校验、发号和插入算同一次 db_insert。下一阶段的 Begin 会结束它。
+	var endInsert func()
+	if obs.CurrentStage(ctx) != obs.StageDBInsert {
+		endInsert = obs.Begin(ctx, "", obs.StageDBInsert)
+	}
+	handed := false
+	defer func() {
+		if !handed {
+			obs.KeepOrEnd(ctx, endInsert)
+		}
+	}()
 	existing, ok, err := p.transfers.transferByMerchantOut(ctx, req.merchantID, req.outTransferNo)
 	if err != nil {
 		return TransferOrder{}, callErr(err)
 	}
 	if ok {
+		obs.SetOrder(trace.SpanFromContext(ctx), "", "", existing.TransferNo, "", "")
 		return sameTransfer(existing, req)
 	}
 	if err := p.checkPayee(ctx, req.merchantID, req.payee); err != nil {
@@ -194,7 +216,22 @@ func (p *Payments) CreateTransfer(ctx context.Context, in *CreateTransferInput) 
 	if err := p.transfers.insertTransfer(ctx, row); err != nil {
 		return p.onTransferInsertErr(ctx, req, err)
 	}
+	obs.SetOrder(trace.SpanFromContext(ctx), "", "", transferNo, "", "")
+	handed = true
+	obs.KeepOrEnd(ctx, endInsert)
 	return p.executeTransfer(ctx, row)
+}
+
+// adoptSlot 沿用调用方的阶段槽。没有槽时自己创建。
+// 返回的关闭函数只在自己创建时生效，调用方的槽留到处理方法返回，最后一段才能盖住响应转换。
+func adoptSlot(ctx context.Context, chain string) (context.Context, func()) {
+	owned := !obs.HasSlot(ctx)
+	ctx = obs.WithChain(ctx, chain)
+	if !owned {
+		return ctx, func() {}
+	}
+	ctx = obs.WithSlot(ctx)
+	return ctx, func() { obs.CloseSlot(ctx) }
 }
 
 type transferRequest struct {

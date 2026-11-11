@@ -53,7 +53,7 @@ func ParseBrokers(raw string) []string {
 	return compactBrokers(strings.Split(raw, ","))
 }
 
-// Produce 等待这条消息被确认。单次超时 5 秒。三个消息头总会写入。
+// Produce 等待这条消息被确认。单次超时 5 秒。四个消息头总会写入。
 func (p *Producer) Produce(ctx context.Context, msg Message) error {
 	if err := ctx.Err(); err != nil {
 		return err

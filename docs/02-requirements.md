@@ -424,7 +424,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | OPS-03 | 业务与运行指标 | P0 | M5 | OPS-01、GW-02、GW-06、MQ-04 | DONE |
 | OPS-04 | 监控面板与告警规则 | P1 | — | — | CUT |
 | OPS-05 | pprof 与管理端口 | P0 | M3 | OPS-01 | DONE |
-| OPT-01 | 分阶段耗时埋点 | P0 | M5 | OPS-02、OPS-03、GW-02、GW-06、GW-09、MQ-02、MQ-04、REF-02、TRF-02、TRF-03 | TODO |
+| OPT-01 | 分阶段耗时埋点 | P0 | M5 | OPS-02、OPS-03、GW-02、GW-06、GW-09、MQ-02、MQ-04、REF-02、TRF-02、TRF-03 | DONE |
 | OPT-02 | 批量记账合并提交 | P0 | M7 | MQ-04、QA-02、BASE-15 | TODO |
 | OPT-03 | 热点平台账户子账户拆分 | P0 | M7 | ACC-03、QA-02 | TODO |
 | OPT-04 | 链路延迟优化 | P0 | M7 | OPT-01、QA-02 | TODO |
@@ -2149,7 +2149,7 @@ TRYING ──两个 Try 都成功（决策落盘）──► CONFIRMING ──�
 
 规则：
 
-1. 生产者：franz-go，`acks=all`，开启幂等生产，`linger=5ms`；消息头携带 `event_id`、`event_type`、`traceparent`。
+1. 生产者：franz-go，`acks=all`，开启幂等生产，`linger=5ms`；消息头携带 `event_id`、`event_type`、`traceparent`，以及生产时刻 `produced_at_ns`（十进制纳秒，OPT-01）。
 2. 消费者：消费组模式，关闭自动提交；每个分区一个处理协程，分区内顺序处理；处理成功（数据库事务已提交）后才提交 offset。
 3. 处理函数返回的错误分两类：
    - 可重试（数据库、网络、依赖不可用）：原地退避重试，100ms 起翻倍、上限 5 秒，不提交 offset，持续重试并告警。
@@ -2722,7 +2722,7 @@ ACC-10 只在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（
 
    | chain | stage |
    |---|---|
-   | `pay_create` | `gw_auth`（验签含凭证获取）、`gw_nonce`、`rpc`、`db_insert` |
+   | `pay_create` | `gw_auth`（写路由上处理方法以外的时间，含验签和编解码差额）、`gw_nonce`、`rpc`、`db_insert` |
    | `pay_submit` | `gw_auth`、`db_tx1`、`channel_call`、`db_tx2` |
    | `pay_settle` | `callback_tx`（回调事务）、`outbox_wait`（写入到投递）、`mq_wait`（投递到消费）、`ledger_tx` |
    | `refund` | `gw_auth`、`db_quota_tx`、`rpc_freeze`、`db_tx`、`channel_call` |
@@ -2733,8 +2733,8 @@ ACC-10 只在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（
 
 验收：
 
-- [ ] 一次跨分片转账在 Jaeger 中能看到上述阶段，各阶段耗时之和与接口耗时的差值 < 5%。
-- [ ] 6 条链路各执行一次后，`/metrics` 中规则 2 表内每个 `(chain, stage)` 的 `pay_stage_duration_seconds` 样本数都 ≥ 1（跨分片转账的 `transfer_tcc` 各阶段由 TRF-03 第 7 条移来）。
+- [x] 一次跨分片转账在 Jaeger 中能看到上述阶段，各阶段耗时之和与接口耗时的差值 < 5%。
+- [x] 6 条链路各执行一次后，`/metrics` 中规则 2 表内每个 `(chain, stage)` 的 `pay_stage_duration_seconds` 样本数都 ≥ 1（跨分片转账的 `transfer_tcc` 各阶段由 TRF-03 第 7 条移来）。
 
 #### OPT-02 批量记账合并提交
 
@@ -3328,3 +3328,5 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-11 | v3.0 | NTF-02：payment 每秒任务 `notify_send` 抢占到期的 `PENDING` 通知，事务外最多 20 并发 POST。抢占同 PAY-05 的 `SKIP LOCKED`、次数加 1、推后 `next_attempt_at`，不照搬查单的“下次时间已到期则跳过”。密钥按 `merchant_id` 解密，不缓存。成功是 HTTP 200 且去掉首尾空白后为 `SUCCESS`。回写 CAS 的源状态只有 `PENDING`，影响 0 行丢弃。白名单失败和第 5 次失败置 `DEAD` 时，进程内 `pay_notify_attempts_total{result="dead"}` 加 1。不新增错误码，不改表，不改 IDL，不新增环境变量。§3 改为 DONE。
 | 2026-11-11 | v3.0 | OPS-02：采样用已有的标准环境变量 `OTEL_TRACES_SAMPLER` 与 `OTEL_TRACES_SAMPLER_ARG`。未设置时等价 `parentbased_always_on`（全量）。不认识的名字启动失败。Hertz 不叠加 hertz-contrib，沿用已有 trace 中间件，并在 Start 前提取 traceparent。消费端把信封 `trace_context` 做成 link，解析失败不把消息打成坏消息。span 只写单号、状态、`err_code`。不新增错误码，不改 IDL，不改表。 | |
 | 2026-11-11 | v3.0 | OPS-03：正在监听的管理端口提供 `GET /metrics`，正文是 Prometheus 文本，含 Go runtime 与进程指标。延迟直方图桶全进程共用 5ms、10ms、25ms、50ms、100ms、250ms、500ms、1s、2.5s、5s。已有事件在原失败点或成功 CAS 上各记一次，不从进程内计数再采集一遍。对账三项、转账卡单、退款额度不一致、入账批大小与回退、`pay_stage_duration_seconds` 只注册。分阶段埋点仍是 OPT-01。`pay_ledger_freeze_conflict_total` 不进 `/metrics`。商户端口和 Kitex 业务端口不提供该路径。不新增错误码，不改 IDL，不改表。§3 改为 DONE。 |
+| 2026-11-11 | v3.0 | OPT-01：`pkg/obs.Stage` 给已经注册的 `pay_stage_duration_seconds{chain,stage}` 记一次耗时，并在当前 span 上写同名事件，属性是 `chain`、`stage` 和整数 `duration_ns`。没有 span 仍然记直方图。空标签记 `unknown`。结束函数可以放进 defer，重复调用只记一次。同一次请求先结束上一段再开始下一段。`transfer_tcc` 成功路径记 `confirm`，取消路径记 `cancel`。`outbox_wait` 从支付成功事务提交后到本次投递回写成功，`mq_wait` 从这次回写到消费开始，`ledger_tx` 只包住入账事务；这三段不互相包含，数据库事务里不等 Kafka。不新增错误码，不改表，不改 IDL，不新增指标名。§3 改为 DONE。 |
+| 2026-11-11 | v3.0 | OPT-01：阶段槽和链名过不了 Kitex，网关与 payment 各自写本进程 ctx。`gw_auth` 从 trace 中间件进入商户写路由开始，到响应写完记一次；每次 payment RPC 前停表、返回后继续。处理方法本身不算进 gw_auth。RPC 墙钟比 pay_handler_ns 多出来的正差额（编解码）加进 gw_auth。pay_handler_ns 是内部 TTHeader 回传，不是商户头，也不是 JSON 字段。`pay_create`、`pay_submit`、`refund` 用已知链名只记一次。转账在响应写完后按 `Mode` 记（`LOCAL` 为 `transfer_local`，`TCC` 为 `transfer_tcc`，其他值不记）。验签失败、到不了 RPC 时，已知链按已经过去的时间记一次；转账此时没有 `Mode`，不记成别的链。`CreatePayment`、`Pay`、`CreateRefund`、`CreateTransfer` 在取出 traceparent 之后套上阶段槽，span 结束前关闭。`CreateTransfer` 的 `db_insert` 从处理方法入口开始，这一段已经开着时 biz 不再 Begin。biz 只有自己创建槽时才关闭，调用方已有槽时最后一段覆盖到处理方法返回。接口耗时用保留单调钟的 `clock.Mono` 再 `time.Since`。`mq_wait` 用 Kafka 头 `produced_at_ns`（发送时的十进制纳秒，早于 SENT 回写），不把结束函数 Bind 到另一进程；头缺失或无法解析不记样本、不进 DLQ。`outbox_wait` 仍在 payment 进程开始和结束，span 事件用投递当时的 ctx。不新增错误码，不改表，不改 IDL，不新增指标名，不改阶段名。 |

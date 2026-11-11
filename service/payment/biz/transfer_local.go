@@ -10,6 +10,7 @@ import (
 	"github.com/yym108/pay-system/pkg/errno"
 	"github.com/yym108/pay-system/pkg/idgen"
 	"github.com/yym108/pay-system/pkg/money"
+	"github.com/yym108/pay-system/pkg/obs"
 )
 
 // LocalTransferResult 是一次同分片转账的业务结果。
@@ -42,7 +43,9 @@ func (p *Payments) executeLocal(ctx context.Context, row TransferOrder) (Transfe
 	if err := ctx.Err(); err != nil {
 		return TransferOrder{}, err
 	}
+	endRPC := obs.Begin(ctx, "", obs.StageRPCTransferLocal)
 	res, err := p.localTransfer.TransferLocal(ctx, row.TransferNo, row.MerchantID, row.PayeeMerchantID, row.Amount)
+	endRPC()
 	if err != nil {
 		return p.classifyLocalErr(ctx, row, err, gen)
 	}
@@ -94,13 +97,16 @@ func (p *Payments) applyLocalResult(ctx context.Context, row TransferOrder, res 
 
 func (p *Payments) finishLocal(ctx context.Context, row TransferOrder, status, failCode, txnNo string, gen *idgen.Generator) (TransferOrder, error) {
 	at := p.clk.Now().Truncate(time.Millisecond)
+	endFinish := obs.Begin(ctx, "", obs.StageDBFinishTx)
 	got, _, err := p.transfers.finishTransfer(ctx, row, status, failCode, txnNo, at, gen, p.clk)
 	if err != nil {
+		endFinish()
 		if errors.Is(err, idgen.ErrClockRollback) {
 			return TransferOrder{}, errno.ErrUnavailable
 		}
 		return TransferOrder{}, err
 	}
+	obs.KeepOrEnd(ctx, endFinish)
 	return got, nil
 }
 

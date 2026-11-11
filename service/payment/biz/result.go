@@ -152,6 +152,8 @@ func (p *Payments) ApplyPayResult(ctx context.Context, in PayResult) (PaymentOrd
 	if !in.FinishedAt.IsZero() {
 		finished = in.FinishedAt.Truncate(time.Millisecond)
 	}
+	ctx = outbox.WithCollected(ctx)
+	endCallback := obs.Stage(ctx, obs.ChainPaySettle, obs.StageCallbackTx)
 	var stored PaymentOrder
 	err := dbx.WithTx(ctx, db, func(tx *sqlx.Tx) error {
 		order, txErr := applyPayResultTx(ctx, tx, in, now, finished, gen, p.clk)
@@ -161,6 +163,12 @@ func (p *Payments) ApplyPayResult(ctx context.Context, in PayResult) (PaymentOrd
 		stored = order
 		return nil
 	})
+	endCallback()
+	if err == nil && in.Result == payResultSuccess {
+		for _, id := range outbox.CollectedIDs(ctx) {
+			obs.HoldWait(obs.OutboxWaitKey(id), obs.ChainPaySettle, obs.StageOutboxWait)
+		}
+	}
 	if errors.Is(err, errChannelMiss) {
 		return p.afterChannelMiss(ctx, in, now)
 	}

@@ -353,3 +353,9 @@ Kafka 容器 `Stop` 再 `Start` 时，OrbStack 会改随机映射的宿主机端
 
 - 不叠 hertz-contrib。网关中间件已经 `otel.Tracer("gateway").Start`。再叠一层，同一条请求会多一个根 span，Jaeger 里就不是一条链。
 - 入账消费不能做成原请求的子 span。消费发生在另一个进程、另一条消息上，父 span 早就结束了。信封里的 `traceparent` 只做成 link。解析失败照常入账，不进 DLQ。
+
+## OPT-01
+
+- `obs.WithChain(nil)` 会换成 `context.Background()`。转账要先做 `transferReady`，确认 ctx 不是 nil、也没取消，再写入链路名。顺序反了，`CreateTransfer(nil)` 不再返回 `10003`，还会把单写进去。
+- 验收里的 Jaeger 必须在 MySQL、账户和网关都起来之后再 `obs.Install`。安装会换掉全局 TracerProvider，testcontainers 之后的 Docker 调用会被 otelhttp 记成 `service.name=gateway`。`query.num_traces=20` 会被这些 span 占满，转账那条 trace 查不到。查询再加 `query.operation_name=/v1/transfers`。
+- Jaeger 2.22 的 `/api/v3/traces` 把整数属性写成 `"intValue":"200"` 这种字符串。`duration_ns` 用 `strconv.ParseInt` 读，不能用浮点。

@@ -10,6 +10,7 @@ import (
 	"github.com/yym108/pay-system/pkg/dbx"
 	"github.com/yym108/pay-system/pkg/errno"
 	"github.com/yym108/pay-system/pkg/money"
+	"github.com/yym108/pay-system/pkg/obs"
 	"github.com/yym108/pay-system/pkg/shard"
 )
 
@@ -40,11 +41,13 @@ func (s *Service) PostPay(ctx context.Context, payNo, merchantID, channel string
 		return PostResult{}, errno.Wrap(errno.ErrInternal, err)
 	}
 	var out PostResult
+	endLedger := obs.Stage(ctx, obs.ChainPaySettle, obs.StageLedgerTx)
 	err = dbx.WithTx(ctx, db, func(tx *sqlx.Tx) error {
 		var applyErr error
 		out, applyErr = applyPostPay(ctx, s, sqlFreezeTx{tx: tx}, tx, payNo, merchantID, channel, amount, fee)
 		return applyErr
 	})
+	endLedger()
 	if err != nil {
 		return PostResult{}, internalErr(err)
 	}

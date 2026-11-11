@@ -57,7 +57,10 @@ func (p *Payments) executeTCC(ctx context.Context, row TransferOrder) (TransferO
 	if err := ctx.Err(); err != nil {
 		return TransferOrder{}, err
 	}
+	endTry := obs.Begin(ctx, "", obs.StageTry)
 	payerErr, payeeErr := p.tryBranches(ctx, row)
+	// 有请求槽时留给下一阶段的 Begin 结束，中间的故障点和错误分类也算在 try 里，避免空隙。
+	obs.KeepOrEnd(ctx, endTry)
 	fault.Point(ctx, faultTransferAfterTry)
 	if errors.Is(payerErr, context.Canceled) || errors.Is(payeeErr, context.Canceled) {
 		return TransferOrder{}, context.Canceled
@@ -90,7 +93,9 @@ func (p *Payments) tryBranches(ctx context.Context, row TransferOrder) (error, e
 
 func (p *Payments) afterDecide(ctx context.Context, row TransferOrder, status, failCode string, gen *idgen.Generator) (TransferOrder, error) {
 	at := p.clk.Now().Truncate(time.Millisecond)
+	endDecision := obs.Begin(ctx, "", obs.StageDBDecision)
 	got, applied, err := p.transfers.decideTransfer(ctx, row, status, failCode, at)
+	obs.KeepOrEnd(ctx, endDecision)
 	if err != nil {
 		return TransferOrder{}, tccStoreErr(err)
 	}
@@ -116,9 +121,11 @@ func (p *Payments) continueDecided(ctx context.Context, row TransferOrder, gen *
 }
 
 func (p *Payments) confirmTCC(ctx context.Context, row TransferOrder, gen *idgen.Generator) (TransferOrder, error) {
+	endConfirm := obs.Begin(ctx, "", obs.StageConfirm)
 	payerErr, payeeErr := repeatPhase(ctx, func() (error, error) {
 		return p.confirmBranches(ctx, row)
 	})
+	obs.KeepOrEnd(ctx, endConfirm)
 	return p.finishPhase(ctx, row, transferStatusConfirming, transferStatusSuccess, "", payerErr, payeeErr, gen)
 }
 
@@ -138,6 +145,7 @@ func (p *Payments) confirmBranches(ctx context.Context, row TransferOrder) (erro
 }
 
 func (p *Payments) cancelTCC(ctx context.Context, row TransferOrder, gen *idgen.Generator) (TransferOrder, error) {
+	endCancel := obs.Begin(ctx, "", obs.StageCancel)
 	payerErr, payeeErr := repeatPhase(ctx, func() (error, error) {
 		return runBranches(p.tccParallel, func() error {
 			return p.tccTransfer.CancelPayer(ctx, row.TransferNo, row.MerchantID, row.Amount)
@@ -145,6 +153,7 @@ func (p *Payments) cancelTCC(ctx context.Context, row TransferOrder, gen *idgen.
 			return p.tccTransfer.CancelPayee(ctx, row.TransferNo, row.PayeeMerchantID, row.Amount)
 		})
 	})
+	obs.KeepOrEnd(ctx, endCancel)
 	return p.finishPhase(ctx, row, transferStatusCancelling, transferStatusFailed, row.FailCode, payerErr, payeeErr, gen)
 }
 
@@ -227,10 +236,13 @@ func (p *Payments) finishPhase(ctx context.Context, row TransferOrder, from, to,
 		return row, nil
 	}
 	at := p.clk.Now().Truncate(time.Millisecond)
+	endFinish := obs.Begin(ctx, "", obs.StageDBFinishTx)
 	got, _, err := p.transfers.finishTCCTransfer(ctx, row, from, to, failCode, at, gen, p.clk)
 	if err != nil {
+		endFinish()
 		return TransferOrder{}, tccStoreErr(err)
 	}
+	obs.KeepOrEnd(ctx, endFinish)
 	return got, nil
 }
 

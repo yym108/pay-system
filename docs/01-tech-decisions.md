@@ -232,6 +232,7 @@ BASE-01（2026-10-13）：根据本机实际安装版本，将本表 Go 本机�
 - 风险：`hertz-contrib/obs-opentelemetry/tracing` 最近发版在 2024-05，已确认能与 otel v1.47 一起编译，但链路串联未验证。如果第 5 周验证失败，改为自写 Hertz 中间件（约 50 行）。
 - 补充（2026-11-11，OPS-02）：不叠加 hertz-contrib。网关已有的 trace 中间件会 Start 一个 span，再叠一层会多一条根 span。沿用该中间件，在 Start 前提取入站 traceparent。Kitex 用现有 Tracer 接口接 `obs.HandlerSpan`，不引入 kitex-contrib。版本表不改。
 - 补充（2026-11-11，OPS-03）：`/metrics` 只挂在 `pkg/server` 的管理端口。直方图桶全进程共用 5ms、10ms、25ms、50ms、100ms、250ms、500ms、1s、2.5s、5s。商户端口与 Kitex 业务端口不暴露。不部署 Grafana，不配置告警规则。
+- 补充（2026-11-11，OPT-01）：`obs.Stage` 给已经注册的 `pay_stage_duration_seconds{chain,stage}` 记一次耗时，并在当前 span 上写同名事件，属性是 `chain`、`stage` 和整数 `duration_ns`。没有 span 仍然记直方图。空标签记 `unknown`。结束函数可以放进 defer，重复调用只记一次。同一次请求用阶段槽先结束上一段再开始下一段，阶段不重叠。阶段槽和链名过不了 Kitex（TTHeader 只传 `traceparent`），网关和 payment 各自写本进程的 ctx。`gw_auth` 从 trace 中间件进入商户写路由开始，到响应写完记一次。每次 payment RPC 调用前停表，返回后继续。处理方法本身不算进 gw_auth，避免和 payment 的阶段重叠。RPC 墙钟比 pay_handler_ns 多出来的正差额（编解码）加进 gw_auth。pay_handler_ns 是内部 TTHeader 回传，不是商户头，也不是 JSON 字段。`pay_create`、`pay_submit`、`refund` 用已知链名，只记一次。转账在响应写完后按 `Mode` 记：`LOCAL` 为 `transfer_local`，`TCC` 为 `transfer_tcc`，其他值不记。验签失败、到不了 RPC 时，已知链按已经过去的时间记一次；转账此时没有 `Mode`，不记成别的链。`CreatePayment`、`Pay`、`CreateRefund`、`CreateTransfer` 在取出 traceparent 之后套上阶段槽，span 结束前关闭。`CreateTransfer` 的 `db_insert` 从处理方法入口开始；这一段已经开着时 biz 不再 `Begin`。biz 只有自己创建槽时才关闭，调用方已有槽时最后一段覆盖到处理方法返回。接口耗时用 `clock.Mono`（不换时区、保留单调钟）再 `time.Since`，不用 `Real.Now`：`In` 会丢掉单调钟。`outbox_wait` 的起点和结束都在 payment 进程：支付成功事务提交后记住起点，本次投递回写成功时用投递当时的 ctx 写 span 事件，不用已经结束的回调 span。`mq_wait` 不把结束函数 Bind 到另一进程。Kafka 头 `produced_at_ns` 是发给 Kafka 时的十进制纳秒，比 SENT 回写稍早；account 消费 `payment.succeeded` 时用这个头和消费开始时刻，在本进程记 `pay_settle` / `mq_wait`，span 事件打在 `StartLinked` 之后还活着的消费 span 上。头缺失或无法解析不记样本，也不进 DLQ。`ledger_tx` 仍只包住 `PostPay`。这三段不占用请求槽，也不在数据库事务里等 Kafka。不新增指标名、错误码、表或 IDL。JSON 信封和 `trace_context` 仍只有 `traceparent`。
 
 ### D15 测试工具
 
@@ -302,6 +303,7 @@ BASE-01（2026-10-13）：根据本机实际安装版本，将本表 Go 本机�
 
 - 决策：三条链路（支付、退款、转账）的每个阶段都上报 `pay_stage_duration_seconds{chain, stage}`，先用基线压测得到分阶段耗时，再按占比选择优化项。候选项：跨分片转账两个分支并行（`TRANSFER_PARALLEL_BRANCH`）、商户凭证与配置进程内缓存（GW-08）、事务内减少往返（批量插入、合并查询）、连接池参数。每项优化单独开关、单独压测，报告给出前后 P50/P99 对比（OPT-04）。
 - 理由：先测量再优化；每项改动都能被单独证明有效或无效，失败的尝试也写进报告。
+- 补充（2026-11-11，OPT-01）：阶段耗时由 `obs.Stage` 写入 OPS-03 已注册的直方图，并作为 span 事件带上整数纳秒。阶段槽、验签耗时和 mq 生产时刻的口径见 D14 同日补充。基线 P50/P99 仍等 QA-02。
 
 ### D22 payment 调用 account 的客户端放在 pkg（2026-10-22）
 

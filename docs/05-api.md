@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 3.5.0 |
+| 文档版本 | 3.6.0 |
 | API 版本 | v1（路径前缀 `/v1`） |
 | 最后修改 | 2026-11-11 |
 | 状态 | 设计基线，实现须与本文一致 |
@@ -87,6 +87,7 @@
 | 3.4.0 | 2026-11-11 | 新增 merchant-demo 的 `POST /notify` 与 `GET /stats`（§6.1）。验签密钥用 body 的 `merchant_id` 代入已有的 `DEMO_APP_SECRET_FORMAT`。不改平台通知字段，不新增错误码 | §1、§6.1 | TL-02 |
 | 3.4.1 | 2026-11-11 | payment 的 `notify_send` 已按 §6 发送商户通知。不新增字段，不新增错误码，不改 IDL | §1、§6 | NTF-02 |
 | 3.5.0 | 2026-11-11 | 正在监听的管理端口提供 `GET /metrics`。正文是 Prometheus 文本，含 Go runtime 与进程指标，以及 OPS-03 登记的 `pay_*`。这不是商户 API，不签名，不用 JSON 信封，也不用错误码。商户端口、网关管理 API、channel-mock 业务端口和 Kitex 业务端口不提供这份正文。不改商户 HTTP，不改 IDL，不新增错误码 | §1、§8.4、§12 | OPS-03 |
+| 3.6.0 | 2026-11-11 | 每条生产消息增加头 `produced_at_ns`（发送到 Kafka 时的十进制纳秒）。JSON 信封和 `trace_context` 不变，仍只有 `traceparent`。account 消费 `payment.succeeded` 时用这个头计算 `mq_wait`；头缺失或无法解析不记样本，不进 DLQ。不改商户 HTTP，不改 IDL，不新增错误码，不加表字段 | §1、§11.2 | OPT-01 |
 
 ## 1. 接口总览
 
@@ -125,7 +126,7 @@
 | 模拟渠道回调 | §9.7 | — | CH-05、CH-06 | 1.0.0 | 2026-10-27 |
 | 模拟渠道管理 `config` / `bill-inject` | §9.8 | — | CH-07、CH-09 | 1.0.0 | 2026-10-12 |
 | AccountService / PaymentService / ReconService | §10 | — | 见各方法 | 1.0.0 | 2026-10-27 |
-| 事件 `payment.succeeded`、`refund.succeeded`、`refund.failed`、`transfer.succeeded`、`transfer.failed` | §11 | — | MQ-01、MQ-04、NTF-01 | 1.0.0 | 2026-10-28 |
+| 事件 `payment.succeeded`、`refund.succeeded`、`refund.failed`、`transfer.succeeded`、`transfer.failed` | §11 | — | MQ-01、MQ-04、NTF-01、OPT-01 | 1.0.0 | 2026-11-11 |
 | `GET /healthz`、`GET /readyz` 进程探针 | §12 | — | OPS-01 | 3.2.0 | 2026-11-10 |
 | `GET /debug/pprof/` 及 cmdline、profile、symbol、trace | §12 | — | OPS-05 | 3.3.0 | 2026-11-01 |
 | `GET /metrics` | §12 | — | OPS-03 | 3.5.0 | 2026-11-11 |
@@ -1082,6 +1083,7 @@ account 不消费转账事件：转账的两个分支由 payment 同步驱动（
 | `event_id` | 同信封 |
 | `event_type` | 同信封 |
 | `traceparent` | W3C trace context |
+| `produced_at_ns` | 发送到 Kafka 时的十进制纳秒，早于 SENT 回写。不是 JSON 字段，也不进 `trace_context`。account 消费 `payment.succeeded` 时用它和消费开始时刻计算 `pay_settle` / `mq_wait`。缺失或无法解析不记样本，不进 DLQ |
 | `x-orig-topic`、`x-orig-partition`、`x-orig-offset`、`x-error` | 仅死信消息 |
 
 ### 11.3 信封

@@ -124,6 +124,10 @@ func handle(ctx context.Context, ledger Ledger, rec mq.Record) (err error) {
 	}
 	ctx, end := obs.StartLinked(ctx, "account", "consume", env.TraceContext)
 	defer func() { end(err) }()
+	// 生产时刻在 Kafka 头里。头缺失或无法解析不记样本，也不进 DLQ。
+	if env.EventType == eventPaymentSucceeded {
+		obs.ObserveMQWait(ctx, rec.ProducedAt)
+	}
 	switch env.EventType {
 	case eventPaymentSucceeded:
 		return handlePayment(ctx, ledger, env, fields)

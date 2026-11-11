@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/yym108/pay-system/pkg/errno"
+	"github.com/yym108/pay-system/pkg/obs"
 )
 
 const (
@@ -122,6 +123,10 @@ func (p *Payments) recoverRefund(ctx context.Context, row RefundOrder) {
 	}
 	// 与 CreateRefund 同一段代码：冻结（幂等）→ 故障点 → CAS INIT → PROCESSING 并插入流水 → 事务外提交渠道。
 	// 冻结仍超时或不可用时返回 INIT 且没有错误，下一轮再试。
+	// 链名给 channel_call 用。nil 不能进 WithChain，否则会换成 Background。
+	if ctx != nil {
+		ctx = obs.WithChain(ctx, obs.ChainRefund)
+	}
 	_, err := p.submitRefund(ctx, row)
 	if err == nil || errors.Is(err, errno.ErrInsufficientBalance) || errors.Is(err, errno.ErrChannelRejected) {
 		// 40002 与渠道拒绝已由 ApplyRefundResult 写成 FAILED，不是这一轮的错误。
