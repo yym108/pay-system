@@ -71,3 +71,4 @@
 | NTF-01 | 通知记录生成 | 支付 | `7676d8f` | 2026-11-10 | [NTF-01-notify-record.md](NTF-01-notify-record.md) |
 | TL-02 | 商户演示接收通知 | 基础设施 | `4e0e481` | 2026-11-11 | [TL-02-merchant-demo.md](TL-02-merchant-demo.md) |
 | NTF-02 | 通知发送与固定间隔重试 | 支付 | `81d2262` | 2026-11-11 | [NTF-02-notify-send.md](NTF-02-notify-send.md) |
+| GW-04 | 时间窗口与 nonce 防重放 | 基础设施 | `70ae1da` | 2026-11-11 | [GW-04-timestamp-nonce.md](GW-04-timestamp-nonce.md) |
