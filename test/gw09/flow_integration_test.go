@@ -357,6 +357,7 @@ func listenGateway(t *testing.T, ctx context.Context, h *payhandler.Handler) (ba
 		gateway.WithPaymentAPI(payAPI{h: h}),
 		gateway.WithNotifyAPI(notifyAPI{h: h}),
 		gateway.WithChannelKey([]byte(gw09ChannelKey)),
+		gateway.WithNonceStore(gateway.NewMemoryNonce()),
 	).Register(srv)
 	return "http://" + ln.Addr().String(), func() { //nolint:contextcheck // 清理发生在测试 ctx 取消之后。
 		runCtx, cancel := context.WithCancel(context.Background())

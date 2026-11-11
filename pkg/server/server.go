@@ -1,5 +1,6 @@
 // Package server 在管理端口提供存活与就绪检查、pprof，并按固定顺序排空进程。
-// Redis 与 Kafka 的检查由以后的功能点注册。没有注册时，/readyz 不因此失败。
+// 没有数据库检查时 /readyz 为 503，已注册的其他检查也不跑。AllowNoDB 默认关闭。
+// 只有调用方打开它，并且至少注册了一项检查，才不要求数据库。一项都没有仍然是 503。
 package server
 
 import (
@@ -69,12 +70,15 @@ func (g funcGroup) Stop(ctx context.Context) error { return g.stop(ctx) }
 // Config 是一次管理端口监听。DrainTimeout 小于等于 0 时用 DefaultDrainTimeout。
 // Signals 非空时由调用方送入信号，测试用它代替进程信号。
 // DB 是数据库检查。也可以在 Run 之前调用 RequireDB。两者都没有时 /readyz 为 503。
+// AllowNoDB 默认关闭。关闭时没有数据库就是 503，已注册的其他检查也不跑。
+// gateway 没有 MySQL，打开后只跑已注册的检查；一项都没有仍然是 503。
 type Config struct {
 	Addr         string
 	Listener     net.Listener
 	DrainTimeout time.Duration
 	Signals      <-chan os.Signal
 	DB           Check
+	AllowNoDB    bool
 }
 
 type checkItem struct {
@@ -359,13 +363,17 @@ func (s *Server) dependenciesReady(ctx context.Context) bool {
 		db = &copied
 	}
 	extras := append([]checkItem(nil), s.checks...)
+	allowNoDB := s.cfg.AllowNoDB
 	s.mu.Unlock()
-	if db == nil || db.fn == nil {
-		return false
-	}
 
 	items := make([]checkItem, 0, 1+len(extras))
-	items = append(items, *db)
+	if db == nil || db.fn == nil {
+		if !allowNoDB || len(extras) == 0 {
+			return false
+		}
+	} else {
+		items = append(items, *db)
+	}
 	items = append(items, extras...)
 	var failed atomic.Bool
 	var wg sync.WaitGroup

@@ -1,7 +1,8 @@
 // Package gateway 是商户 API 与管理 API 的 HTTP 入口。
 //
 // GW-01 搭了骨架：两个 Hertz 实例、统一 JSON、请求体上限、中间件顺序和 Kitex 客户端。
-// GW-03 在商户端口的 /v1 上验签。GW-02 注册支付与余额路由。时间窗口、限流、nonce 仍是占位。
+// GW-03 在商户端口的 /v1 上验签。GW-02 注册支付与余额路由。
+// GW-04 已实现时间窗口和 nonce。限流仍是占位。
 package gateway
 
 import (
@@ -35,11 +36,12 @@ type Handler struct {
 	notify     notifyAPI
 	replay     replayAPI
 	channelKey []byte
+	nonces     NonceStore
 	nextNonce  func() (string, error)
 	logger     *slog.Logger
 }
 
-// Option 覆盖时钟、响应签名密钥、商户凭证查询或日志。
+// Option 覆盖时钟、响应签名密钥、商户凭证查询、nonce 存储或日志。
 type Option func(*Handler)
 
 // WithClock 注入响应签名和访问日志用的时钟。nil 时仍用真实时钟。
@@ -63,6 +65,13 @@ func WithSignSecret(secret []byte) Option {
 func WithLogger(logger *slog.Logger) Option {
 	return func(h *Handler) {
 		h.logger = logger
+	}
+}
+
+// WithNonceStore 安装 nonce 存储。商户 /v1 验签通过后若仍是 nil，按不可用处理。
+func WithNonceStore(store NonceStore) Option {
+	return func(h *Handler) {
+		h.nonces = store
 	}
 }
 
@@ -96,7 +105,7 @@ func newHandler(admin bool, opts ...Option) *Handler {
 // 管理端口只注册 POST /admin/outbox/replay，不注册商户路由。
 //
 // 顺序：请求体上限、Recovery、RequestID、Trace、AccessLog、
-// 时间窗口占位、验签、限流占位、nonce 占位、响应签名、handler。
+// 时间窗口、验签、限流占位、nonce、响应签名、handler。
 func (h *Handler) Register(r *server.Hertz) {
 	if h == nil || r == nil {
 		return

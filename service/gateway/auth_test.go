@@ -72,6 +72,12 @@ func (h *hitBox) snapshot() (n int, id string, ok bool) {
 	return h.n, h.id, h.ok
 }
 
+func gw03ClockUnix1() *clock.Fake {
+	clk := &clock.Fake{}
+	clk.Set(time.Unix(1, 0))
+	return clk
+}
+
 func signedHeader(t *testing.T, secret []byte, method, uri, appID, ts, nonce string, body []byte) http.Header {
 	t.Helper()
 	sig, err := sign.SignRequest(secret, sign.Request{
@@ -270,7 +276,7 @@ func TestGW03BadSignature(t *testing.T) {
 		return Credential{MerchantID: gw03MID, Status: "ACTIVE", Secret: []byte(secret)}, nil
 	}}
 	var hit hitBox
-	addr := startGW(t, NewMerchant(WithMerchantLookup(look), WithLogger(logx.New("gateway", logs))), func(r *server.Hertz) {
+	addr := startGW(t, NewMerchant(WithClock(gw03ClockUnix1()), WithMerchantLookup(look), WithLogger(logx.New("gateway", logs))), func(r *server.Hertz) {
 		r.POST("/v1/gw03-probe", func(_ context.Context, c *app.RequestContext) {
 			id, ok := MerchantID(c)
 			hit.mark(id, ok)
@@ -302,7 +308,7 @@ func TestGW03UnknownAppID(t *testing.T) {
 		return Credential{}, errno.ErrMerchantInvalid
 	}}
 	var hit hitBox
-	addr := startGW(t, NewMerchant(WithMerchantLookup(look)), func(r *server.Hertz) {
+	addr := startGW(t, NewMerchant(WithClock(gw03ClockUnix1()), WithMerchantLookup(look)), func(r *server.Hertz) {
 		r.GET("/v1/gw03-probe", func(_ context.Context, c *app.RequestContext) {
 			id, ok := MerchantID(c)
 			hit.mark(id, ok)
@@ -326,7 +332,7 @@ func TestGW03DisabledBeforeVerify(t *testing.T) {
 		return Credential{MerchantID: gw03MID, Status: "DISABLED", Secret: []byte(gw03Secret)}, nil
 	}}
 	var hit hitBox
-	addr := startGW(t, NewMerchant(WithMerchantLookup(look)), func(r *server.Hertz) {
+	addr := startGW(t, NewMerchant(WithClock(gw03ClockUnix1()), WithMerchantLookup(look)), func(r *server.Hertz) {
 		r.POST("/v1/gw03-probe", func(_ context.Context, c *app.RequestContext) {
 			id, ok := MerchantID(c)
 			hit.mark(id, ok)
@@ -352,7 +358,7 @@ func TestGW03StatusNotActive(t *testing.T) {
 				return Credential{MerchantID: gw03MID, Status: status, Secret: []byte(gw03Secret)}, nil
 			}}
 			var hit hitBox
-			addr := startGW(t, NewMerchant(WithMerchantLookup(look)), func(r *server.Hertz) {
+			addr := startGW(t, NewMerchant(WithClock(gw03ClockUnix1()), WithMerchantLookup(look)), func(r *server.Hertz) {
 				r.GET("/v1/gw03-probe", func(_ context.Context, c *app.RequestContext) {
 					id, ok := MerchantID(c)
 					hit.mark(id, ok)
@@ -378,7 +384,7 @@ func TestGW03LookupUnavailableNotCached(t *testing.T) {
 		return Credential{}, errno.ErrUnavailable
 	}}
 	var hit hitBox
-	addr := startGW(t, NewMerchant(WithMerchantLookup(look)), func(r *server.Hertz) {
+	addr := startGW(t, NewMerchant(WithClock(gw03ClockUnix1()), WithMerchantLookup(look)), func(r *server.Hertz) {
 		r.GET("/v1/gw03-probe", func(_ context.Context, c *app.RequestContext) {
 			id, ok := MerchantID(c)
 			hit.mark(id, ok)
@@ -412,7 +418,7 @@ func TestGW03EmptySecret(t *testing.T) {
 		return Credential{MerchantID: gw03MID, Status: "ACTIVE", Secret: nil}, nil
 	}}
 	var hit hitBox
-	addr := startGW(t, NewMerchant(WithMerchantLookup(look), WithLogger(logx.New("gateway", logs))), func(r *server.Hertz) {
+	addr := startGW(t, NewMerchant(WithClock(gw03ClockUnix1()), WithMerchantLookup(look), WithLogger(logx.New("gateway", logs))), func(r *server.Hertz) {
 		r.POST("/v1/gw03-probe", func(_ context.Context, c *app.RequestContext) {
 			id, ok := MerchantID(c)
 			hit.mark(id, ok)
@@ -440,7 +446,7 @@ func TestGW03EmptyMerchantID(t *testing.T) {
 		return Credential{MerchantID: "", Status: "ACTIVE", Secret: []byte(gw03Secret)}, nil
 	}}
 	var hit hitBox
-	addr := startGW(t, NewMerchant(WithMerchantLookup(look)), func(r *server.Hertz) {
+	addr := startGW(t, NewMerchant(WithClock(gw03ClockUnix1()), WithMerchantLookup(look)), func(r *server.Hertz) {
 		r.POST("/v1/gw03-probe", func(_ context.Context, c *app.RequestContext) {
 			id, ok := MerchantID(c)
 			hit.mark(id, ok)
@@ -471,7 +477,7 @@ func TestGW03ValidSignature(t *testing.T) {
 		return Credential{MerchantID: gw03MID, Status: "ACTIVE", Secret: []byte(secret)}, nil
 	}}
 	var hit hitBox
-	addr := startGW(t, NewMerchant(WithClock(clk), WithSignSecret([]byte(other)), WithMerchantLookup(look)), func(r *server.Hertz) {
+	addr := startGW(t, NewMerchant(WithClock(clk), WithSignSecret([]byte(other)), WithMerchantLookup(look), WithNonceStore(NewMemoryNonce())), func(r *server.Hertz) {
 		r.POST("/v1/gw03-probe", func(_ context.Context, c *app.RequestContext) {
 			id, ok := MerchantID(c)
 			hit.mark(id, ok)
@@ -480,7 +486,7 @@ func TestGW03ValidSignature(t *testing.T) {
 	})
 	body := []byte(`{"n":1}`)
 	uri := "/v1/gw03-probe?x=1"
-	hdr := signedHeader(t, []byte(secret), http.MethodPost, uri, appID, "1", gw03Nonce, body)
+	hdr := signedHeader(t, []byte(secret), http.MethodPost, uri, appID, "1791500000", gw03Nonce, body)
 	got := do(t, http.MethodPost, "http://"+addr+uri, body, hdr)
 	if got.status != http.StatusOK {
 		t.Fatalf("status %d body %s", got.status, got.body)
@@ -520,7 +526,7 @@ func TestGW03V1UnknownPathSigned(t *testing.T) {
 	look := &fakeLookup{fn: func(string) (Credential, error) {
 		return Credential{MerchantID: gw03MID, Status: "ACTIVE", Secret: []byte(gw03Secret)}, nil
 	}}
-	addr := startGW(t, NewMerchant(WithClock(clk), WithMerchantLookup(look)), nil)
+	addr := startGW(t, NewMerchant(WithClock(clk), WithMerchantLookup(look), WithNonceStore(NewMemoryNonce())), nil)
 	body := []byte(gw03V1Body)
 	hdr := http.Header{}
 	hdr.Set(sign.HeaderAppID, gw03AppID)
@@ -558,7 +564,7 @@ func TestGW03UnknownPathStill404(t *testing.T) {
 	look := &fakeLookup{fn: func(string) (Credential, error) {
 		return Credential{MerchantID: gw03MID, Status: "ACTIVE", Secret: []byte(gw03Secret)}, nil
 	}}
-	addr := startGW(t, NewMerchant(WithClock(clk), WithMerchantLookup(look)), nil)
+	addr := startGW(t, NewMerchant(WithClock(clk), WithMerchantLookup(look), WithNonceStore(NewMemoryNonce())), nil)
 	const path = "/v1/gw03-unknown"
 	body := []byte(`{"n":1}`)
 	hdr := signedHeader(t, []byte(gw03Secret), http.MethodPost, path, gw03AppID, "1791500000", gw03Nonce, body)
@@ -647,7 +653,7 @@ func TestGW03NonV1OrderSkipsLookup(t *testing.T) {
 	}
 }
 
-// GW-03 验收：不检查时间戳偏差，不检查 nonce 重放，不访问 Redis。
+// GW-04：默认真实时钟下，时间戳 1 超出窗口，返回 20002。不查商户，不进 handler，响应不签名。
 func TestGW03NoTimestampOrNonceCheck(t *testing.T) {
 	const secret = "merchant-secret-gw03-bytes" //nolint:gosec // G101: 测试哨兵，不是生产密钥。
 	look := &fakeLookup{fn: func(string) (Credential, error) {
@@ -665,22 +671,12 @@ func TestGW03NoTimestampOrNonceCheck(t *testing.T) {
 	hdr := signedHeader(t, []byte(secret), http.MethodGet, uri, gw03AppID, "1", gw03Nonce, nil)
 	for i := 0; i < 2; i++ {
 		got := do(t, http.MethodGet, "http://"+addr+uri, nil, hdr)
-		if got.status != http.StatusOK {
-			t.Fatalf("try %d status %d body %s", i, got.status, got.body)
-		}
-		if err := sign.VerifyPlatform([]byte(secret), sign.PlatformMessage{
-			Timestamp: got.header.Get(sign.HeaderTimestamp),
-			Nonce:     got.header.Get(sign.HeaderNonce),
-			Body:      got.body,
-		}, got.header.Get(sign.HeaderSignature)); err != nil {
-			t.Fatal(err)
-		}
+		assertErrno(t, got, errno.ErrTimestampExpired)
 	}
-	n, id, ok := hit.snapshot()
-	if n != 2 || !ok || id != gw03MID {
-		t.Fatalf("n=%d ok=%v id=%q", n, ok, id)
+	if n, _, _ := hit.snapshot(); n != 0 {
+		t.Fatal("handler called")
 	}
-	if calls := look.calls(); len(calls) != 2 {
+	if calls := look.calls(); len(calls) != 0 {
 		t.Fatalf("lookup calls %d", len(calls))
 	}
 }
@@ -711,7 +707,7 @@ func TestGW03PathBoundary(t *testing.T) {
 // GW-03 验收：商户端口未装 lookup 时 /v1 返回 10003，不进 handler。
 func TestGW03NilLookup(t *testing.T) {
 	var hit hitBox
-	addr := startGW(t, NewMerchant(), func(r *server.Hertz) {
+	addr := startGW(t, NewMerchant(WithClock(gw03ClockUnix1())), func(r *server.Hertz) {
 		r.GET("/v1/gw03-probe", func(_ context.Context, c *app.RequestContext) {
 			id, ok := MerchantID(c)
 			hit.mark(id, ok)

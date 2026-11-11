@@ -136,10 +136,44 @@ func (h *Handler) accessLog(ctx context.Context, c *app.RequestContext) {
 
 const merchantStatusActive = "ACTIVE"
 
-// 时间窗口、限流、nonce 仍只留下顺序。不访问 Redis，不限流。验签在 verifySign。
+// timeWindow 只处理商户 /v1，且四个头都非空。缺任一头不在这里拒绝，交给验签返回 20001。
 func (h *Handler) timeWindow(ctx context.Context, c *app.RequestContext) {
 	appendName(c, nameTimeWindow)
+	if h.admin || !v1Path(string(c.Request.URI().Path())) {
+		c.Next(ctx)
+		return
+	}
+	appID := string(c.GetHeader(sign.HeaderAppID))
+	tsText := string(c.GetHeader(sign.HeaderTimestamp))
+	nonce := string(c.GetHeader(sign.HeaderNonce))
+	signature := string(c.GetHeader(sign.HeaderSignature))
+	if appID == "" || tsText == "" || nonce == "" || signature == "" {
+		c.Next(ctx)
+		return
+	}
+	if !noncePattern.MatchString(nonce) {
+		h.failWindow(ctx, c, appID, errno.ErrSignInvalid)
+		return
+	}
+	ts, err := strconv.ParseInt(tsText, 10, 64)
+	if err != nil {
+		h.failWindow(ctx, c, appID, errno.ErrSignInvalid)
+		return
+	}
+	if timestampOutside(h.clk.Now().Unix(), ts) {
+		h.failWindow(ctx, c, appID, errno.ErrTimestampExpired)
+		return
+	}
 	c.Next(ctx)
+}
+
+func (h *Handler) failWindow(ctx context.Context, c *app.RequestContext, appID string, e *errno.Error) {
+	if e == nil {
+		e = errno.ErrSignInvalid
+	}
+	h.logGate(ctx, c, appID, e, "timestamp window rejected")
+	writeErrno(c, e.HTTPStatus, e, requestID(c))
+	c.Abort()
 }
 
 func (h *Handler) verifySign(ctx context.Context, c *app.RequestContext) {
@@ -275,12 +309,75 @@ func (h *Handler) rateLimit(ctx context.Context, c *app.RequestContext) {
 
 func (h *Handler) nonce(ctx context.Context, c *app.RequestContext) {
 	appendName(c, nameNonce)
+	if h.admin || !v1Path(string(c.Request.URI().Path())) || !isVerified(c) {
+		c.Next(ctx)
+		return
+	}
+	appID := string(c.GetHeader(sign.HeaderAppID))
+	nonce := string(c.GetHeader(sign.HeaderNonce))
+	if h.nonces == nil {
+		nonceUnavailable.Add(1)
+		h.failNonce(ctx, c, appID, errno.ErrUnavailable)
+		return
+	}
+	claimed, err := h.nonces.Reserve(ctx, appID, nonce)
+	if err != nil {
+		nonceUnavailable.Add(1)
+		h.failNonce(ctx, c, appID, errno.ErrUnavailable)
+		return
+	}
+	if !claimed {
+		h.failNonce(ctx, c, appID, errno.ErrNonceReplayed)
+		return
+	}
 	c.Next(ctx)
 }
 
-// platformSign 在 handler 写出 body 之后签名。panic 被外层 Recovery 接住，不会签到 500 上。
-func (h *Handler) platformSign(ctx context.Context, c *app.RequestContext) {
+func (h *Handler) failNonce(ctx context.Context, c *app.RequestContext, appID string, e *errno.Error) {
+	if e == nil {
+		e = errno.ErrUnavailable
+	}
+	h.logGate(ctx, c, appID, e, "nonce rejected")
+	writeErrno(c, e.HTTPStatus, e, requestID(c))
+	// 错误 JSON 已经写好。进入 platformSign 签当前 body，不要在这里 Abort。
+	c.Set(skipHandlerKey, true)
 	c.Next(ctx)
+}
+
+func (h *Handler) logGate(ctx context.Context, c *app.RequestContext, appID string, e *errno.Error, msg string) {
+	if e == nil {
+		e = errno.ErrInternal
+	}
+	ctx = logx.WithRequestID(ctx, requestID(c))
+	code := strconv.FormatInt(int64(e.Code), 10)
+	attrs := []any{"err_code", code}
+	if id, ok := loggableAppID(appID); ok {
+		attrs = []any{"app_id", id, "err_code", code}
+	}
+	if e.Code == errno.ErrUnavailable.Code || e.Code == errno.ErrInternal.Code {
+		h.log().ErrorContext(ctx, msg, attrs...)
+		return
+	}
+	h.log().InfoContext(ctx, msg, attrs...)
+}
+
+// platformSign 在 handler 写出 body 之后签名。panic 被外层 Recovery 接住，不会签到 500 上。
+// nonce 失败时 body 已经是错误 JSON：看到跳过标记就签当前 body，然后停住，不再进入路由。
+// 验签失败在更前面 Abort，到不了这里，响应仍然不签名。
+func (h *Handler) platformSign(ctx context.Context, c *app.RequestContext) {
+	if skipHandler(c) {
+		h.applyPlatformSign(ctx, c)
+		c.Abort()
+		return
+	}
+	c.Next(ctx)
+	if h.admin || !isVerified(c) {
+		return
+	}
+	h.applyPlatformSign(ctx, c)
+}
+
+func (h *Handler) applyPlatformSign(ctx context.Context, c *app.RequestContext) {
 	if h.admin || !isVerified(c) {
 		return
 	}

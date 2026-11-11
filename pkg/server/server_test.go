@@ -334,6 +334,83 @@ func TestPingCheckHidesTarget(t *testing.T) {
 	}
 }
 
+// GW-04：AllowNoDB 默认关闭时，没有数据库仍然是 503。打开后没有检查仍是 503；
+// 有检查时 /readyz 跟随该项，/healthz 在检查失败时仍是 200。
+func TestReadyAllowNoDB(t *testing.T) {
+	t.Run("closed ignores extra check", func(t *testing.T) {
+		adminLn := listenLocal(t)
+		signals := make(chan os.Signal, 1)
+		srv := New(Config{Listener: adminLn, DrainTimeout: 20 * time.Millisecond, Signals: signals})
+		srv.RegisterCheck(func(context.Context) error { return nil })
+		runErr := make(chan error, 1)
+		go func() { runErr <- srv.Run(context.Background()) }()
+		base := "http://" + adminLn.Addr().String()
+		waitGET(t, base+"/healthz", http.StatusOK, "ok", time.Second)
+		waitGET(t, base+"/readyz", http.StatusServiceUnavailable, "unavailable", time.Second)
+		stopServer(t, signals, runErr)
+	})
+
+	t.Run("open without checks", func(t *testing.T) {
+		adminLn := listenLocal(t)
+		signals := make(chan os.Signal, 1)
+		srv := New(Config{
+			Listener:     adminLn,
+			DrainTimeout: 20 * time.Millisecond,
+			Signals:      signals,
+			AllowNoDB:    true,
+		})
+		runErr := make(chan error, 1)
+		go func() { runErr <- srv.Run(context.Background()) }()
+		base := "http://" + adminLn.Addr().String()
+		waitGET(t, base+"/healthz", http.StatusOK, "ok", time.Second)
+		waitGET(t, base+"/readyz", http.StatusServiceUnavailable, "unavailable", time.Second)
+		stopServer(t, signals, runErr)
+	})
+
+	t.Run("open follows check", func(t *testing.T) {
+		adminLn := listenLocal(t)
+		signals := make(chan os.Signal, 1)
+		var up atomic.Bool
+		srv := New(Config{
+			Listener:     adminLn,
+			DrainTimeout: 20 * time.Millisecond,
+			Signals:      signals,
+			AllowNoDB:    true,
+		})
+		srv.RegisterCheck(func(context.Context) error {
+			if up.Load() {
+				return nil
+			}
+			return errors.New("redis down")
+		})
+		runErr := make(chan error, 1)
+		go func() { runErr <- srv.Run(context.Background()) }()
+		base := "http://" + adminLn.Addr().String()
+		waitGET(t, base+"/healthz", http.StatusOK, "ok", time.Second)
+		body := waitGET(t, base+"/readyz", http.StatusServiceUnavailable, "unavailable", time.Second)
+		if body != "unavailable" {
+			t.Fatalf("body %q", body)
+		}
+		waitGET(t, base+"/healthz", http.StatusOK, "ok", time.Second)
+		up.Store(true)
+		waitGET(t, base+"/readyz", http.StatusOK, "ok", time.Second)
+		stopServer(t, signals, runErr)
+	})
+}
+
+func stopServer(t *testing.T, signals chan os.Signal, runErr <-chan error) {
+	t.Helper()
+	signals <- syscall.SIGTERM
+	select {
+	case err := <-runErr:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("server did not exit")
+	}
+}
+
 func TestReadyzRequiresDatabase(t *testing.T) {
 	adminLn := listenLocal(t)
 	signals := make(chan os.Signal, 1)

@@ -3,9 +3,11 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,9 +33,13 @@ func gw02Lookup() *fakeLookup {
 	}}
 }
 
+var gw02NonceN atomic.Uint64
+
 func gw02Sign(t *testing.T, method, uri string, body []byte) http.Header {
 	t.Helper()
-	return signedHeader(t, []byte(gw03Secret), method, uri, gw03AppID, "1791500000", gw03Nonce, body)
+	n := gw02NonceN.Add(1) % 1000000000000000
+	nonce := fmt.Sprintf("n%015d", n)
+	return signedHeader(t, []byte(gw03Secret), method, uri, gw03AppID, "1791500000", nonce, body)
 }
 
 func gw02Start(t *testing.T, pay paymentAPI, acct accountAPI) string {
@@ -43,6 +49,7 @@ func gw02Start(t *testing.T, pay paymentAPI, acct accountAPI) string {
 		WithMerchantLookup(gw02Lookup()),
 		WithPaymentAPI(pay),
 		WithAccountAPI(acct),
+		WithNonceStore(NewMemoryNonce()),
 	)
 	return startGW(t, h, nil)
 }

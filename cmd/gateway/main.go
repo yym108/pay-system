@@ -7,13 +7,13 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 
 	"github.com/yym108/pay-system/pkg/clock"
 	"github.com/yym108/pay-system/pkg/config"
 	"github.com/yym108/pay-system/pkg/fault"
 	"github.com/yym108/pay-system/pkg/logx"
+	"github.com/yym108/pay-system/pkg/server"
 	"github.com/yym108/pay-system/service/gateway"
 )
 
@@ -36,15 +36,16 @@ func run(ctx context.Context, environ []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "write config: %v\n", werr)
 		return 1
 	}
-	if err = serve(ctx, stderr, cfg.ChannelMockpayKey); err != nil {
+	if err = serve(ctx, stderr, cfg.RedisAddr, cfg.ChannelMockpayKey); err != nil {
 		_, _ = fmt.Fprintf(stderr, "%s\n", err)
 		return 1
 	}
 	return 0
 }
 
-// serve 先建客户端再听 :8080 和 :8090。ctx 已取消时直接返回，不绑定端口。
-func serve(ctx context.Context, logOut io.Writer, channelKey string) error {
+// serve 先建客户端再听 :8080、:8090 和管理端口 :6060。ctx 已取消时直接返回，不绑定端口。
+// Redis 连不上也不在这里失败，否则渠道回调会一起起不来。
+func serve(ctx context.Context, logOut io.Writer, redisAddr, channelKey string) error {
 	if err := ctx.Err(); err != nil {
 		return nil
 	}
@@ -53,6 +54,7 @@ func serve(ctx context.Context, logOut io.Writer, channelKey string) error {
 		return err
 	}
 	logx.SetDefault("gateway", logOut)
+	store, ready, closer := gateway.OpenRedisNonce(redisAddr)
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	merchant := gateway.NewMerchant(
@@ -62,30 +64,36 @@ func serve(ctx context.Context, logOut io.Writer, channelKey string) error {
 		gateway.WithAccountAPI(clients.Account),
 		gateway.WithChannelKey([]byte(channelKey)),
 		gateway.WithNotifyAPI(clients.Payment),
+		gateway.WithNonceStore(store),
 	)
 	admin := gateway.NewAdmin(
 		gateway.WithClock(clock.Real{}),
 		gateway.WithReplayAPI(clients.Payment),
 	)
-	errCh := make(chan error, 2)
-	var wg sync.WaitGroup
-	wg.Add(2)
-	start := func(addr string, h *gateway.Handler) {
-		defer wg.Done()
-		err := gateway.Serve(ctx, addr, h, nil)
-		if err != nil && !errors.Is(err, context.Canceled) {
+	proc := server.New(server.Config{
+		Addr:      server.AddrGateway,
+		AllowNoDB: true,
+	})
+	proc.RegisterCheck(ready)
+	proc.RegisterCloser(closer)
+	proc.RegisterGroup(listenGroup(ctx, cancel, gateway.AddrMerchant, merchant))
+	proc.RegisterGroup(listenGroup(ctx, cancel, gateway.AddrAdmin, admin))
+	return proc.Run(ctx)
+}
+
+func listenGroup(ctx context.Context, cancel context.CancelFunc, addr string, h *gateway.Handler) server.Group {
+	return server.FuncGroup(
+		func() error {
+			err := gateway.Serve(ctx, addr, h, nil)
+			if err != nil && !errors.Is(err, context.Canceled) {
+				cancel()
+				return err
+			}
+			return nil
+		},
+		func(context.Context) error {
 			cancel()
-		}
-		errCh <- err
-	}
-	go start(gateway.AddrMerchant, merchant)
-	go start(gateway.AddrAdmin, admin)
-	wg.Wait()
-	close(errCh)
-	for err := range errCh {
-		if err != nil && !errors.Is(err, context.Canceled) {
-			return err
-		}
-	}
-	return nil
+			return nil
+		},
+	)
 }

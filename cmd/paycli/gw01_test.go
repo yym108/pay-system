@@ -19,7 +19,7 @@ import (
 // GW-03 起 /v1 先验签。fake lookup 的 secret 与 testSecret 相同，handler 只 WriteOK。
 func TestGW01PayCLIVerifiesPlatformSignature(t *testing.T) {
 	clk := fixedClock()
-	h := gateway.NewMerchant(gateway.WithClock(clk), gateway.WithMerchantLookup(gw03PaycliLookup{}), gateway.WithAccountAPI(gw02PaycliAccount{}))
+	h := gateway.NewMerchant(gateway.WithClock(clk), gateway.WithMerchantLookup(gw03PaycliLookup{}), gateway.WithAccountAPI(gw02PaycliAccount{}), gateway.WithNonceStore(gateway.NewMemoryNonce()))
 	ctx, cancel := context.WithCancel(context.Background())
 	ln, err := gateway.Listen(ctx, ":0")
 	if err != nil {

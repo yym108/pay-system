@@ -25,6 +25,8 @@ const (
 	merchantIDKey = "gw.merchant_id"
 	// signSecretKey 只留给本次响应签名。不导出读取函数。
 	signSecretKey = "gw.sign_secret"
+	// skipHandlerKey 表示错误 JSON 已写好，platformSign 只签名，不再进入路由。
+	skipHandlerKey = "gw.skip_handler"
 
 	nonceLen      = 16
 	nonceAlphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789"
@@ -179,6 +181,18 @@ func requestID(c *app.RequestContext) string {
 
 func isVerified(c *app.RequestContext) bool {
 	v, ok := c.Get(verifiedKey)
+	if !ok {
+		return false
+	}
+	on, _ := v.(bool)
+	return on
+}
+
+func skipHandler(c *app.RequestContext) bool {
+	if c == nil {
+		return false
+	}
+	v, ok := c.Get(skipHandlerKey)
 	if !ok {
 		return false
 	}
