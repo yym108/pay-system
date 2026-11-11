@@ -1,4 +1,4 @@
-// Package server 在管理端口提供存活与就绪检查、pprof，并按固定顺序排空进程。
+// Package server 在管理端口提供存活与就绪检查、Prometheus /metrics、pprof，并按固定顺序排空进程。
 // 没有数据库检查时 /readyz 为 503，已注册的其他检查也不跑。AllowNoDB 默认关闭。
 // 只有调用方打开它，并且至少注册了一项检查，才不要求数据库。一项都没有仍然是 503。
 package server
@@ -18,6 +18,8 @@ import (
 	"time"
 
 	"github.com/jmoiron/sqlx"
+
+	"github.com/yym108/pay-system/pkg/obs"
 )
 
 const (
@@ -334,6 +336,7 @@ func (s *Server) handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.healthz)
 	mux.HandleFunc("GET /readyz", s.readyz)
+	mux.Handle("GET /metrics", obs.Handler())
 	// net/http/pprof 的 init 把相同路径注册到 DefaultServeMux。真正对外的是这个 mux。
 	mux.HandleFunc("/debug/pprof/", pprof.Index)
 	mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)

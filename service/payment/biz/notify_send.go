@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/yym108/pay-system/pkg/errno"
+	"github.com/yym108/pay-system/pkg/obs"
 	"github.com/yym108/pay-system/pkg/sign"
 )
 
@@ -334,14 +335,19 @@ func (p *Payments) applyNotify(ctx context.Context, task notifyTask, out notifyO
 	if !wrote {
 		return
 	}
-	if out.status != notifyDeadStatus {
-		return
+	switch out.status {
+	case notifyStatusSuccess:
+		obs.AddNotifyAttempt("success")
+	case notifyDeadStatus:
+		notifyDeadAttempts.Add(1)
+		obs.AddNotifyAttempt("dead")
+		slog.ErrorContext(ctx, "merchant notify dead",
+			"merchant_id", task.MerchantID,
+			"biz_no", task.BizNo,
+		)
+	default:
+		obs.AddNotifyAttempt("failed")
 	}
-	notifyDeadAttempts.Add(1)
-	slog.ErrorContext(ctx, "merchant notify dead",
-		"merchant_id", task.MerchantID,
-		"biz_no", task.BizNo,
-	)
 }
 
 func randomNotifyNonce() (string, error) {

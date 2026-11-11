@@ -175,7 +175,10 @@ func (c *ChannelClient) Accept(ctx context.Context, req ChannelAcceptRequest) (C
 	httpReq.Header.Set(sign.HeaderMockTimestamp, ts)
 	httpReq.Header.Set(sign.HeaderMockSignature, sig)
 	setTraceparent(ctx, httpReq)
+	start := c.clk.Now()
 	resp, err := c.http.Do(httpReq) //nolint:gosec // 地址在 NewChannelClient 限定为配置的 http/https 主机，不取商户传入的 URL。
+	result := "ERROR"
+	defer func() { obs.ObserveChannel("pay", result, c.clk.Now().Sub(start)) }()
 	if err != nil {
 		callErr = err
 		return ChannelAcceptResult{}, nil
@@ -202,8 +205,10 @@ func (c *ChannelClient) Accept(ctx context.Context, req ChannelAcceptRequest) (C
 		if out.ChannelTxnNo == "" {
 			return ChannelAcceptResult{}, nil
 		}
+		result = "OK"
 		return ChannelAcceptResult{Outcome: acceptOK, ChannelTxnNo: out.ChannelTxnNo}, nil
 	case acceptResultRejected:
+		result = "REJECTED"
 		return ChannelAcceptResult{Outcome: acceptRejected, Reason: out.Reason}, nil
 	default:
 		return ChannelAcceptResult{}, nil
@@ -443,7 +448,10 @@ func (c *ChannelClient) exchange(ctx context.Context, api, endpoint, payNo, refu
 	httpReq.Header.Set(sign.HeaderMockTimestamp, ts)
 	httpReq.Header.Set(sign.HeaderMockSignature, sig)
 	setTraceparent(ctx, httpReq)
+	start := c.clk.Now()
 	resp, err := c.http.Do(httpReq) //nolint:gosec // 地址在 NewChannelClient 限定为配置的 http/https 主机。
+	result := "error"
+	defer func() { obs.ObserveChannel(api, result, c.clk.Now().Sub(start)) }()
 	if err != nil {
 		callErr = err
 		return nil, true, nil
@@ -461,6 +469,7 @@ func (c *ChannelClient) exchange(ctx context.Context, api, endpoint, payNo, refu
 	if err = sign.VerifyChannel(c.key, sign.ChannelMessage{Timestamp: respTS, Body: body}, respSig); err != nil {
 		return nil, true, nil
 	}
+	result = "ok"
 	return body, false, nil
 }
 

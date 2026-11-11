@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/yym108/pay-system/pkg/errno"
+	"github.com/yym108/pay-system/pkg/obs"
 )
 
 const (
@@ -172,6 +173,7 @@ func addTimeoutCloseFailure(errCode string) {
 		return
 	}
 	counter.Add(1)
+	obs.AddTimeoutCloseFailure(errCode)
 }
 
 func timeoutCloseFailureCount(errCode string) uint64 {

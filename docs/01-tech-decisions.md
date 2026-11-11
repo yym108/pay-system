@@ -1,6 +1,6 @@
 # 技术路线与决策记录
 
-> 最后更新：2026-11-10
+> 最后更新：2026-11-11
 > 状态：已决策，第 1 周开工即按本文锁定版本。推翻任一决策需在本文追加新记录，写明原因。
 > 2026-10-12：项目聚焦支付、退款、转账三条资金链路，新增 D17–D21（账户分片、跨分片转账 TCC、平台子账户、批量记账、链路延迟优化），调整 D10、D14 与 §4。
 
@@ -47,7 +47,7 @@
 | go.opentelemetry.io/otel（及 sdk、otlptracegrpc） | v1.47.0 | |
 | github.com/hertz-contrib/obs-opentelemetry/tracing | v0.4.1 | 发布于 2024，见 D14 |
 | github.com/kitex-contrib/obs-opentelemetry | v0.3.0 | |
-| github.com/prometheus/client_golang | v1.25.0 | |
+| github.com/prometheus/client_golang | v1.25.0 | OPS-03 起为直接依赖 |
 | golang.org/x/sync | v0.22.0 | errgroup、singleflight。与 `go.mod` 一致：原表预留 v0.23.0，实际沿用 kitex 带入的 v0.22.0，CH-06 起为直接依赖（见下文 BASE-12、CH-06） |
 | golang.org/x/time | v0.16.0 | 网关商户级进程内限流 |
 | github.com/stretchr/testify | v1.12.1 | 只是 `go.mod` 中的间接依赖（由 testcontainers-go 带入），项目测试代码不 import；单元测试只用标准库 `testing`（D15） |
@@ -73,6 +73,8 @@ CH-06（2026-10-27）：DUP_NOTIFY 的第一波用 `golang.org/x/sync/errgroup`�
 BASE-15（2026-10-27）：`pkg/fault` 只用标准库，不新增 Go 模块，也不新增配置项。取舍见 §2.4。
 
 MQ-03（2026-11-10）：`go.mod` 直接依赖已登记的 `github.com/twmb/franz-go v1.22.1`。`github.com/twmb/franz-go/pkg/kmsg v1.14.0` 被 tidy 提成直接依赖，集成测试用它发 CreateTopics 和 OffsetFetch；`kadm` 是另一个模块，没有 v1.22.1，没有加入。没有加入 `prometheus/client_golang`。testcontainers 的 kafka 模块 v0.44.0 只接受 `confluentinc/confluent-local`，不能指定 `apache/kafka:4.3.1`，所以没有加入；集成测试用已有的 GenericContainer 起与 compose 相同的镜像。为钉死宿主机端口，测试引用了 testcontainers 已经带入的 `github.com/moby/moby/api v1.55.0`，tidy 把它从间接改为直接，版本不变。franz-go 把间接依赖 `github.com/klauspost/compress` 从 v1.18.6 升到 v1.20.0。本表锁定版本没有改。生产错误不带地址。没提交的分区会把拉取位置退回到该 offset。
+
+OPS-03（2026-11-11）：`go.mod` 直接依赖已锁定的 `github.com/prometheus/client_golang v1.25.0`。指标单测引用 `github.com/prometheus/client_model v0.6.3`，tidy 把它提成直接依赖。该客户端要求 `github.com/klauspost/compress v1.20.1` 与 `github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd`，MVS 从 MQ-03 留下的 compress v1.20.0 和更早的 concurrent 升到这两版。版本表里的 v1.25.0 没有改。`GET /metrics` 使用默认注册表，Go runtime 与进程指标已经在里面，不再次注册。
 
 ### 2.2 容器镜像（均已确认提供 arm64 与 amd64）
 
@@ -229,6 +231,7 @@ BASE-01（2026-10-13）：根据本机实际安装版本，将本表 Go 本机�
   - pprof：每个服务在独立的管理端口暴露 `/debug/pprof`，与业务端口分离，不对外映射。
 - 风险：`hertz-contrib/obs-opentelemetry/tracing` 最近发版在 2024-05，已确认能与 otel v1.47 一起编译，但链路串联未验证。如果第 5 周验证失败，改为自写 Hertz 中间件（约 50 行）。
 - 补充（2026-11-11，OPS-02）：不叠加 hertz-contrib。网关已有的 trace 中间件会 Start 一个 span，再叠一层会多一条根 span。沿用该中间件，在 Start 前提取入站 traceparent。Kitex 用现有 Tracer 接口接 `obs.HandlerSpan`，不引入 kitex-contrib。版本表不改。
+- 补充（2026-11-11，OPS-03）：`/metrics` 只挂在 `pkg/server` 的管理端口。直方图桶全进程共用 5ms、10ms、25ms、50ms、100ms、250ms、500ms、1s、2.5s、5s。商户端口与 Kitex 业务端口不暴露。不部署 Grafana，不配置告警规则。
 
 ### D15 测试工具
 

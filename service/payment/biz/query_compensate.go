@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/yym108/pay-system/pkg/errno"
+	"github.com/yym108/pay-system/pkg/obs"
 )
 
 const (
@@ -104,6 +105,7 @@ func (p *Payments) RunQueryBatch(ctx context.Context) error {
 	}
 	for _, task := range stale {
 		queryExhausted.Add(1)
+		obs.AddChannelQueryExhausted("exhausted")
 		slog.WarnContext(ctx, "channel query exhausted",
 			"biz_type", task.TxnType,
 			"biz_no", task.BizNo,
@@ -181,6 +183,7 @@ func (p *Payments) compensate(ctx context.Context, task queryTask) {
 	}
 	switch res.Kind {
 	case queryNotFound:
+		obs.AddChannelQuery("not_found")
 		if p.clk.Now().Sub(task.CreatedAt) <= queryNotFoundGrace {
 			return
 		}
@@ -190,12 +193,14 @@ func (p *Payments) compensate(ctx context.Context, task queryTask) {
 			p.resubmitRefund(ctx, task)
 		}
 	case queryFound:
+		obs.AddChannelQuery("found")
 		if task.TxnType == txnTypePay {
 			p.applyPayQuery(ctx, task, res)
 		} else {
 			p.applyRefundQuery(ctx, task, res)
 		}
 	default:
+		obs.AddChannelQuery("failed")
 	}
 }
 

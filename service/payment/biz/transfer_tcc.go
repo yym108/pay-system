@@ -16,6 +16,7 @@ import (
 	"github.com/yym108/pay-system/pkg/fault"
 	"github.com/yym108/pay-system/pkg/idgen"
 	"github.com/yym108/pay-system/pkg/money"
+	"github.com/yym108/pay-system/pkg/obs"
 )
 
 const (
@@ -212,6 +213,7 @@ func (p *Payments) finishPhase(ctx context.Context, row TransferOrder, from, to,
 	}
 	if tccConflict(payerErr) || tccConflict(payeeErr) {
 		transferInconsistent.Add(1)
+		obs.AddTransferInconsistent("TCC")
 		code := errno.ErrFreezeStatusConflict.Code
 		if !tccConflict(payerErr) {
 			code = errnoCode(payeeErr)

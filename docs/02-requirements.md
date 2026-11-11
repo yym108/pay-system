@@ -421,7 +421,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | REC-08 | 对账报告 | P0 | M6 | REC-03、REC-05 | TODO |
 | OPS-01 | 健康检查与优雅退出 | P0 | M3 | BASE-08、BASE-09 | DONE |
 | OPS-02 | 链路追踪 | P0 | M5 | GW-01、GW-02、GW-06、ACC-11、MQ-03、MQ-04 | DONE |
-| OPS-03 | 业务与运行指标 | P0 | M5 | OPS-01、GW-02、GW-06、MQ-04 | TODO |
+| OPS-03 | 业务与运行指标 | P0 | M5 | OPS-01、GW-02、GW-06、MQ-04 | DONE |
 | OPS-04 | 监控面板与告警规则 | P1 | — | — | CUT |
 | OPS-05 | pprof 与管理端口 | P0 | M3 | OPS-01 | DONE |
 | OPT-01 | 分阶段耗时埋点 | P0 | M5 | OPS-02、OPS-03、GW-02、GW-06、GW-09、MQ-02、MQ-04、REF-02、TRF-02、TRF-03 | TODO |
@@ -2686,8 +2686,8 @@ ACC-10 只在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（
 
 验收：
 
-- [ ] 执行一次完整支付（下单 → 支付 → 回调 → 入账）后，`/metrics` 中：创建与发起支付两条路由的 `pay_http_requests_total` 各 +1；`pay_order_transitions_total` 的 INIT→PAYING、PAYING→SUCCESS 各 +1；`pay_channel_requests_total` +1；`pay_ledger_post_duration_seconds{biz_type="PAY"}` 样本数 +1。
-- [ ] ACC-10 一次失败的全量核对后，`/metrics` 中 `pay_ledger_check_failures_total` +1。
+- [x] 执行一次完整支付（下单 → 支付 → 回调 → 入账）后，`/metrics` 中：创建与发起支付两条路由的 `pay_http_requests_total` 各 +1；`pay_order_transitions_total` 的 INIT→PAYING、PAYING→SUCCESS 各 +1；`pay_channel_requests_total` +1；`pay_ledger_post_duration_seconds{biz_type="PAY"}` 样本数 +1。
+- [x] ACC-10 一次失败的全量核对后，`/metrics` 中 `pay_ledger_check_failures_total` +1。
 
 #### OPS-04 监控面板与告警规则
 
@@ -3327,3 +3327,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-11 | v3.0 | TL-02：merchant-demo 在 `:9100` 提供 `POST /notify` 与 `GET /stats`。验签密钥用通知 body 的 `merchant_id` 代入已有的 `DEMO_APP_SECRET_FORMAT`，不新增环境变量。签名失败返回 401 且不计数；密钥为空返回 500。`FAIL_FIRST_N` 的 500 计入次数。统计只在内存。请求体超过 65536 字节返回 413。compose 里的 merchant-demo 仍是占位。不新增错误码，不改表，不改 IDL。§3 改为 DONE。发送与重试仍是 NTF-02。 |
 | 2026-11-11 | v3.0 | NTF-02：payment 每秒任务 `notify_send` 抢占到期的 `PENDING` 通知，事务外最多 20 并发 POST。抢占同 PAY-05 的 `SKIP LOCKED`、次数加 1、推后 `next_attempt_at`，不照搬查单的“下次时间已到期则跳过”。密钥按 `merchant_id` 解密，不缓存。成功是 HTTP 200 且去掉首尾空白后为 `SUCCESS`。回写 CAS 的源状态只有 `PENDING`，影响 0 行丢弃。白名单失败和第 5 次失败置 `DEAD` 时，进程内 `pay_notify_attempts_total{result="dead"}` 加 1。不新增错误码，不改表，不改 IDL，不新增环境变量。§3 改为 DONE。
 | 2026-11-11 | v3.0 | OPS-02：采样用已有的标准环境变量 `OTEL_TRACES_SAMPLER` 与 `OTEL_TRACES_SAMPLER_ARG`。未设置时等价 `parentbased_always_on`（全量）。不认识的名字启动失败。Hertz 不叠加 hertz-contrib，沿用已有 trace 中间件，并在 Start 前提取 traceparent。消费端把信封 `trace_context` 做成 link，解析失败不把消息打成坏消息。span 只写单号、状态、`err_code`。不新增错误码，不改 IDL，不改表。 | |
+| 2026-11-11 | v3.0 | OPS-03：正在监听的管理端口提供 `GET /metrics`，正文是 Prometheus 文本，含 Go runtime 与进程指标。延迟直方图桶全进程共用 5ms、10ms、25ms、50ms、100ms、250ms、500ms、1s、2.5s、5s。已有事件在原失败点或成功 CAS 上各记一次，不从进程内计数再采集一遍。对账三项、转账卡单、退款额度不一致、入账批大小与回退、`pay_stage_duration_seconds` 只注册。分阶段埋点仍是 OPT-01。`pay_ledger_freeze_conflict_total` 不进 `/metrics`。商户端口和 Kitex 业务端口不提供该路径。不新增错误码，不改 IDL，不改表。§3 改为 DONE。 |

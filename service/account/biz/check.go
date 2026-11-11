@@ -13,6 +13,7 @@ import (
 
 	"github.com/yym108/pay-system/pkg/errno"
 	"github.com/yym108/pay-system/pkg/money"
+	"github.com/yym108/pay-system/pkg/obs"
 	"github.com/yym108/pay-system/pkg/shard"
 	"github.com/yym108/pay-system/service/account/dal"
 )
@@ -279,6 +280,7 @@ func finishBalance(ctx context.Context, failures []BalanceFailure, merchantID st
 		return CheckBalanceResult{Passed: true}, nil
 	}
 	ledgerCheckFailures.Add(1)
+	obs.AddLedgerCheckFailure()
 	if merchantID != "" {
 		slog.ErrorContext(ctx, "balance check failed", slog.String("merchant_id", merchantID))
 	} else {

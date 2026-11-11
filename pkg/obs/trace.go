@@ -1,4 +1,4 @@
-// Package obs 提供追踪的安装和 span 辅助。指标不在本包。
+// Package obs 提供追踪的安装、span 辅助，以及 OPS-03 的 Prometheus 指标。
 package obs
 
 import (

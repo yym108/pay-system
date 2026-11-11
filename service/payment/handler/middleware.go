@@ -26,7 +26,7 @@ type Tracer interface {
 }
 
 // Metrics 记录一次 RPC。bizCode 为 0 表示成功或非业务错误（含超时）。
-// OPS-03 填入 Prometheus。本功能点的空实现不计数。
+// 生产进程装入 obs.RPCMetrics。配置为 nil 时不计数。
 type Metrics interface {
 	Observe(method string, bizCode int32, elapsed time.Duration)
 }

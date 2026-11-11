@@ -589,6 +589,17 @@ func TestGW03UnknownPathStill404(t *testing.T) {
 	}
 }
 
+func TestMerchantMetricsNotExposed(t *testing.T) {
+	addr := startGW(t, NewMerchant(), nil)
+	got := do(t, http.MethodGet, "http://"+addr+"/metrics", nil, nil)
+	if got.status != http.StatusNotFound {
+		t.Fatalf("status %d body %s", got.status, got.body)
+	}
+	if strings.Contains(string(got.body), "go_goroutines") || strings.Contains(string(got.body), "# HELP") {
+		t.Fatalf("business port exposed metrics: %s", got.body)
+	}
+}
+
 // GW-03 验收：未签名 GET /v1/balance 返回 20001，不签名，不进 handler，lookup 未调用。
 func TestGW03UnsignedBalance(t *testing.T) {
 	look := &fakeLookup{}

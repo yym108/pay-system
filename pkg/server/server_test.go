@@ -224,8 +224,8 @@ func TestReadyzFollowsDatabase(t *testing.T) {
 		t.Fatalf("healthz while database down = %q", health)
 	}
 	status, metrics := getOnce(t, base+"/metrics")
-	if status != http.StatusNotFound {
-		t.Fatalf("metrics status = %d", status)
+	if status != http.StatusOK || !strings.HasPrefix(metrics, "# HELP") || !strings.Contains(metrics, "go_") {
+		t.Fatalf("metrics status = %d body = %q", status, metrics)
 	}
 	status, pprofBody := getOnce(t, base+"/debug/pprof/")
 	if status != http.StatusOK {
@@ -301,6 +301,26 @@ func TestPprofSymbolAcceptsPost(t *testing.T) {
 	srv.handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d body = %q", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMetricsExposesRuntime(t *testing.T) {
+	srv := New(Config{})
+	req := httptest.NewRequestWithContext(context.Background(), http.MethodGet, "/metrics", nil)
+	rec := httptest.NewRecorder()
+	srv.handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if !strings.Contains(rec.Header().Get("Content-Type"), "text/plain") {
+		t.Fatalf("content-type = %s", rec.Header().Get("Content-Type"))
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "go_goroutines") || !strings.Contains(body, "process_resident_memory_bytes") {
+		t.Fatal("metrics body is missing go or process series")
+	}
+	if !strings.Contains(body, "pay_ledger_check_failures_total") || !strings.Contains(body, "pay_ratelimit_rejected_total") {
+		t.Fatal("metrics body is missing unlabeled business counters")
 	}
 }
 

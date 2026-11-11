@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/yym108/pay-system/pkg/errno"
+	"github.com/yym108/pay-system/pkg/obs"
 )
 
 // CloseInput 是商户关单的入参。PayNo 为空是 10001，不读库。
@@ -75,6 +76,7 @@ func (p *Payments) closeInit(ctx context.Context, in *CloseInput, order PaymentO
 	if !won {
 		return p.afterInitMiss(ctx, in, source)
 	}
+	obs.OrderTransition(txnTypePay, payStatusInit, payStatusClosed)
 	order.Status = payStatusClosed
 	order.ClosedAt = now
 	order.Version++

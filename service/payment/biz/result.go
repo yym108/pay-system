@@ -17,6 +17,7 @@ import (
 	"github.com/yym108/pay-system/pkg/errno"
 	"github.com/yym108/pay-system/pkg/idgen"
 	"github.com/yym108/pay-system/pkg/money"
+	"github.com/yym108/pay-system/pkg/obs"
 	"github.com/yym108/pay-system/pkg/outbox"
 )
 
@@ -329,6 +330,7 @@ func execOrder(ctx context.Context, tx *sqlx.Tx, in PayResult, now, finished tim
 	if n != 1 {
 		return errOrderMiss
 	}
+	obs.OrderTransition(txnTypePay, payStatusPaying, in.Result)
 	return nil
 }
 
@@ -444,6 +446,7 @@ func addCallbackConflict(channel string) {
 		return
 	}
 	counter.Add(1)
+	obs.AddCallbackConflict(channel)
 }
 
 func callbackConflicts(channel string) uint64 {

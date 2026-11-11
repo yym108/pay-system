@@ -139,13 +139,19 @@ func (h *Handler) accessLog(ctx context.Context, c *app.RequestContext) {
 			code = strconv.FormatInt(int64(n), 10)
 		}
 	}
+	elapsed := h.clk.Now().Sub(start)
+	if code == "" {
+		code = strconv.Itoa(c.Response.StatusCode())
+	}
 	h.log().InfoContext(ctx, "request handled",
 		"path", string(c.Request.URI().Path()),
 		"status", c.Response.StatusCode(),
-		"elapsed_ms", h.clk.Now().Sub(start).Milliseconds(),
+		"elapsed_ms", elapsed.Milliseconds(),
 		"merchant_id", "",
 		"err_code", code,
 	)
+	// 路由模板不含 pay_no。未匹配时 FullPath 为空，由 obs 记成 unmatched。
+	obs.ObserveHTTP(string(c.FullPath()), code, elapsed)
 }
 
 const merchantStatusActive = "ACTIVE"
@@ -344,6 +350,7 @@ func (h *Handler) rateLimit(ctx context.Context, c *app.RequestContext) {
 }
 
 func (h *Handler) rejectLimited(ctx context.Context, c *app.RequestContext, appID, retryAfter string) {
+	obs.AddRateLimitRejected()
 	if retryAfter == "" {
 		retryAfter = "1"
 	}
@@ -366,12 +373,14 @@ func (h *Handler) nonce(ctx context.Context, c *app.RequestContext) {
 	nonce := string(c.GetHeader(sign.HeaderNonce))
 	if h.nonces == nil {
 		nonceUnavailable.Add(1)
+		obs.AddNonceUnavailable()
 		h.failNonce(ctx, c, appID, errno.ErrUnavailable)
 		return
 	}
 	claimed, err := h.nonces.Reserve(ctx, appID, nonce)
 	if err != nil {
 		nonceUnavailable.Add(1)
+		obs.AddNonceUnavailable()
 		h.failNonce(ctx, c, appID, errno.ErrUnavailable)
 		return
 	}

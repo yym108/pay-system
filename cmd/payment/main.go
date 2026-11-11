@@ -136,6 +136,7 @@ func serve(cfg config.Payment, logOut io.Writer) error {
 				Exit:     exit,
 				ExitWait: server.DefaultDrainTimeout,
 				Tracer:   obs.HandlerSpan{Service: "payment"},
+				Metrics:  obs.RPCMetrics{Service: "payment"},
 			})
 		},
 		func(context.Context) error {

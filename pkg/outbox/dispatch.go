@@ -16,6 +16,7 @@ import (
 	"github.com/yym108/pay-system/pkg/dbx"
 	"github.com/yym108/pay-system/pkg/fault"
 	"github.com/yym108/pay-system/pkg/mq"
+	"github.com/yym108/pay-system/pkg/obs"
 )
 
 const (
@@ -449,6 +450,22 @@ func (d *Dispatcher) RefreshGauges(ctx context.Context) error {
 	gaugeMu.Lock()
 	pendingByTopic = nextPending
 	deadByTopic = nextDead
+	pendingSnap := copyGauges(nextPending)
+	deadSnap := copyGauges(nextDead)
 	gaugeMu.Unlock()
+	for topic, n := range pendingSnap {
+		obs.SetOutboxPending(topic, n)
+	}
+	for topic, n := range deadSnap {
+		obs.SetOutboxDead(topic, n)
+	}
 	return nil
+}
+
+func copyGauges(src map[string]int64) map[string]int64 {
+	out := make(map[string]int64, len(src))
+	for topic, n := range src {
+		out[topic] = n
+	}
+	return out
 }

@@ -1,9 +1,13 @@
 package mq
 
-import "sync"
+import (
+	"sync"
+
+	"github.com/yym108/pay-system/pkg/obs"
+)
 
 // 计数和延迟都在进程内，按 topic + group 区分。延迟再按分区。
-// 不提供 HTTP，也不暴露 /metrics。
+// /metrics 由管理端口提供。这里只在同一处把进程内值镜像到 Prometheus，不从 map 再采集一次。
 
 type metricKey struct {
 	topic string
@@ -27,18 +31,27 @@ func addConsumeError(group, topic string) {
 	metricMu.Lock()
 	consumeErrors[metricKey{topic: topic, group: group}]++
 	metricMu.Unlock()
+	obs.AddConsumeError(topic, group)
 }
 
 func addDLQ(group, topic string) {
 	metricMu.Lock()
 	dlqTotals[metricKey{topic: topic, group: group}]++
 	metricMu.Unlock()
+	obs.AddDLQ(topic, group)
 }
 
 func setLag(group, topic string, partition int32, lag int64) {
 	metricMu.Lock()
 	consumeLags[lagKey{topic: topic, group: group, partition: partition}] = lag
+	var sum int64
+	for key, value := range consumeLags {
+		if key.topic == topic && key.group == group {
+			sum += value
+		}
+	}
 	metricMu.Unlock()
+	obs.SetConsumeLag(topic, group, sum)
 }
 
 // ConsumeErrors 返回该消费组在 topic 上的 pay_mq_consume_errors_total。

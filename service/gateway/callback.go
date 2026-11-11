@@ -19,6 +19,7 @@ import (
 
 	"github.com/yym108/pay-system/kitex_gen/payment"
 	"github.com/yym108/pay-system/pkg/errno"
+	"github.com/yym108/pay-system/pkg/obs"
 	"github.com/yym108/pay-system/pkg/sign"
 )
 
@@ -72,6 +73,7 @@ func addCallbackRejected(code int32) {
 		return
 	}
 	counter.Add(1)
+	obs.AddCallbackRejected(callbackChannel, key)
 }
 
 func (h *Handler) registerCallback(r *server.Hertz) {

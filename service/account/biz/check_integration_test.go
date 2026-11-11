@@ -5,7 +5,12 @@ package biz
 import (
 	"context"
 	"errors"
+	"io"
+	"net"
+	"net/http"
+	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -15,6 +20,7 @@ import (
 	"github.com/yym108/pay-system/internal/testkit"
 	"github.com/yym108/pay-system/pkg/errno"
 	"github.com/yym108/pay-system/pkg/money"
+	adminserver "github.com/yym108/pay-system/pkg/server"
 	"github.com/yym108/pay-system/pkg/shard"
 )
 
@@ -148,6 +154,7 @@ func TestCheckBalanceTamperBalance(t *testing.T) {
 		t.Fatalf("shard = %d err=%v", shardNo, err)
 	}
 
+	beforeMetrics := readAdminMetrics(t)
 	before := ledgerCheckFailures.Load()
 	got, err := env.svc.CheckBalance(env.ctx, "", false)
 	if err != nil {
@@ -173,6 +180,10 @@ func TestCheckBalanceTamperBalance(t *testing.T) {
 		t.Fatalf("expected %d actual %d err=%v", hit.Expected, hit.Actual, err)
 	}
 	failDelta(t, before, 1)
+	afterMetrics := readAdminMetrics(t)
+	if got := promCounter(afterMetrics, "pay_ledger_check_failures_total") - promCounter(beforeMetrics, "pay_ledger_check_failures_total"); got != 1 {
+		t.Fatalf("pay_ledger_check_failures_total delta = %d", got)
+	}
 }
 
 // ACC-10 验收 3：只完成付款确认时全量通过；静止时期望在途为 0。
@@ -402,4 +413,80 @@ func TestCheckBalanceDuringConcurrentPostAndTransfer(t *testing.T) {
 	if ledgerCheckFailures.Load() != before {
 		t.Fatal("final quiescent check incremented the counter")
 	}
+}
+
+func readAdminMetrics(t *testing.T) string {
+	t.Helper()
+	ln, err := (&net.ListenConfig{}).Listen(context.Background(), "tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := adminserver.New(adminserver.Config{
+		Listener:     ln,
+		DrainTimeout: 50 * time.Millisecond,
+		Signals:      make(chan os.Signal, 1),
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		_ = srv.Run(ctx)
+		close(done)
+	}()
+	defer func() {
+		cancel()
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Errorf("admin server did not stop")
+		}
+	}()
+	url := "http://" + ln.Addr().String() + "/metrics"
+	readCtx, readCancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer readCancel()
+	var last string
+	for {
+		req, reqErr := http.NewRequestWithContext(readCtx, http.MethodGet, url, nil)
+		if reqErr != nil {
+			t.Fatal(reqErr)
+		}
+		resp, reqErr := http.DefaultClient.Do(req)
+		if reqErr == nil {
+			raw, rerr := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+			_ = resp.Body.Close()
+			if rerr == nil && resp.StatusCode == http.StatusOK {
+				return string(raw)
+			}
+			last = string(raw)
+		} else {
+			last = reqErr.Error()
+		}
+		if readCtx.Err() != nil {
+			t.Fatalf("GET /metrics: %s", last)
+		}
+		timer := time.NewTimer(20 * time.Millisecond)
+		select {
+		case <-readCtx.Done():
+			timer.Stop()
+		case <-timer.C:
+		}
+	}
+}
+
+func promCounter(body, name string) int64 {
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		sp := strings.LastIndexByte(line, ' ')
+		if sp <= 0 || line[:sp] != name {
+			continue
+		}
+		n, err := strconv.ParseInt(line[sp+1:], 10, 64)
+		if err != nil {
+			continue
+		}
+		return n
+	}
+	return 0
 }

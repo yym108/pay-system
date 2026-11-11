@@ -9,6 +9,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strconv"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
@@ -166,10 +167,12 @@ func handlePayment(ctx context.Context, ledger Ledger, env envelope, fields map[
 	if fee < 0 || fee > amount {
 		return mq.Permanent(errFee)
 	}
+	started := time.Now()
 	_, err = ledger.PostPay(ctx, payNo, merchantID, channel, amount, fee)
 	if err != nil {
 		return classifyPay(ctx, env.EventID, env.EventType, merchantID, err)
 	}
+	obs.ObserveLedgerPost("PAY", ledgerShard(merchantID), time.Since(started))
 	// 事务已经提交。在返回 nil 之前打点，进程被杀掉时 offset 还没提交。
 	fault.Point(ctx, faultAfterCommit)
 	return nil
@@ -184,10 +187,12 @@ func handleRefundSucceeded(ctx context.Context, ledger Ledger, env envelope, fie
 	if _, err = requiredString(fields, "succeeded_at", maxTimeRunes); err != nil {
 		return mq.Permanent(err)
 	}
+	started := time.Now()
 	_, err = ledger.ConfirmFreeze(ctx, bizRefund, refundNo, merchantID, channel)
 	if err != nil {
 		return classifyRefund(ctx, env.EventID, env.EventType, merchantID, err)
 	}
+	obs.ObserveLedgerPost(bizRefund, ledgerShard(merchantID), time.Since(started))
 	fault.Point(ctx, faultAfterCommit)
 	return nil
 }
@@ -211,6 +216,14 @@ func handleRefundFailed(ctx context.Context, ledger Ledger, env envelope, fields
 	}
 	fault.Point(ctx, faultAfterCommit)
 	return nil
+}
+
+func ledgerShard(merchantID string) string {
+	n, err := shard.Of(merchantID)
+	if err != nil {
+		return "unknown"
+	}
+	return strconv.Itoa(n)
 }
 
 func refundIdentity(fields map[string]json.RawMessage, withChannel bool) (refundNo, merchantID, channel string, err error) {

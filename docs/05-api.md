@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 3.4.1 |
+| 文档版本 | 3.5.0 |
 | API 版本 | v1（路径前缀 `/v1`） |
 | 最后修改 | 2026-11-11 |
 | 状态 | 设计基线，实现须与本文一致 |
@@ -86,6 +86,7 @@
 | 3.3.17 | 2026-11-10 | NTF-01 已按 §6 写入通知记录。发送、签名、重试仍是 NTF-02。不新增字段 | §6 | NTF-01 |
 | 3.4.0 | 2026-11-11 | 新增 merchant-demo 的 `POST /notify` 与 `GET /stats`（§6.1）。验签密钥用 body 的 `merchant_id` 代入已有的 `DEMO_APP_SECRET_FORMAT`。不改平台通知字段，不新增错误码 | §1、§6.1 | TL-02 |
 | 3.4.1 | 2026-11-11 | payment 的 `notify_send` 已按 §6 发送商户通知。不新增字段，不新增错误码，不改 IDL | §1、§6 | NTF-02 |
+| 3.5.0 | 2026-11-11 | 正在监听的管理端口提供 `GET /metrics`。正文是 Prometheus 文本，含 Go runtime 与进程指标，以及 OPS-03 登记的 `pay_*`。这不是商户 API，不签名，不用 JSON 信封，也不用错误码。商户端口、网关管理 API、channel-mock 业务端口和 Kitex 业务端口不提供这份正文。不改商户 HTTP，不改 IDL，不新增错误码 | §1、§8.4、§12 | OPS-03 |
 
 ## 1. 接口总览
 
@@ -99,7 +100,7 @@
 | 模拟渠道 API | channel-mock :9080；管理 :6064 | 渠道签名；管理端口不鉴权（仅 127.0.0.1） | payment、recon、测试 |
 | 内部 RPC | account :8882、payment :8881、recon :8883 | 无（内网） | gateway、payment、recon |
 | 事件 | Kafka | — | account（支付、退款事件）、payment（全部事件，用于商户通知） |
-| 进程探针 | 管理端口 gateway :6060、payment :6061、account :6062、recon :6063、channel-mock :6064 | 不签名。不是商户 API | 本机探活、pprof |
+| 进程探针 | 管理端口 gateway :6060、payment :6061、account :6062、recon :6063、channel-mock :6064 | 不签名。不是商户 API | 本机探活、pprof、Prometheus |
 
 接口清单（“RPC”列即网关路由与 RPC 的映射。商户 API 的网关路由：支付单与余额 §4.1–§4.4、§4.7 属 GW-02，退款与转账 §4.5、§4.6、§4.8、§4.9 属 GW-09）：
 
@@ -127,6 +128,7 @@
 | 事件 `payment.succeeded`、`refund.succeeded`、`refund.failed`、`transfer.succeeded`、`transfer.failed` | §11 | — | MQ-01、MQ-04、NTF-01 | 1.0.0 | 2026-10-28 |
 | `GET /healthz`、`GET /readyz` 进程探针 | §12 | — | OPS-01 | 3.2.0 | 2026-11-10 |
 | `GET /debug/pprof/` 及 cmdline、profile、symbol、trace | §12 | — | OPS-05 | 3.3.0 | 2026-11-01 |
+| `GET /metrics` | §12 | — | OPS-03 | 3.5.0 | 2026-11-11 |
 
 ## 2. 通用约定
 
@@ -741,7 +743,7 @@ ACC-10 交付进程内 `biz.CheckBalance`。RPC handler 由 ACC-11 转发到该�
 | `TRANSIT_EXPECTED` | 全量 | 本分片 `TRANSIT` 子账户余额合计 = 本分片 CONFIRMED 的 `TRANSFER` 冻结金额 − 本分片 CONFIRMED 的收款方分支金额（不变量 11） |
 | `TRANSIT_ZERO` | 全量 + `expect_quiescent` | 两个分片 `TRANSIT` 余额合计 = 0 |
 
-每个分片用一条固定连接，按顺序执行 `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`、`START TRANSACTION READ ONLY, WITH CONSISTENT SNAPSHOT`、只读查询、`ROLLBACK`。两个分片是两次独立快照。商户模式只做该结算账户的前四项。服务端处理上限：商户模式（单账户）2 秒，全量模式 120 秒；网关调用等待上限同为 120 秒（需求 §5.4.1）。`passed = false` 且 `failures` 非空时 error 为 nil，不是错误码；同一次完成调用把进程内无标签计数 `pay_ledger_check_failures_total` 加 1。`/metrics` 暴露属于 OPS-03。
+每个分片用一条固定连接，按顺序执行 `SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`、`START TRANSACTION READ ONLY, WITH CONSISTENT SNAPSHOT`、只读查询、`ROLLBACK`。两个分片是两次独立快照。商户模式只做该结算账户的前四项。服务端处理上限：商户模式（单账户）2 秒，全量模式 120 秒；网关调用等待上限同为 120 秒（需求 §5.4.1）。`passed = false` 且 `failures` 非空时 error 为 nil，不是错误码；同一次完成调用把无标签计数 `pay_ledger_check_failures_total` 加 1，并出现在 account 管理端口的 `GET /metrics` 上。
 
 响应 `data`：
 
@@ -1121,14 +1123,14 @@ account 不消费转账事件：转账的两个分支由 payment 同步驱动（
 
 ## 12. 进程探针
 
-这些路径在管理端口上，不是商户 API。不签名，不使用 §2 的 JSON 信封，也不使用错误码。`/metrics` 仍不属于本节，访问为 404（OPS-03）。
+这些路径在管理端口上，不是商户 API。不签名，不使用 §2 的 JSON 信封，也不使用错误码。`GET /metrics` 的正文是 Prometheus 文本。
 
 | 进程 | 管理端口 | 本次是否监听 |
 |---|---|---|
-| gateway | 6060 | 否。进程仍在打印配置后退出，端口常量留给以后的长驻入口 |
+| gateway | 6060 | 是。长驻入口同时听商户 :8080、管理 API :8090 和本端口 |
 | payment | 6061 | 是 |
 | account | 6062 | 是 |
-| recon | 6063 | 否。与 gateway 相同，本次不监听 |
+| recon | 6063 | 否。进程仍在打印配置后退出，端口常量留给以后的长驻入口 |
 | channel-mock | 6064 | 是。与 §9.8 共用该端口；§9.8 的路径本次不提供 |
 | merchant-demo | 无 | 不提供管理端口 |
 
@@ -1145,9 +1147,10 @@ account 不消费转账事件：转账的两个分支由 payment 同步驱动（
 | `GET /debug/pprof/profile` | 200。`seconds` 默认 30，采集这段 CPU profile | gzip（pprof 格式） |
 | `/debug/pprof/symbol` | GET 与 POST 都接受。`go tool pprof` 会 POST | 地址到符号 |
 | `GET /debug/pprof/trace` | 200 | 执行跟踪 |
-| 其他路径，含 `/metrics` | 404 | — |
+| `GET /metrics` | 200 | Prometheus 文本。含 Go runtime、进程指标，以及 OPS-03 登记的 `pay_*`。`Content-Type` 为 `text/plain; version=0.0.4` |
+| 其他路径 | 404 | — |
 
-payment 的业务端口是 Kitex :8881，account 的业务端口是 Kitex :8882。这两个业务端口不提供 HTTP `/debug/pprof/`，也不在 RPC 端口上另挂 HTTP。channel-mock 的业务端口 :9080 对 `GET /debug/pprof/` 返回 404。pprof 只在上表这些正在监听的管理端口上。§9.8 的渠道管理路径仍未实现，和 pprof 不是同一件事。
+payment 的业务端口是 Kitex :8881，account 的业务端口是 Kitex :8882。这两个业务端口不提供 HTTP `/debug/pprof/` 或 `/metrics`，也不在 RPC 端口上另挂 HTTP。channel-mock 的业务端口 :9080 对 `GET /debug/pprof/` 返回 404，也不提供 `/metrics`。网关商户端口 :8080 与管理 API :8090 的未知路径仍是 JSON 404，不是 Prometheus 文本。pprof 与 `/metrics` 只在上表这些正在监听的管理端口上。recon :6063 本次仍不监听。§9.8 的渠道管理路径仍未实现，和 pprof、`/metrics` 不是同一件事。
 
 失败正文是固定的 `unavailable`，不写 DSN、地址或口令。单项检查超时 1 秒。account 的数据库检查是两个分片按顺序各 Ping 1 秒，外层等待 2 秒。gateway 的 Redis 可以以后注册；本次没有注册，所以不会因为 Redis 不存在而返回 503。MQ-03 已在 payment、account 注册 Kafka 就绪检查和生产者刷新；broker 不可达时 `/readyz` 为 503，进程仍能启动。
 

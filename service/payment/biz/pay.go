@@ -10,6 +10,7 @@ import (
 	"github.com/yym108/pay-system/pkg/errno"
 	"github.com/yym108/pay-system/pkg/fault"
 	"github.com/yym108/pay-system/pkg/money"
+	"github.com/yym108/pay-system/pkg/obs"
 	"github.com/yym108/pay-system/pkg/sign"
 )
 
@@ -175,6 +176,7 @@ func (p *Payments) Pay(ctx context.Context, in *PayInput) (PaymentOrder, error) 
 	if !won {
 		return p.afterCASMiss(ctx, in)
 	}
+	obs.OrderTransition(txnTypePay, payStatusInit, payStatusPaying)
 	order.Status = payStatusPaying
 	order.Channel = channelMockpay
 	order.Version++

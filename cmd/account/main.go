@@ -104,6 +104,7 @@ func serve(cfg config.Account, logOut io.Writer) error {
 				Exit:     exit,
 				ExitWait: server.DefaultDrainTimeout,
 				Tracer:   obs.HandlerSpan{Service: "account"},
+				Metrics:  obs.RPCMetrics{Service: "account"},
 			})
 		},
 		func(context.Context) error {
