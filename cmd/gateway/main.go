@@ -13,6 +13,7 @@ import (
 	"github.com/yym108/pay-system/pkg/config"
 	"github.com/yym108/pay-system/pkg/fault"
 	"github.com/yym108/pay-system/pkg/logx"
+	"github.com/yym108/pay-system/pkg/obs"
 	"github.com/yym108/pay-system/pkg/server"
 	"github.com/yym108/pay-system/service/gateway"
 )
@@ -36,7 +37,7 @@ func run(ctx context.Context, environ []string, stdout, stderr io.Writer) int {
 		_, _ = fmt.Fprintf(stderr, "write config: %v\n", werr)
 		return 1
 	}
-	if err = serve(ctx, stderr, cfg.RedisAddr, cfg.ChannelMockpayKey, cfg.RateLimitDefault, cfg.RateLimitOverrides); err != nil {
+	if err = serve(ctx, stderr, cfg.RedisAddr, cfg.ChannelMockpayKey, cfg.RateLimitDefault, cfg.RateLimitOverrides, cfg.OTELExporterOTLPEndpoint); err != nil {
 		_, _ = fmt.Fprintf(stderr, "%s\n", err)
 		return 1
 	}
@@ -45,10 +46,15 @@ func run(ctx context.Context, environ []string, stdout, stderr io.Writer) int {
 
 // serve 先建客户端再听 :8080、:8090 和管理端口 :6060。ctx 已取消时直接返回，不绑定端口。
 // Redis 连不上也不在这里失败，否则渠道回调会一起起不来。
-func serve(ctx context.Context, logOut io.Writer, redisAddr, channelKey string, limit config.RateLimit, overrides config.RateLimitOverrides) error {
+func serve(ctx context.Context, logOut io.Writer, redisAddr, channelKey string, limit config.RateLimit, overrides config.RateLimitOverrides, otelEndpoint string) error {
 	if err := ctx.Err(); err != nil {
 		return nil
 	}
+	stop, err := obs.Use(ctx, "gateway", otelEndpoint, logOut)
+	if err != nil {
+		return err
+	}
+	defer stop()
 	clients, err := gateway.NewClients()
 	if err != nil {
 		return err

@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/bytedance/gopkg/cloud/metainfo"
 	"github.com/cloudwego/kitex/pkg/endpoint"
 	"github.com/cloudwego/kitex/pkg/kerrors"
 	"github.com/cloudwego/kitex/pkg/rpcinfo"
@@ -14,10 +15,11 @@ import (
 	"github.com/yym108/pay-system/kitex_gen/account"
 	"github.com/yym108/pay-system/pkg/errno"
 	"github.com/yym108/pay-system/pkg/logx"
+	"github.com/yym108/pay-system/pkg/obs"
 )
 
-// Tracer 是链路追踪钩子。OPS-02 填入 OTel。
-// 本功能点的空实现不创建 span，也不连接导出器。
+// Tracer 是链路追踪钩子。生产进程装入 obs.HandlerSpan。
+// Tracer 为空时不创建 span。实现方不得把请求或响应写进 span 属性。
 type Tracer interface {
 	Start(ctx context.Context, method string) (context.Context, func(error))
 }
@@ -78,6 +80,9 @@ func (c Config) middleware() endpoint.Middleware {
 		return func(ctx context.Context, req, resp interface{}) (err error) {
 			method := methodName(ctx)
 			start := time.Now()
+			if tp, ok := metainfo.GetPersistentValue(ctx, "traceparent"); ok && tp != "" {
+				ctx = obs.ExtractMap(ctx, map[string]string{"traceparent": tp})
+			}
 			ctx, cancel := context.WithTimeout(ctx, limit)
 			defer cancel()
 			ctx, endSpan := tr.Start(ctx, method)

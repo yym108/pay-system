@@ -22,6 +22,7 @@ import (
 	"github.com/yym108/pay-system/kitex_gen/account"
 	"github.com/yym108/pay-system/kitex_gen/account/accountservice"
 	"github.com/yym108/pay-system/pkg/errno"
+	"github.com/yym108/pay-system/pkg/obs"
 )
 
 const (
@@ -72,6 +73,7 @@ func Dial(addr string, opts ...Option) (*Client, error) {
 		// 业务码在 TTHeader 里。不用这个协议时，BizStatusError 到不了调用方。
 		client.WithTransportProtocol(transport.TTHeader),
 		client.WithMetaHandler(transmeta.ClientTTHeaderHandler),
+		client.WithMiddleware(obs.ClientMiddleware("payment")),
 	)
 	if err != nil {
 		return nil, err

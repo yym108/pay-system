@@ -10,6 +10,7 @@ import (
 	"github.com/yym108/pay-system/kitex_gen/account/accountservice"
 	"github.com/yym108/pay-system/kitex_gen/payment/paymentservice"
 	"github.com/yym108/pay-system/kitex_gen/recon/reconservice"
+	"github.com/yym108/pay-system/pkg/obs"
 )
 
 const (
@@ -73,5 +74,6 @@ func dialOptions(addr string, rpc time.Duration) []client.Option {
 		client.WithRPCTimeout(rpc),
 		client.WithTransportProtocol(transport.TTHeader),
 		client.WithMetaHandler(transmeta.ClientTTHeaderHandler),
+		client.WithMiddleware(obs.ClientMiddleware("gateway")),
 	}
 }

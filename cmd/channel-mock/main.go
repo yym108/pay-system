@@ -17,6 +17,7 @@ import (
 	"github.com/yym108/pay-system/pkg/fault"
 	"github.com/yym108/pay-system/pkg/idgen"
 	"github.com/yym108/pay-system/pkg/logx"
+	"github.com/yym108/pay-system/pkg/obs"
 	"github.com/yym108/pay-system/pkg/server"
 	"github.com/yym108/pay-system/service/channel_mock/biz"
 	"github.com/yym108/pay-system/service/channel_mock/dal"
@@ -70,6 +71,11 @@ func runWith(environ []string, stdout, stderr io.Writer, start func(config.Chann
 }
 
 func serve(cfg config.ChannelMock, logOut io.Writer) error {
+	stop, err := obs.Use(context.Background(), "channel-mock", cfg.OTELExporterOTLPEndpoint, logOut)
+	if err != nil {
+		return err
+	}
+	defer stop()
 	logx.SetDefault("channel-mock", logOut)
 	openCtx, cancel := context.WithTimeout(context.Background(), openDBTimeout)
 	defer cancel()

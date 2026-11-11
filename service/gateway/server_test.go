@@ -364,7 +364,8 @@ var (
 func startGW(t *testing.T, h *Handler, extra func(*server.Hertz)) string {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
-	ln, err := Listen(ctx, ":0")
+	// 绑在 127.0.0.1。:0 在本机常得到 [::]，客户端再改连 127.0.0.1 会打到别的套接字。
+	ln, err := Listen(ctx, "127.0.0.1:0")
 	if err != nil {
 		cancel()
 		t.Fatal(err)
@@ -384,12 +385,9 @@ func startGW(t *testing.T, h *Handler, extra func(*server.Hertz)) string {
 			t.Error("server did not exit")
 		}
 	})
-	waitListen(t, ln.Addr().String())
-	_, port, err := net.SplitHostPort(ln.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	return net.JoinHostPort("127.0.0.1", port)
+	addr := ln.Addr().String()
+	waitListen(t, addr)
+	return addr
 }
 
 func waitListen(t *testing.T, addr string) {

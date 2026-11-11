@@ -124,6 +124,7 @@ func (h *Handler) channelCallback(ctx context.Context, c *app.RequestContext) {
 		writeCallback(c, http.StatusInternalServerError, callbackFail)
 		return
 	}
+	setPayNo(ctx, req.ReqNo)
 	if h.notify == nil {
 		h.log().ErrorContext(ctx, "channel callback client", "err_code", "10003")
 		writeCallback(c, http.StatusInternalServerError, callbackFail)

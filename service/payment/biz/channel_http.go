@@ -12,8 +12,11 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/yym108/pay-system/pkg/clock"
 	"github.com/yym108/pay-system/pkg/money"
+	"github.com/yym108/pay-system/pkg/obs"
 	"github.com/yym108/pay-system/pkg/sign"
 )
 
@@ -137,6 +140,10 @@ func (c *ChannelClient) Accept(ctx context.Context, req ChannelAcceptRequest) (C
 	if c == nil || c.http == nil {
 		return ChannelAcceptResult{}, errChannelConfig
 	}
+	ctx, end := obs.StartClient(ctx, "channel", "pay")
+	obs.SetOrder(trace.SpanFromContext(ctx), req.ReqNo, "", "", "", "")
+	var callErr error
+	defer func() { end(callErr) }()
 	body, err := json.Marshal(channelPayBody{
 		ReqNo:     req.ReqNo,
 		Amount:    int64(req.Amount),
@@ -144,6 +151,7 @@ func (c *ChannelClient) Accept(ctx context.Context, req ChannelAcceptRequest) (C
 		NotifyURL: req.NotifyURL,
 	})
 	if err != nil {
+		callErr = err
 		return ChannelAcceptResult{}, errChannelMarshal
 	}
 	limit := c.timeout
@@ -154,18 +162,22 @@ func (c *ChannelClient) Accept(ctx context.Context, req ChannelAcceptRequest) (C
 	defer cancel()
 	httpReq, err := http.NewRequestWithContext(callCtx, http.MethodPost, c.url, bytes.NewReader(body))
 	if err != nil {
+		callErr = err
 		return ChannelAcceptResult{}, errChannelConfig
 	}
 	ts := sign.FormatTimestamp(c.clk.Now())
 	sig, err := sign.SignChannel(c.key, sign.ChannelMessage{Timestamp: ts, Body: body})
 	if err != nil {
+		callErr = err
 		return ChannelAcceptResult{}, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set(sign.HeaderMockTimestamp, ts)
 	httpReq.Header.Set(sign.HeaderMockSignature, sig)
+	setTraceparent(ctx, httpReq)
 	resp, err := c.http.Do(httpReq) //nolint:gosec // 地址在 NewChannelClient 限定为配置的 http/https 主机，不取商户传入的 URL。
 	if err != nil {
+		callErr = err
 		return ChannelAcceptResult{}, nil
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -205,7 +217,7 @@ func (c *ChannelClient) Refund(ctx context.Context, req ChannelRefundRequest) (C
 	if c != nil && c.timeout > 0 {
 		limit = c.timeout
 	}
-	body, failed, err := c.exchange(ctx, c.refundURL, limit, channelRefundBody{
+	body, failed, err := c.exchange(ctx, "refund", c.refundURL, "", req.ReqNo, limit, channelRefundBody{
 		ReqNo:     req.ReqNo,
 		OrigReqNo: req.OrigReqNo,
 		Amount:    int64(req.Amount),
@@ -313,7 +325,7 @@ type channelQueryResponse struct {
 // 网络错误、非 200、验签失败、JSON 不对，以及 result/status 不是三种已知组合，都是调用失败，error 为 nil。
 // 空密钥和无法编码的请求在发出之前返回错误。
 func (c *ChannelClient) ClosePay(ctx context.Context, reqNo string) (channelCloseResult, error) {
-	body, failed, err := c.exchange(ctx, c.closeURL, CloseChannelTimeout, channelCloseBody{ReqNo: reqNo})
+	body, failed, err := c.exchange(ctx, "close", c.closeURL, reqNo, "", CloseChannelTimeout, channelCloseBody{ReqNo: reqNo})
 	if err != nil || failed {
 		return channelCloseResult{}, err
 	}
@@ -353,7 +365,13 @@ func (c *ChannelClient) query(ctx context.Context, limit time.Duration, txnType,
 	if c == nil {
 		return channelQueryResult{Kind: queryCallFailed}, errChannelConfig
 	}
-	body, failed, err := c.exchange(ctx, c.queryURL, limit, channelQueryBody{TxnType: txnType, ReqNo: reqNo})
+	payNo, refundNo := "", ""
+	if txnType == txnTypePay {
+		payNo = reqNo
+	} else {
+		refundNo = reqNo
+	}
+	body, failed, err := c.exchange(ctx, "query", c.queryURL, payNo, refundNo, limit, channelQueryBody{TxnType: txnType, ReqNo: reqNo})
 	if err != nil || failed {
 		return channelQueryResult{Kind: queryCallFailed}, err
 	}
@@ -392,12 +410,17 @@ func knownQueryStatus(status string) bool {
 
 // exchange 发送一次签名 JSON。limit 是本次总超时上限；父 ctx 更短时先到期。
 // callFailed 为 true 表示已经尝试调用但结果不可用。err 只表示还没发出去的配置问题。
-func (c *ChannelClient) exchange(ctx context.Context, endpoint string, limit time.Duration, payload any) ([]byte, bool, error) {
+func (c *ChannelClient) exchange(ctx context.Context, api, endpoint, payNo, refundNo string, limit time.Duration, payload any) ([]byte, bool, error) {
 	if c == nil || c.http == nil || endpoint == "" {
 		return nil, false, errChannelConfig
 	}
+	ctx, end := obs.StartClient(ctx, "channel", api)
+	obs.SetOrder(trace.SpanFromContext(ctx), payNo, refundNo, "", "", "")
+	var callErr error
+	defer func() { end(callErr) }()
 	raw, err := json.Marshal(payload)
 	if err != nil {
+		callErr = err
 		return nil, false, errChannelMarshal
 	}
 	if limit <= 0 {
@@ -407,18 +430,22 @@ func (c *ChannelClient) exchange(ctx context.Context, endpoint string, limit tim
 	defer cancel()
 	httpReq, err := http.NewRequestWithContext(callCtx, http.MethodPost, endpoint, bytes.NewReader(raw))
 	if err != nil {
+		callErr = err
 		return nil, false, errChannelConfig
 	}
 	ts := sign.FormatTimestamp(c.clk.Now())
 	sig, err := sign.SignChannel(c.key, sign.ChannelMessage{Timestamp: ts, Body: raw})
 	if err != nil {
+		callErr = err
 		return nil, false, err
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set(sign.HeaderMockTimestamp, ts)
 	httpReq.Header.Set(sign.HeaderMockSignature, sig)
+	setTraceparent(ctx, httpReq)
 	resp, err := c.http.Do(httpReq) //nolint:gosec // 地址在 NewChannelClient 限定为配置的 http/https 主机。
 	if err != nil {
+		callErr = err
 		return nil, true, nil
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -435,4 +462,10 @@ func (c *ChannelClient) exchange(ctx context.Context, endpoint string, limit tim
 		return nil, true, nil
 	}
 	return body, false, nil
+}
+
+func setTraceparent(ctx context.Context, req *http.Request) {
+	if tp := obs.InjectMap(ctx)["traceparent"]; tp != "" {
+		req.Header.Set("traceparent", tp)
+	}
 }

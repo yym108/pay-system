@@ -12,9 +12,12 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/yym108/pay-system/pkg/errno"
 	"github.com/yym108/pay-system/pkg/money"
 	"github.com/yym108/pay-system/pkg/mq"
+	"github.com/yym108/pay-system/pkg/obs"
 	"github.com/yym108/pay-system/service/payment/biz"
 )
 
@@ -59,9 +62,10 @@ type Config struct {
 var errEnvelope = errors.New("notify envelope invalid")
 
 type envelope struct {
-	EventID   string          `json:"event_id"`
-	EventType string          `json:"event_type"`
-	Data      json.RawMessage `json:"data"`
+	EventID      string          `json:"event_id"`
+	EventType    string          `json:"event_type"`
+	TraceContext json.RawMessage `json:"trace_context"`
+	Data         json.RawMessage `json:"data"`
 }
 
 // Open 创建 payment-notify 消费组。不在这里拨号，也不开始拉取。
@@ -96,12 +100,15 @@ func buildConfig(cfg Config) (mq.ConsumerConfig, error) {
 	}, nil
 }
 
-func handle(ctx context.Context, recorder Recorder, rec mq.Record) error {
-	in, err := decodeRecord(rec)
+func handle(ctx context.Context, recorder Recorder, rec mq.Record) (err error) {
+	in, traceRaw, err := decodeRecord(rec)
 	if err != nil {
 		logNotify(ctx, "notify envelope invalid", rec.EventID, rec.EventType, "")
 		return mq.Permanent(err)
 	}
+	ctx, end := obs.StartLinked(ctx, "payment", "consume", traceRaw)
+	defer func() { end(err) }()
+	obs.SetOrder(trace.SpanFromContext(ctx), in.PayNo, in.RefundNo, in.TransferNo, "", "")
 	_, err = recorder.RecordNotify(ctx, in)
 	if err == nil {
 		return nil
@@ -121,29 +128,33 @@ func logNotify(ctx context.Context, msg, eventID, eventType, merchantID string) 
 	)
 }
 
-func decodeRecord(rec mq.Record) (biz.NotifyRecordInput, error) {
+func decodeRecord(rec mq.Record) (biz.NotifyRecordInput, []byte, error) {
 	env, err := decodeEnvelope(rec.Value)
 	if err != nil {
-		return biz.NotifyRecordInput{}, errEnvelope
+		return biz.NotifyRecordInput{}, nil, errEnvelope
 	}
 	if env.EventID == "" || env.EventType == "" {
-		return biz.NotifyRecordInput{}, errEnvelope
+		return biz.NotifyRecordInput{}, nil, errEnvelope
 	}
 	if rec.EventID != "" && rec.EventID != env.EventID {
-		return biz.NotifyRecordInput{}, errEnvelope
+		return biz.NotifyRecordInput{}, nil, errEnvelope
 	}
 	if rec.EventType != "" && rec.EventType != env.EventType {
-		return biz.NotifyRecordInput{}, errEnvelope
+		return biz.NotifyRecordInput{}, nil, errEnvelope
 	}
 	want, ok := eventByTopic(rec.Topic)
 	if !ok || want != env.EventType {
-		return biz.NotifyRecordInput{}, errEnvelope
+		return biz.NotifyRecordInput{}, nil, errEnvelope
 	}
 	fields, err := objectFields(env.Data)
 	if err != nil {
-		return biz.NotifyRecordInput{}, err
+		return biz.NotifyRecordInput{}, nil, err
 	}
-	return fillInput(env, fields)
+	in, err := fillInput(env, fields)
+	if err != nil {
+		return biz.NotifyRecordInput{}, nil, err
+	}
+	return in, env.TraceContext, nil
 }
 
 func eventByTopic(topic string) (string, bool) {

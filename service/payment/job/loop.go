@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/yym108/pay-system/pkg/errno"
+	"github.com/yym108/pay-system/pkg/obs"
 )
 
 var errNilBatch = errors.New("job: nil batch")
@@ -122,7 +123,9 @@ func (l *Loop) runOnce() {
 			slog.ErrorContext(l.ctx, "job batch panicked", "job", l.name)
 		}
 	}()
-	if err := l.batch(l.ctx); err != nil {
+	batchCtx, endBatch := obs.StartBatch(l.ctx, l.name)
+	defer endBatch()
+	if err := l.batch(batchCtx); err != nil {
 		slog.WarnContext(l.ctx, "job batch failed",
 			"job", l.name,
 			"err_code", strconv.Itoa(int(errno.From(err).Code)),

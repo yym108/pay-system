@@ -17,6 +17,7 @@ import (
 	"github.com/yym108/pay-system/pkg/idgen"
 	"github.com/yym108/pay-system/pkg/logx"
 	"github.com/yym108/pay-system/pkg/mq"
+	"github.com/yym108/pay-system/pkg/obs"
 	"github.com/yym108/pay-system/pkg/outbox"
 	"github.com/yym108/pay-system/pkg/secretbox"
 	"github.com/yym108/pay-system/pkg/server"
@@ -67,6 +68,11 @@ func runWith(environ []string, stdout, stderr io.Writer, start func(config.Payme
 }
 
 func serve(cfg config.Payment, logOut io.Writer) error {
+	stop, err := obs.Use(context.Background(), "payment", cfg.OTELExporterOTLPEndpoint, logOut)
+	if err != nil {
+		return err
+	}
+	defer stop()
 	logx.SetDefault("payment", logOut)
 	// 主密钥先于连库校验。secretbox 的错误是固定文本，不含密钥。
 	box, err := secretbox.NewFromBase64(cfg.SecretMasterKey)
@@ -129,6 +135,7 @@ func serve(cfg config.Payment, logOut io.Writer) error {
 			return handler.Run(handler.New(biz.NewApp(merchants, payments)), handler.Config{
 				Exit:     exit,
 				ExitWait: server.DefaultDrainTimeout,
+				Tracer:   obs.HandlerSpan{Service: "payment"},
 			})
 		},
 		func(context.Context) error {

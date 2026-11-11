@@ -348,3 +348,8 @@ Kafka 容器 `Stop` 再 `Start` 时，OrbStack 会改随机映射的宿主机端
 
 - 判定用 `AllowN(时钟, 1)`，不调用 `Allow()`。`Allow()` 读真实时间。测试把 Fake 停在同一时刻连发 300 次时，桶会按墙上时间回补，突发 200 就数不准。
 - 超限先写 429 / 10005 和 Retry-After，再带着跳过标记进入下一步。nonce 看到标记就不 Reserve，所以被限流的请求不占用 nonce，同一个 nonce 还可以重试。platformSign 仍签当前 body，业务 handler 不执行。
+
+## OPS-02
+
+- 不叠 hertz-contrib。网关中间件已经 `otel.Tracer("gateway").Start`。再叠一层，同一条请求会多一个根 span，Jaeger 里就不是一条链。
+- 入账消费不能做成原请求的子 span。消费发生在另一个进程、另一条消息上，父 span 早就结束了。信封里的 `traceparent` 只做成 link。解析失败照常入账，不进 DLQ。

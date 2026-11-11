@@ -132,6 +132,7 @@ func (h *Handler) createPayment(ctx context.Context, c *app.RequestContext) {
 		h.writeRoute(c, errno.ErrInternal, nil)
 		return
 	}
+	setPayNo(ctx, order.PayNo)
 	WriteOK(c, order)
 }
 
@@ -146,6 +147,7 @@ func (h *Handler) payPayment(ctx context.Context, c *app.RequestContext) {
 		h.writeRoute(c, errno.ErrInvalidParam, nil)
 		return
 	}
+	setPayNo(ctx, payNo)
 	body, err := c.Body()
 	if err != nil {
 		h.writeRoute(c, errno.ErrInternal, nil)

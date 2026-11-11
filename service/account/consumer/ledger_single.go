@@ -13,10 +13,13 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"github.com/yym108/pay-system/pkg/errno"
 	"github.com/yym108/pay-system/pkg/fault"
 	"github.com/yym108/pay-system/pkg/money"
 	"github.com/yym108/pay-system/pkg/mq"
+	"github.com/yym108/pay-system/pkg/obs"
 	"github.com/yym108/pay-system/pkg/shard"
 	"github.com/yym108/pay-system/service/account/biz"
 )
@@ -75,9 +78,10 @@ var (
 )
 
 type envelope struct {
-	EventID   string          `json:"event_id"`
-	EventType string          `json:"event_type"`
-	Data      json.RawMessage `json:"data"`
+	EventID      string          `json:"event_id"`
+	EventType    string          `json:"event_type"`
+	TraceContext json.RawMessage `json:"trace_context"`
+	Data         json.RawMessage `json:"data"`
 }
 
 // Open 创建 account-ledger 消费组。不在这里拨号，也不开始拉取。
@@ -99,18 +103,26 @@ func buildConfig(cfg Config) (mq.ConsumerConfig, error) {
 		Group:   GroupName,
 		Topics:  []string{TopicPaymentSucceeded, TopicRefundSucceeded, TopicRefundFailed},
 		Handler: func(ctx context.Context, rec mq.Record) error {
-			return handle(ctx, cfg.Ledger, rec)
+			return HandleRecord(ctx, cfg.Ledger, rec)
 		},
 		Sleeper:        cfg.Sleeper,
 		SessionTimeout: cfg.SessionTimeout,
 	}, nil
 }
 
-func handle(ctx context.Context, ledger Ledger, rec mq.Record) error {
+// HandleRecord 处理一条入账消息。消费组回调走这里。
+// trace_context 解析失败仍然处理消息，不把它写成永久错误。
+func HandleRecord(ctx context.Context, ledger Ledger, rec mq.Record) error {
+	return handle(ctx, ledger, rec)
+}
+
+func handle(ctx context.Context, ledger Ledger, rec mq.Record) (err error) {
 	env, fields, err := decodeRecord(rec)
 	if err != nil {
 		return mq.Permanent(err)
 	}
+	ctx, end := obs.StartLinked(ctx, "account", "consume", env.TraceContext)
+	defer func() { end(err) }()
 	switch env.EventType {
 	case eventPaymentSucceeded:
 		return handlePayment(ctx, ledger, env, fields)
@@ -128,6 +140,7 @@ func handlePayment(ctx context.Context, ledger Ledger, env envelope, fields map[
 	if err != nil {
 		return mq.Permanent(err)
 	}
+	obs.SetOrder(trace.SpanFromContext(ctx), payNo, "", "", "", "")
 	merchantID, err := requiredMerchant(fields)
 	if err != nil {
 		return mq.Permanent(err)
@@ -167,6 +180,7 @@ func handleRefundSucceeded(ctx context.Context, ledger Ledger, env envelope, fie
 	if err != nil {
 		return mq.Permanent(err)
 	}
+	markRefund(ctx, fields, refundNo)
 	if _, err = requiredString(fields, "succeeded_at", maxTimeRunes); err != nil {
 		return mq.Permanent(err)
 	}
@@ -183,6 +197,7 @@ func handleRefundFailed(ctx context.Context, ledger Ledger, env envelope, fields
 	if err != nil {
 		return mq.Permanent(err)
 	}
+	markRefund(ctx, fields, refundNo)
 	amount, err := requiredAmount(fields, "amount")
 	if err != nil || amount <= 0 {
 		return mq.Permanent(errEnvelope)
@@ -253,6 +268,14 @@ func classifyRefund(ctx context.Context, eventID, eventType, merchantID string, 
 		// 40001 是平台子账户还不存在，继续重试。
 		return err
 	}
+}
+
+func markRefund(ctx context.Context, fields map[string]json.RawMessage, refundNo string) {
+	payNo, err := requiredString(fields, "pay_no", maxNoRunes)
+	if err != nil {
+		payNo = ""
+	}
+	obs.SetOrder(trace.SpanFromContext(ctx), payNo, refundNo, "", "", "")
 }
 
 func logLedger(ctx context.Context, msg, eventID, eventType, merchantID string) {

@@ -228,6 +228,7 @@ BASE-01（2026-10-13）：根据本机实际安装版本，将本表 Go 本机�
   - Metrics：各服务通过 `prometheus/client_golang` 暴露 `/metrics`，Prometheus 拉取。不部署 Grafana、不配置告警规则（2026-10-12 简化）；压测报告直接用 Prometheus 查询结果和 Jaeger 截图。
   - pprof：每个服务在独立的管理端口暴露 `/debug/pprof`，与业务端口分离，不对外映射。
 - 风险：`hertz-contrib/obs-opentelemetry/tracing` 最近发版在 2024-05，已确认能与 otel v1.47 一起编译，但链路串联未验证。如果第 5 周验证失败，改为自写 Hertz 中间件（约 50 行）。
+- 补充（2026-11-11，OPS-02）：不叠加 hertz-contrib。网关已有的 trace 中间件会 Start 一个 span，再叠一层会多一条根 span。沿用该中间件，在 Start 前提取入站 traceparent。Kitex 用现有 Tracer 接口接 `obs.HandlerSpan`，不引入 kitex-contrib。版本表不改。
 
 ### D15 测试工具
 

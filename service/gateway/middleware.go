@@ -10,9 +10,11 @@ import (
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/trace"
 
 	"github.com/yym108/pay-system/pkg/errno"
 	"github.com/yym108/pay-system/pkg/logx"
+	"github.com/yym108/pay-system/pkg/obs"
 	"github.com/yym108/pay-system/pkg/sign"
 )
 
@@ -105,13 +107,25 @@ func (h *Handler) requestID(ctx context.Context, c *app.RequestContext) {
 	}
 }
 
-// trace 只开一个 span，不安装导出器，也不读取 OTEL 端点。
+// trace 先提取入站 traceparent，再开一个 span。导出器由进程启动时的 obs.Install 安装，这里不安装。
 func (h *Handler) trace(ctx context.Context, c *app.RequestContext) {
 	appendName(c, nameTrace)
+	header := map[string]string{}
+	if v := c.Request.Header.Peek("traceparent"); len(v) > 0 {
+		header["traceparent"] = string(v)
+	}
+	if v := c.Request.Header.Peek("tracestate"); len(v) > 0 {
+		header["tracestate"] = string(v)
+	}
+	ctx = obs.ExtractMap(ctx, header)
 	path := string(c.Request.URI().Path())
 	ctx, span := otel.Tracer("gateway").Start(ctx, path)
 	defer span.End()
 	c.Next(ctx)
+}
+
+func setPayNo(ctx context.Context, payNo string) {
+	obs.SetOrder(trace.SpanFromContext(ctx), payNo, "", "", "", "")
 }
 
 // accessLog 只记路径、状态、耗时、空商户号和业务码。不记 body、签名、Token、密钥。

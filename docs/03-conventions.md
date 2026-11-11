@@ -1,6 +1,6 @@
 # pay-system 全局约定与编号规范
 
-> 版本：v2.31　最后修改：2026-11-11
+> 版本：v2.32　最后修改：2026-11-11
 > 适用：全部代码、文档、配置。需求见 `docs/02-requirements.md`，接口见 `docs/05-api.md`，表结构见 `docs/database.md`。
 
 本文集中登记会被多个功能点共用的约定：编号体系、业务单号、金额、时间、错误码、幂等与事务规则、命名规范、配置项。新增或修改这些内容时，先改本文并在 §9 记录，再改代码。
@@ -371,6 +371,8 @@ Hertz `hlog` 和 Kitex `klog` 经适配器写入同一个 slog handler。`SetDef
 | `REDIS_ADDR` | gateway | `redis:6379` | |
 | `KAFKA_BROKERS` | payment、account | `kafka:9092` | 逗号分隔 |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | 全部服务 | `jaeger:4317` | 为空时关闭 trace |
+| `OTEL_TRACES_SAMPLER` | 全部服务 | 空（等价 `parentbased_always_on`） | 采样器名。允许 `always_on`、`always_off`、`traceidratio`、`parentbased_always_on`、`parentbased_always_off`、`parentbased_traceidratio`。不认识的名字启动失败，错误文本含本变量名。空端点也不放过不合法的名字 |
+| `OTEL_TRACES_SAMPLER_ARG` | 全部服务 | 空 | `traceidratio` 与 `parentbased_traceidratio` 的比例，闭区间 [0,1]。空、非数字或越界时启动失败 |
 | `SECRET_MASTER_KEY` | payment、seed | 无（必填，secret） | 标准 base64（带填充），解码后 32 字节；`pkg/secretbox.NewFromBase64` 按同一规则解码（BASE-14） |
 | `CHANNEL_MOCKPAY_KEY` | payment、gateway、channel-mock | 无（必填，secret） | 渠道签名密钥 |
 | `CHANNEL_MOCKPAY_URL` | payment | `http://channel-mock:9080` | BASE-09 的 recon 不读取。对账要访问渠道时再加到 recon |
@@ -450,3 +452,4 @@ BASE-09 只拼 DSN 文本，不连接数据库，也不调用驱动的 `ParseDSN
 | v2.29 | 2026-11-06 | PAY-07：§7.5 日志字段 `job` 增加取值 `timeout_close`（超时关单）。超时关单经渠道关单写入结果时 `source = JOB`，沿用已有来源名。审查修复（同版本内追加）：§7.5 写明 `source` 按发起流程取值，逐个列出 NOTIFY / QUERY / CLOSE / JOB / ADMIN / SYNC 对应的流程。同版本内追加，REF-04 补登记：§7.5 日志字段 `job` 增加取值 `refund_recover`（退款卡单恢复，`job.NewRefundRecover`），REF-04 落地时漏登。不新增错误码、前缀或配置项 |
 | v2.30 | 2026-11-11 | TL-02：`DEMO_APP_SECRET_FORMAT` 的使用方增加 merchant-demo。变量名、默认值和 secret 标记不变，不新增环境变量。merchant-demo 加载时要求恰好一个 `%s` 且没有其他 `%`。不新增错误码、前缀。 |
 | v2.31 | 2026-11-11 | NTF-02：§7.5 日志字段 `job` 增加取值 `notify_send`（商户通知发送，每秒扫描；重试间隔仍是 `NOTIFY_RETRY_INTERVAL`）。不新增错误码、前缀或配置项。 |
+| v2.32 | 2026-11-11 | OPS-02：§8 登记 `OTEL_TRACES_SAMPLER`、`OTEL_TRACES_SAMPLER_ARG`。未设置采样器时等价 `parentbased_always_on`。不认识的名字启动失败。不新增错误码或单号前缀。 |

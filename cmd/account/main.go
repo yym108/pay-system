@@ -16,6 +16,7 @@ import (
 	"github.com/yym108/pay-system/pkg/idgen"
 	"github.com/yym108/pay-system/pkg/logx"
 	"github.com/yym108/pay-system/pkg/mq"
+	"github.com/yym108/pay-system/pkg/obs"
 	"github.com/yym108/pay-system/pkg/server"
 	"github.com/yym108/pay-system/service/account/biz"
 	"github.com/yym108/pay-system/service/account/consumer"
@@ -64,6 +65,11 @@ func runWith(environ []string, stdout, stderr io.Writer, start func(config.Accou
 }
 
 func serve(cfg config.Account, logOut io.Writer) error {
+	stop, err := obs.Use(context.Background(), "account", cfg.OTELExporterOTLPEndpoint, logOut)
+	if err != nil {
+		return err
+	}
+	defer stop()
 	logx.SetDefault("account", logOut)
 	openCtx, cancel := context.WithTimeout(context.Background(), openDBTimeout)
 	defer cancel()
@@ -97,6 +103,7 @@ func serve(cfg config.Account, logOut io.Writer) error {
 			return handler.Run(h, handler.Config{
 				Exit:     exit,
 				ExitWait: server.DefaultDrainTimeout,
+				Tracer:   obs.HandlerSpan{Service: "account"},
 			})
 		},
 		func(context.Context) error {

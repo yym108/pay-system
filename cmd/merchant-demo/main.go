@@ -16,6 +16,7 @@ import (
 	"github.com/yym108/pay-system/pkg/config"
 	"github.com/yym108/pay-system/pkg/fault"
 	"github.com/yym108/pay-system/pkg/logx"
+	"github.com/yym108/pay-system/pkg/obs"
 	payserver "github.com/yym108/pay-system/pkg/server"
 )
 
@@ -53,6 +54,11 @@ func runWith(environ []string, stdout, stderr io.Writer, start func(config.Merch
 }
 
 func serve(cfg config.MerchantDemo) error {
+	stop, err := obs.Use(context.Background(), "merchant-demo", cfg.OTELExporterOTLPEndpoint, os.Stderr)
+	if err != nil {
+		return err
+	}
+	defer stop()
 	logx.SetDefault("merchant-demo", os.Stderr)
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
