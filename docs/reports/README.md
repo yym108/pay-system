@@ -75,3 +75,4 @@
 | GW-05 | 商户限流（进程内） | 基础设施 | `c00ea8e` | 2026-11-11 | [GW-05-rate-limit.md](GW-05-rate-limit.md) |
 | OPS-02 | 链路追踪 | 基础设施 | `b900c82` | 2026-11-11 | [OPS-02-tracing.md](OPS-02-tracing.md) |
 | OPS-03 | 业务与运行指标 | 基础设施 | `e391bd8` | 2026-11-11 | [OPS-03-metrics.md](OPS-03-metrics.md) |
+| OPT-01 | 分阶段耗时埋点 | 性能 | `a8bf9b8` | 2026-11-11 | [OPT-01-stage-timing.md](OPT-01-stage-timing.md) |
