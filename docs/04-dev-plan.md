@@ -101,7 +101,7 @@
 
 - [x] MQ-03 Kafka 框架 → MQ-02 投递器 → MQ-04 account 消费（逐条模式）→ MQ-05 死信与重放
 - [x] NTF-01 通知记录（含转账事件）、TL-02 merchant-demo → NTF-02 固定间隔重试
-- [ ] GW-04 时间窗口与 nonce、GW-05 商户限流（进程内）
+- [x] GW-04 时间窗口与 nonce、GW-05 商户限流（进程内）
 - [ ] OPS-02 链路追踪、OPS-03 指标 → OPT-01 分阶段耗时埋点
 
 交付：A3 完整（订单层 + 账务层）、A7；一次跨分片转账在 Jaeger 中可见全部阶段；`pkg/outbox`、`pkg/dbx` 覆盖率 ≥ 70%。

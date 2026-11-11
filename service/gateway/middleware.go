@@ -304,12 +304,47 @@ func (h *Handler) logVerify(ctx context.Context, c *app.RequestContext, appID st
 
 func (h *Handler) rateLimit(ctx context.Context, c *app.RequestContext) {
 	appendName(c, nameRateLimit)
+	// 只限已验签的商户 /v1。管理端口、回调和未验签请求不建桶，避免伪造 app_id 消耗别人的配额。
+	if h.admin || !v1Path(string(c.Request.URI().Path())) || !isVerified(c) {
+		c.Next(ctx)
+		return
+	}
+	appID := string(c.GetHeader(sign.HeaderAppID))
+	now := h.clk.Now()
+	if h.rateAllow != nil {
+		ok, ra := h.rateAllow(appID, now)
+		if !ok {
+			h.rejectLimited(ctx, c, appID, ra)
+			return
+		}
+		c.Next(ctx)
+		return
+	}
+	lim := h.bucket(appID)
+	// Allow() 读真实时间。时钟停住时连发多次必须把注入的 now 传进 AllowN。
+	if lim.AllowN(now, 1) {
+		c.Next(ctx)
+		return
+	}
+	h.rejectLimited(ctx, c, appID, retryAfterSeconds(lim, now))
+}
+
+func (h *Handler) rejectLimited(ctx context.Context, c *app.RequestContext, appID, retryAfter string) {
+	if retryAfter == "" {
+		retryAfter = "1"
+	}
+	h.logGate(ctx, c, appID, errno.ErrRateLimited, "rate limited")
+	writeErrno(c, errno.ErrRateLimited.HTTPStatus, errno.ErrRateLimited, requestID(c))
+	c.Response.Header.Set("Retry-After", retryAfter)
+	// 错误 JSON 已经写好。nonce 看到标记就不要占用，platformSign 签当前 body。
+	c.Set(skipHandlerKey, true)
 	c.Next(ctx)
 }
 
 func (h *Handler) nonce(ctx context.Context, c *app.RequestContext) {
 	appendName(c, nameNonce)
-	if h.admin || !v1Path(string(c.Request.URI().Path())) || !isVerified(c) {
+	// 限流已经写出 429。看到跳过标记就不要 Reserve，同一 nonce 仍可在稍后重试。
+	if h.admin || !v1Path(string(c.Request.URI().Path())) || !isVerified(c) || skipHandler(c) {
 		c.Next(ctx)
 		return
 	}

@@ -343,3 +343,8 @@ Kafka 容器 `Stop` 再 `Start` 时，OrbStack 会改随机映射的宿主机端
 占用 nonce 必须是一条 `SET key 1 NX EX 600`。先占住再单独设过期，进程死在两条命令之间，键就没有过期时间，这个 nonce 会一直占着。
 
 验签失败不能占 nonce。20002 和格式不对的 20001 在验签前就停住，响应不签名。20003 和这条路径上的 10004 发生在验签成功之后：先写出错误 JSON，再进入 platformSign 签当前 body，签完停住，业务 handler 不跑。验签失败仍然停在验签，不签名，也不写 Redis。
+
+## GW-05
+
+- 判定用 `AllowN(时钟, 1)`，不调用 `Allow()`。`Allow()` 读真实时间。测试把 Fake 停在同一时刻连发 300 次时，桶会按墙上时间回补，突发 200 就数不准。
+- 超限先写 429 / 10005 和 Retry-After，再带着跳过标记进入下一步。nonce 看到标记就不 Reserve，所以被限流的请求不占用 nonce，同一个 nonce 还可以重试。platformSign 仍签当前 body，业务 handler 不执行。

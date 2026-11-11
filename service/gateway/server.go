@@ -2,7 +2,7 @@
 //
 // GW-01 搭了骨架：两个 Hertz 实例、统一 JSON、请求体上限、中间件顺序和 Kitex 客户端。
 // GW-03 在商户端口的 /v1 上验签。GW-02 注册支付与余额路由。
-// GW-04 已实现时间窗口和 nonce。限流仍是占位。
+// GW-04 已实现时间窗口和 nonce。GW-05 已实现验签后的进程内商户限流。
 package gateway
 
 import (
@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
+	"sync"
+	"time"
 
 	"github.com/cloudwego/hertz/pkg/app/server"
 	"github.com/cloudwego/hertz/pkg/network/standard"
@@ -39,9 +41,14 @@ type Handler struct {
 	nonces     NonceStore
 	nextNonce  func() (string, error)
 	logger     *slog.Logger
+	limiters   sync.Map
+	defLimit   limitSpec
+	byApp      map[string]limitSpec
+	// rateAllow 非 nil 时代替令牌桶。测试用来计数，或让已验签的 /v1 全部被拒绝。生产保持 nil。
+	rateAllow func(appID string, now time.Time) (ok bool, retryAfter string)
 }
 
-// Option 覆盖时钟、响应签名密钥、商户凭证查询、nonce 存储或日志。
+// Option 覆盖时钟、响应签名密钥、商户凭证查询、nonce 存储、限流或日志。
 type Option func(*Handler)
 
 // WithClock 注入响应签名和访问日志用的时钟。nil 时仍用真实时钟。
@@ -86,7 +93,7 @@ func NewAdmin(opts ...Option) *Handler {
 }
 
 func newHandler(admin bool, opts ...Option) *Handler {
-	h := &Handler{admin: admin, clk: clock.Real{}, nextNonce: randomNonce}
+	h := &Handler{admin: admin, clk: clock.Real{}, nextNonce: randomNonce, defLimit: defaultLimitSpec()}
 	for _, opt := range opts {
 		if opt != nil {
 			opt(h)
@@ -105,7 +112,7 @@ func newHandler(admin bool, opts ...Option) *Handler {
 // 管理端口只注册 POST /admin/outbox/replay，不注册商户路由。
 //
 // 顺序：请求体上限、Recovery、RequestID、Trace、AccessLog、
-// 时间窗口、验签、限流占位、nonce、响应签名、handler。
+// 时间窗口、验签、商户限流、nonce、响应签名、handler。
 func (h *Handler) Register(r *server.Hertz) {
 	if h == nil || r == nil {
 		return
