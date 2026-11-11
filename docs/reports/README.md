@@ -73,3 +73,4 @@
 | NTF-02 | 通知发送与固定间隔重试 | 支付 | `81d2262` | 2026-11-11 | [NTF-02-notify-send.md](NTF-02-notify-send.md) |
 | GW-04 | 时间窗口与 nonce 防重放 | 基础设施 | `70ae1da` | 2026-11-11 | [GW-04-timestamp-nonce.md](GW-04-timestamp-nonce.md) |
 | GW-05 | 商户限流（进程内） | 基础设施 | `c00ea8e` | 2026-11-11 | [GW-05-rate-limit.md](GW-05-rate-limit.md) |
+| OPS-02 | 链路追踪 | 基础设施 | `b900c82` | 2026-11-11 | [OPS-02-tracing.md](OPS-02-tracing.md) |
