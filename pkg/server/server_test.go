@@ -590,3 +590,32 @@ func containsAt(s, part string) bool {
 	}
 	return false
 }
+
+// CH-07：管理端口支持通过 Handle 注册自定义管理路由，且不影响内置 /healthz、/readyz。
+func TestServerCustomHandle(t *testing.T) {
+	ln := listenLocal(t)
+	srv := New(Config{
+		Listener:  ln,
+		AllowNoDB: true,
+	})
+	srv.RegisterCheck(func(context.Context) error { return nil })
+	srv.Handle("/mockpay/admin/config", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeText(w, http.StatusOK, r.Method+":ok")
+	}))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runErr := make(chan error, 1)
+	go func() { runErr <- srv.Run(ctx) }()
+
+	base := "http://" + ln.Addr().String()
+	waitGET(t, base+"/healthz", http.StatusOK, "ok", time.Second)
+	status, body := getOnce(t, base+"/mockpay/admin/config")
+	if status != http.StatusOK || body != "GET:ok" {
+		t.Fatalf("GET custom route: status=%d body=%q", status, body)
+	}
+	cancel()
+	if err := <-runErr; err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+}

@@ -99,6 +99,7 @@ type Notifier struct {
 	sched  Scheduler
 	key    []byte
 	client *http.Client
+	fault  *FaultConfigStore
 
 	mu     sync.Mutex
 	chains map[uint64]struct{}
@@ -133,6 +134,11 @@ func refuseRedirect(*http.Request, []*http.Request) error {
 	return http.ErrUseLastResponse
 }
 
+// SetFaultConfig 注入全局故障配置（CH-07），仅作用于 NORMAL 场景。
+func (n *Notifier) SetFaultConfig(fc *FaultConfigStore) {
+	n.fault = fc
+}
+
 // Handle 只入队，然后返回。发送和重试都在 Scheduler 上执行。
 // 普通场景的第一次排在当前时钟。SLOW 的第一次排在 finished_at 之后 30 秒。
 // 同一 id 已经有一条发送链时直接返回，避免完成钩子被调用两次把次数打双。
@@ -147,11 +153,23 @@ func (n *Notifier) Handle(ctx context.Context, row dal.Txn) {
 	}
 	n.chains[row.ID] = struct{}{}
 	n.mu.Unlock()
-	if scenario.Scenario(row.Scenario) == scenario.DupNotify {
+	sc := scenario.Scenario(row.Scenario)
+	if sc == scenario.Normal && n.fault != nil {
+		switch n.fault.decideNotifyMode() {
+		case notifyDrop:
+			slog.InfoContext(ctx, "channel notify dropped by global fault config",
+				slog.String("channel_txn_no", row.ChannelTxnNo))
+			return
+		case notifyDup:
+			n.sched.Schedule(n.clk.Now(), func() { n.dupWave(ctx, row) })
+			return
+		}
+	}
+	if sc == scenario.DupNotify {
 		n.sched.Schedule(n.clk.Now(), func() { n.dupWave(ctx, row) })
 		return
 	}
-	if scenario.Scenario(row.Scenario) == scenario.Slow && row.NotifySentCount == 0 {
+	if sc == scenario.Slow && row.NotifySentCount == 0 {
 		n.scheduleAttempt(ctx, row, 0, row.FinishedAt.Add(slowFirstDelay))
 		return
 	}

@@ -2,6 +2,7 @@ package biz
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"github.com/yym108/pay-system/pkg/dbx"
@@ -29,6 +30,10 @@ func (s *Service) Refund(ctx context.Context, req RefundRequest) (PayResult, err
 	if err := validateRefund(req); err != nil {
 		return PayResult{}, err
 	}
+	sc := scenario.ForRefund(int64(req.Amount))
+	if sc == scenario.Normal && s.fault.shouldAcceptError() {
+		return PayResult{}, errors.New("biz: injected refund accept error")
+	}
 	if existing, ok, err := s.store.Get(ctx, dal.TxnTypeRefund, req.ReqNo); err != nil {
 		return PayResult{}, err
 	} else if ok {
@@ -45,7 +50,7 @@ func (s *Service) Refund(ctx context.Context, req RefundRequest) (PayResult, err
 		OrigReqNo:    req.OrigReqNo,
 		Amount:       req.Amount,
 		Status:       dal.StatusProcessing,
-		Scenario:     scenario.ForRefund(int64(req.Amount)).String(),
+		Scenario:     sc.String(),
 		NotifyURL:    req.NotifyURL,
 		CreatedAt:    s.now(),
 	}

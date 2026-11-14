@@ -8,7 +8,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -128,6 +131,7 @@ type queryMock struct {
 	url   string
 	db    *sqlx.DB
 	sched *stepSched
+	fault *cbiz.FaultConfigStore
 	mu    sync.Mutex
 	hits  map[string]int
 }
@@ -180,8 +184,11 @@ func startQueryMock(t *testing.T, clk *clock.Fake, notify bool) *queryMock {
 	store := cdal.New(schema.DB)
 	ms := int(mockFinishDelay / time.Millisecond)
 	svc := cbiz.New(store, ids, clk, m.sched, cbiz.Options{DelayMinMS: ms, DelayMaxMS: ms})
+	m.fault = svc.FaultConfig()
 	if notify {
-		svc.SetOnFinished(cbiz.NewNotifier(store, ids, clk, m.sched, []byte(testChannelKey)).Handle)
+		notifier := cbiz.NewNotifier(store, ids, clk, m.sched, []byte(testChannelKey))
+		notifier.SetFaultConfig(svc.FaultConfig())
+		svc.SetOnFinished(notifier.Handle)
 	}
 	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp", "127.0.0.1:0")
 	if err != nil {
@@ -930,5 +937,69 @@ func TestQueryClaimBatchMySQL(t *testing.T) {
 	}
 	if queryExhausted.Load() != beforeExhausted+1 {
 		t.Fatalf("exhausted counted twice: %d", queryExhausted.Load())
+	}
+}
+
+// CH-07 验收 1：丢回调概率设为 1 时，所有 NORMAL 交易都不回调，平台通过查单全部完成。
+func TestCH07DropNotifyRateOneCompensatedByQuery(t *testing.T) {
+	const merchantID = "M100090"
+	e := newQueryEnv(t, merchantID, true)
+
+	// 通过管理接口 PUT /mockpay/admin/config 把 drop_notify_rate 设为 1。
+	adminSrv := httptest.NewServer(chandler.NewAdminConfigHandler(e.mock.fault))
+	defer adminSrv.Close()
+	req, err := http.NewRequestWithContext(e.ctx, http.MethodPut, adminSrv.URL+chandler.AdminConfigPath, strings.NewReader(`{"drop_notify_rate":1}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("PUT admin config status = %d, want 200", resp.StatusCode)
+	}
+
+	// 发起 3 笔 NORMAL 交易。
+	payNos := make([]string, 3)
+	for i := range payNos {
+		reqID := fmt.Sprintf("CH07-DROP-%d", i)
+		payNos[i] = e.pay(t, merchantID, reqID, money.Amount(10000+i*100)).PayNo
+	}
+
+	// 推进时钟：渠道全部自动完成，但因为 drop_notify_rate=1 不发回调；平台通过查单补偿全部变为 SUCCESS。
+	var elapsed time.Duration
+	for elapsed < 30*time.Second {
+		e.clk.Advance(time.Second)
+		elapsed += time.Second
+		e.mock.sched.RunDue()
+		e.batch(t)
+		allDone := true
+		for i := range payNos {
+			reqID := fmt.Sprintf("CH07-DROP-%d", i)
+			if loadPayment(t, e.payEnv, merchantID, reqID).status != payStatusSuccess {
+				allDone = false
+				break
+			}
+		}
+		if allDone {
+			break
+		}
+	}
+
+	for i, payNo := range payNos {
+		reqID := fmt.Sprintf("CH07-DROP-%d", i)
+		stored := loadPayment(t, e.payEnv, merchantID, reqID)
+		if stored.status != payStatusSuccess {
+			t.Fatalf("order %d status = %s, want SUCCESS", i, stored.status)
+		}
+		mock := loadMockRow(t, e.ctx, e.mock.db, txnTypePay, payNo)
+		if mock.status != payStatusSuccess || mock.count != 0 {
+			t.Fatalf("mock row %d = %+v, want SUCCESS with notify_sent_count=0", i, mock)
+		}
+		if n := e.mock.queries(txnTypePay, payNo); n == 0 {
+			t.Fatalf("order %d expected channel query, got 0", i)
+		}
 	}
 }

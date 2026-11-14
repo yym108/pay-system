@@ -63,11 +63,17 @@ func (s *Service) Recover(ctx context.Context) (int, error) {
 // schedule 按场景调度自动完成，返回是否调度。
 // 完成任务比受理请求活得久：只保留 ctx 的值（请求 ID 等），不继承它的取消和截止时间。
 func (s *Service) schedule(ctx context.Context, t dal.Txn) bool {
-	if !scenario.Scenario(t.Scenario).AutoFinishes() {
+	sc := scenario.Scenario(t.Scenario)
+	if !sc.AutoFinishes() {
 		return false
 	}
+	minMS, maxMS := s.opts.DelayMinMS, s.opts.DelayMaxMS
+	if sc == scenario.Normal && s.fault != nil {
+		cfg := s.fault.Get()
+		minMS, maxMS = cfg.DelayMinMS, cfg.DelayMaxMS
+	}
 	base := context.WithoutCancel(ctx)
-	due := t.CreatedAt.Add(Delay(t.ReqNo, s.opts.DelayMinMS, s.opts.DelayMaxMS))
+	due := t.CreatedAt.Add(Delay(t.ReqNo, minMS, maxMS))
 	s.sched.Schedule(due, func() { s.finish(base, t, nil) })
 	return true
 }

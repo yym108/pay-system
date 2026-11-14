@@ -101,11 +101,24 @@ type Service struct {
 	clk   clock.Clock
 	sched Scheduler
 	opts  Options
+	fault *FaultConfigStore
 }
 
 // New 组装服务。参数都不能为 nil（OnFinished 除外）。
 func New(store Store, ids IDGenerator, clk clock.Clock, sched Scheduler, opts Options) *Service {
-	return &Service{store: store, ids: ids, clk: clk, sched: sched, opts: opts}
+	return &Service{
+		store: store,
+		ids:   ids,
+		clk:   clk,
+		sched: sched,
+		opts:  opts,
+		fault: NewFaultConfigStore(opts.DelayMinMS, opts.DelayMaxMS),
+	}
+}
+
+// FaultConfig 返回该服务关联的全局故障配置存储（CH-07）。
+func (s *Service) FaultConfig() *FaultConfigStore {
+	return s.fault
 }
 
 // SetOnFinished 在 New 之后、Recover 和开始接收请求之前设置完成钩子。
@@ -145,6 +158,10 @@ func (s *Service) Pay(ctx context.Context, req PayRequest) (PayResult, error) {
 	if err := validatePay(req); err != nil {
 		return PayResult{}, err
 	}
+	sc := scenario.ForPay(int64(req.Amount))
+	if sc == scenario.Normal && s.fault.shouldAcceptError() {
+		return PayResult{}, errors.New("biz: injected accept error")
+	}
 	no, err := s.ids.NewNo(ctx, channelTxnPrefix)
 	if err != nil {
 		return PayResult{}, fmt.Errorf("new channel_txn_no: %w", err)
@@ -155,7 +172,7 @@ func (s *Service) Pay(ctx context.Context, req PayRequest) (PayResult, error) {
 		ReqNo:        req.ReqNo,
 		Amount:       req.Amount,
 		Status:       dal.StatusProcessing,
-		Scenario:     scenario.ForPay(int64(req.Amount)).String(),
+		Scenario:     sc.String(),
 		NotifyURL:    req.NotifyURL,
 		CreatedAt:    s.now(),
 	}
@@ -199,11 +216,12 @@ func (s *Service) recoverInsert(ctx context.Context, t dal.Txn, insertErr error)
 	return replay(row, t.Amount), nil
 }
 
-// holdAccept 只挡住新插入成功的 ACCEPT_TIMEOUT。
+// holdAccept 挡住新插入成功的 ACCEPT_TIMEOUT，或按全局配置命中超时的 NORMAL 交易。
 // 到期时刻用注入时钟，等待交给 Scheduler：测试用 RunDue 放行，生产用 TimerScheduler 的 time.AfterFunc。
 // ctx 取消时不删行；schedule 已经排上的自动完成留在调度器上。
 func (s *Service) holdAccept(ctx context.Context, t dal.Txn) error {
-	if scenario.Scenario(t.Scenario) != scenario.AcceptTimeout {
+	sc := scenario.Scenario(t.Scenario)
+	if sc != scenario.AcceptTimeout && !(sc == scenario.Normal && s.fault.shouldAcceptTimeout()) {
 		return nil
 	}
 	due := t.CreatedAt.Add(acceptHold)

@@ -88,6 +88,11 @@ type checkItem struct {
 	limit time.Duration
 }
 
+type customRoute struct {
+	pattern string
+	handler http.Handler
+}
+
 // Server 持有管理端口和可注册的检查、服务、生产者与关闭动作。
 type Server struct {
 	cfg Config
@@ -98,6 +103,7 @@ type Server struct {
 	groups   []Group
 	flushers []Flusher
 	closers  []io.Closer
+	routes   []customRoute
 
 	draining atomic.Bool
 }
@@ -147,6 +153,25 @@ func (s *Server) RegisterCloser(c io.Closer) {
 	s.mu.Lock()
 	s.closers = append(s.closers, c)
 	s.mu.Unlock()
+}
+
+// Handle 注册管理端口的自定义路由（如模拟渠道管理接口）。应在 Run 之前调用。
+// pattern 或 h 为空时不注册。
+func (s *Server) Handle(pattern string, h http.Handler) {
+	if pattern == "" || h == nil {
+		return
+	}
+	s.mu.Lock()
+	s.routes = append(s.routes, customRoute{pattern: pattern, handler: h})
+	s.mu.Unlock()
+}
+
+// HandleFunc 注册管理端口的自定义处理函数。应在 Run 之前调用。
+func (s *Server) HandleFunc(pattern string, fn http.HandlerFunc) {
+	if fn == nil {
+		return
+	}
+	s.Handle(pattern, fn)
 }
 
 // PingCheck 在 ctx 内 Ping。失败时返回固定错误，不带驱动原文。
@@ -343,6 +368,12 @@ func (s *Server) handler() http.Handler {
 	mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
 	mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
 	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	s.mu.Lock()
+	routes := append([]customRoute(nil), s.routes...)
+	s.mu.Unlock()
+	for _, r := range routes {
+		mux.Handle(r.pattern, r.handler)
+	}
 	return mux
 }
 

@@ -109,7 +109,9 @@ func serve(cfg config.ChannelMock, logOut io.Writer) error {
 		DelayMaxMS: cfg.MockDelayMaxMS,
 	})
 	// 钩子只入队。Recover 仍只重建 PROCESSING 的自动完成，不扫描已终态的回调。
-	svc.SetOnFinished(biz.NewNotifier(store, ids, clk, sched, []byte(cfg.ChannelMockpayKey)).Handle)
+	notifier := biz.NewNotifier(store, ids, clk, sched, []byte(cfg.ChannelMockpayKey))
+	notifier.SetFaultConfig(svc.FaultConfig())
+	svc.SetOnFinished(notifier.Handle)
 
 	// 开始接收请求前重建调度（CH-01 规则 5）。
 	recoverCtx, cancelRecover := context.WithTimeout(context.Background(), recoverTimeout)
@@ -129,6 +131,7 @@ func serve(cfg config.ChannelMock, logOut io.Writer) error {
 		DrainTimeout: server.DefaultDrainTimeout,
 	})
 	admin.RequireDB(server.PingCheck(db), 0)
+	admin.Handle(handler.AdminConfigPath, handler.NewAdminConfigHandler(svc.FaultConfig()))
 	admin.RegisterCloser(closeFunc(closeDB))
 	admin.RegisterGroup(server.FuncGroup(
 		func() error {
