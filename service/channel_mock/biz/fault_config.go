@@ -1,10 +1,11 @@
 package biz
 
 import (
+	"crypto/rand"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
-	"math/rand/v2"
 	"sync"
 )
 
@@ -16,27 +17,27 @@ var ErrInvalidFaultConfig = errors.New("biz: invalid fault config")
 type FaultConfig struct {
 	DelayMinMS        int     `json:"delay_min_ms"`
 	DelayMaxMS        int     `json:"delay_max_ms"`
-	DupNotifyRate     float64 `json:"dup_notify_rate"`
-	DropNotifyRate    float64 `json:"drop_notify_rate"`
-	AcceptErrorRate   float64 `json:"accept_error_rate"`
-	AcceptTimeoutRate float64 `json:"accept_timeout_rate"`
+	DupNotifyRate     float64 `json:"dup_notify_rate"`     //nolint:forbidigo // 概率配置值，非金额
+	DropNotifyRate    float64 `json:"drop_notify_rate"`    //nolint:forbidigo // 概率配置值，非金额
+	AcceptErrorRate   float64 `json:"accept_error_rate"`   //nolint:forbidigo // 概率配置值，非金额
+	AcceptTimeoutRate float64 `json:"accept_timeout_rate"` //nolint:forbidigo // 概率配置值，非金额
 }
 
 // FaultConfigPatch 表示对 FaultConfig 的局部更新，nil 字段保持原值。
 type FaultConfigPatch struct {
 	DelayMinMS        *int     `json:"delay_min_ms"`
 	DelayMaxMS        *int     `json:"delay_max_ms"`
-	DupNotifyRate     *float64 `json:"dup_notify_rate"`
-	DropNotifyRate    *float64 `json:"drop_notify_rate"`
-	AcceptErrorRate   *float64 `json:"accept_error_rate"`
-	AcceptTimeoutRate *float64 `json:"accept_timeout_rate"`
+	DupNotifyRate     *float64 `json:"dup_notify_rate"`     //nolint:forbidigo // 概率配置值，非金额
+	DropNotifyRate    *float64 `json:"drop_notify_rate"`    //nolint:forbidigo // 概率配置值，非金额
+	AcceptErrorRate   *float64 `json:"accept_error_rate"`   //nolint:forbidigo // 概率配置值，非金额
+	AcceptTimeoutRate *float64 `json:"accept_timeout_rate"` //nolint:forbidigo // 概率配置值，非金额
 }
 
 // FaultConfigStore 并发安全地持有并校验全局故障配置。
 type FaultConfigStore struct {
 	mu       sync.RWMutex
 	cfg      FaultConfig
-	randFunc func() float64
+	randFunc func() float64 //nolint:forbidigo // 概率采样函数，非金额
 }
 
 // NewFaultConfigStore 用默认延迟范围创建配置存储。概率默认全部为 0。
@@ -52,7 +53,7 @@ func NewFaultConfigStore(defaultDelayMinMS, defaultDelayMaxMS int) *FaultConfigS
 			DelayMinMS: defaultDelayMinMS,
 			DelayMaxMS: defaultDelayMaxMS,
 		},
-		randFunc: rand.Float64,
+		randFunc: cryptoRandFloat64,
 	}
 }
 
@@ -105,7 +106,7 @@ func validateFaultConfig(c FaultConfig) error {
 	}
 	rates := []struct {
 		name string
-		val  float64
+		val  float64 //nolint:forbidigo // 概率配置值，非金额
 	}{
 		{"dup_notify_rate", c.DupNotifyRate},
 		{"drop_notify_rate", c.DropNotifyRate},
@@ -120,14 +121,23 @@ func validateFaultConfig(c FaultConfig) error {
 	return nil
 }
 
-func (s *FaultConfigStore) sample() float64 {
+func cryptoRandFloat64() float64 { //nolint:forbidigo // 概率配置采样，非金额
+	var buf [8]byte
+	if _, err := rand.Read(buf[:]); err != nil {
+		return 0
+	}
+	v := binary.BigEndian.Uint64(buf[:]) >> 11
+	return float64(v) / (1 << 53) //nolint:forbidigo // 概率配置采样，非金额
+}
+
+func (s *FaultConfigStore) sample() float64 { //nolint:forbidigo // 概率配置采样，非金额
 	if s.randFunc != nil {
 		return s.randFunc()
 	}
-	return rand.Float64()
+	return cryptoRandFloat64()
 }
 
-func (s *FaultConfigStore) hit(rate float64) bool {
+func (s *FaultConfigStore) hit(rate float64) bool { //nolint:forbidigo // 概率配置值，非金额
 	if rate <= 0 {
 		return false
 	}

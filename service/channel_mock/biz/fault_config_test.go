@@ -326,12 +326,15 @@ func TestServiceGlobalAcceptErrorAndTimeoutRate(t *testing.T) {
 		}()
 
 		// 等待调度器出现 5 秒 hold 任务，且未推进时钟前不返回。
-		deadline := time.Now().Add(time.Second)
+		timer := time.NewTimer(time.Second)
+		defer timer.Stop()
 		for len(e.sched.dues()) < 2 {
-			if time.Now().After(deadline) {
+			select {
+			case <-timer.C:
 				t.Fatalf("expected 2 scheduled tasks (finish + hold), got %d", len(e.sched.dues()))
+			default:
+				time.Sleep(time.Millisecond)
 			}
-			time.Sleep(time.Millisecond)
 		}
 		select {
 		case out := <-ch:
@@ -359,7 +362,7 @@ func TestFaultConfigConcurrentAccess(t *testing.T) {
 			for i := range 50 {
 				minMS := 10 + (i % 50)
 				maxMS := 100 + (i % 100)
-				rate := float64(i%10) / 10.0
+				rate := float64(i%10) / 10.0 //nolint:forbidigo // 概率配置值，非金额
 				_, _ = e.svc.FaultConfig().Update(FaultConfigPatch{
 					DelayMinMS:     &minMS,
 					DelayMaxMS:     &maxMS,

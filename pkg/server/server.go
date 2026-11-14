@@ -457,5 +457,5 @@ func runCheck(parent context.Context, item checkItem) error {
 func writeText(w http.ResponseWriter, status int, body string) {
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(status)
-	_, _ = io.WriteString(w, body)
+	_, _ = io.WriteString(w, body) //nolint:gosec // G705: Content-Type 已固定为 text/plain，仅写入内部状态文本
 }

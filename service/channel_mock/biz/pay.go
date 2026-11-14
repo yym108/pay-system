@@ -221,7 +221,7 @@ func (s *Service) recoverInsert(ctx context.Context, t dal.Txn, insertErr error)
 // ctx 取消时不删行；schedule 已经排上的自动完成留在调度器上。
 func (s *Service) holdAccept(ctx context.Context, t dal.Txn) error {
 	sc := scenario.Scenario(t.Scenario)
-	if sc != scenario.AcceptTimeout && !(sc == scenario.Normal && s.fault.shouldAcceptTimeout()) {
+	if sc != scenario.AcceptTimeout && (sc != scenario.Normal || !s.fault.shouldAcceptTimeout()) {
 		return nil
 	}
 	due := t.CreatedAt.Add(acceptHold)

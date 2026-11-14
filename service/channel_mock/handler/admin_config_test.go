@@ -21,7 +21,7 @@ func TestAdminConfigGetAndPut(t *testing.T) {
 	h := NewAdminConfigHandler(fc)
 
 	// 1. 初始 GET 返回默认值。
-	req := httptest.NewRequest(http.MethodGet, AdminConfigPath, nil)
+	req := httptest.NewRequestWithContext(t.Context(), http.MethodGet, AdminConfigPath, nil)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
@@ -39,7 +39,7 @@ func TestAdminConfigGetAndPut(t *testing.T) {
 
 	// 2. PUT 部分更新（仅改 delay 和 drop_notify_rate）。
 	body := `{"delay_min_ms":50,"delay_max_ms":200,"drop_notify_rate":1}`
-	putReq := httptest.NewRequest(http.MethodPut, AdminConfigPath, strings.NewReader(body))
+	putReq := httptest.NewRequestWithContext(t.Context(), http.MethodPut, AdminConfigPath, strings.NewReader(body))
 	putRec := httptest.NewRecorder()
 	h.ServeHTTP(putRec, putReq)
 	if putRec.Code != http.StatusOK {
@@ -54,7 +54,7 @@ func TestAdminConfigGetAndPut(t *testing.T) {
 
 	// 3. 再次 GET 读到更新后的值。
 	rec2 := httptest.NewRecorder()
-	h.ServeHTTP(rec2, httptest.NewRequest(http.MethodGet, AdminConfigPath, nil))
+	h.ServeHTTP(rec2, httptest.NewRequestWithContext(t.Context(), http.MethodGet, AdminConfigPath, nil))
 	if rec2.Code != http.StatusOK || !bytes.Equal(rec2.Body.Bytes(), putRec.Body.Bytes()) {
 		t.Fatalf("GET2 status=%d body=%s", rec2.Code, rec2.Body.String())
 	}
@@ -82,7 +82,7 @@ func TestAdminConfigValidation(t *testing.T) {
 	}
 	for _, p := range badPayloads {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(http.MethodPut, AdminConfigPath, strings.NewReader(p)))
+		h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), http.MethodPut, AdminConfigPath, strings.NewReader(p)))
 		if rec.Code != http.StatusBadRequest {
 			t.Fatalf("payload %q: status=%d, want 400", p, rec.Code)
 		}
@@ -91,7 +91,7 @@ func TestAdminConfigValidation(t *testing.T) {
 	// 非 GET/PUT 方法返回 405。
 	for _, m := range []string{http.MethodPost, http.MethodDelete, http.MethodPatch} {
 		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, httptest.NewRequest(m, AdminConfigPath, nil))
+		h.ServeHTTP(rec, httptest.NewRequestWithContext(t.Context(), m, AdminConfigPath, nil))
 		if rec.Code != http.StatusMethodNotAllowed {
 			t.Fatalf("method %s: status=%d, want 405", m, rec.Code)
 		}
