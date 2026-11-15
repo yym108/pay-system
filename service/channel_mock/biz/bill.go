@@ -5,15 +5,102 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/csv"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
 
+	"github.com/yym108/pay-system/pkg/dbx"
+	"github.com/yym108/pay-system/pkg/money"
 	"github.com/yym108/pay-system/service/channel_mock/dal"
 	"github.com/yym108/pay-system/service/channel_mock/scenario"
 )
 
 const billTimestampLayout = "2006-01-02T15:04:05.000Z07:00"
+
+// ErrConflict 表示账单注入时指定的 (txn_type, req_no) 已存在且内容不一致。
+var ErrConflict = errors.New("biz: bill inject conflict")
+
+// BillInjectRequest 是 POST /mockpay/admin/bill-inject 的入参（CH-09）。
+type BillInjectRequest struct {
+	Date    string
+	TxnType string
+	Amount  money.Amount
+	ReqNo   string
+}
+
+// BillInjectResult 是账单注入的响应（CH-09）。
+type BillInjectResult struct {
+	ReqNo        string
+	ChannelTxnNo string
+}
+
+// InjectBill 注入一条 SUCCESS 的 mock_txn（CH-09），用于构造渠道侧长款。
+// req_no 为空时自动生成平台不存在的单号；同参数重复注入幂等返回已有流水号，参数不一致返回 ErrConflict。
+func (s *Service) InjectBill(ctx context.Context, req BillInjectRequest) (BillInjectResult, error) {
+	if err := ctx.Err(); err != nil {
+		return BillInjectResult{}, err
+	}
+	if !validBillDate(req.Date) {
+		return BillInjectResult{}, fmt.Errorf("%w: date", ErrInvalidRequest)
+	}
+	if req.TxnType != dal.TxnTypePay && req.TxnType != dal.TxnTypeRefund {
+		return BillInjectResult{}, fmt.Errorf("%w: txn_type", ErrInvalidRequest)
+	}
+	if req.Amount < money.MinPayAmount {
+		return BillInjectResult{}, fmt.Errorf("%w: amount", ErrInvalidRequest)
+	}
+	if req.ReqNo != "" && !validText(req.ReqNo, maxReqNoRunes) {
+		return BillInjectResult{}, fmt.Errorf("%w: req_no", ErrInvalidRequest)
+	}
+
+	channelTxnNo, err := s.ids.NewNo(ctx, channelTxnPrefix)
+	if err != nil {
+		return BillInjectResult{}, fmt.Errorf("new channel_txn_no: %w", err)
+	}
+	reqNo := req.ReqNo
+	if reqNo == "" {
+		idNo, err := s.ids.NewNo(ctx, channelTxnPrefix)
+		if err != nil {
+			return BillInjectResult{}, fmt.Errorf("new injected req_no: %w", err)
+		}
+		reqNo = "INJ" + idNo[len(channelTxnPrefix):]
+	}
+
+	finishedAt, err := time.ParseInLocation(billDateLayout, req.Date, shanghai)
+	if err != nil {
+		return BillInjectResult{}, fmt.Errorf("%w: date", ErrInvalidRequest)
+	}
+
+	t := dal.Txn{
+		ChannelTxnNo: channelTxnNo,
+		TxnType:      req.TxnType,
+		ReqNo:        reqNo,
+		Amount:       req.Amount,
+		Status:       dal.StatusSuccess,
+		Scenario:     string(scenario.Normal),
+		FinishedAt:   finishedAt,
+		BillDate:     req.Date,
+		CreatedAt:    s.now(),
+	}
+	if _, err := s.store.Insert(ctx, t); err != nil {
+		if !dbx.IsDuplicate(err) {
+			return BillInjectResult{}, err
+		}
+		existing, ok, gerr := s.store.Get(ctx, req.TxnType, reqNo)
+		if gerr != nil {
+			return BillInjectResult{}, gerr
+		}
+		if !ok {
+			return BillInjectResult{}, errDuplicateWithoutRow
+		}
+		if existing.Status == dal.StatusSuccess && existing.Amount == req.Amount && existing.BillDate == req.Date {
+			return BillInjectResult{ReqNo: existing.ReqNo, ChannelTxnNo: existing.ChannelTxnNo}, nil
+		}
+		return BillInjectResult{}, ErrConflict
+	}
+	return BillInjectResult{ReqNo: reqNo, ChannelTxnNo: channelTxnNo}, nil
+}
 
 // BillResult 是账单下载的业务结果（CH-08）。
 type BillResult struct {

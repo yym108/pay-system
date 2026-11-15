@@ -373,7 +373,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | CH-06 | 确定性故障场景 | P0 | M3–M4 | CH-01、CH-02、CH-03、CH-05 | DONE |
 | CH-07 | 全局故障配置（压测延迟） | P0 | M6 | CH-06、PAY-05 | DONE |
 | CH-08 | 账单下载 | P0 | M6 | CH-01、CH-04 | DONE |
-| CH-09 | 账单注入 | P0 | M6 | CH-08 | TODO |
+| CH-09 | 账单注入 | P0 | M6 | CH-08 | DONE |
 | PAY-01 | 商户与密钥 | P0 | M3 | BASE-14、BASE-03 | DONE |
 | PAY-02 | 创建支付单 | P0 | M3 | PAY-01 | DONE |
 | PAY-03 | 发起支付 | P0 | M3 | PAY-02、CH-01、BASE-15 | DONE |
@@ -1410,7 +1410,7 @@ M4：
 
 验收：
 
-- [ ] 注入后该记录出现在对应日期账单中。
+- [x] 注入后该记录出现在对应日期账单中。
 
 ### 4.4 支付（PAY）
 

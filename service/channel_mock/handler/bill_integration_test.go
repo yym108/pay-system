@@ -7,8 +7,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/csv"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -181,5 +183,93 @@ func TestBillDownloadEndToEndMySQL(t *testing.T) {
 	w2 := getBill("2026-10-12")
 	if string(w2.Result().Body()) != string(resp1.Body()) {
 		t.Fatal("second download bytes differed")
+	}
+}
+
+// CH-09 验收 1（端到端 MySQL）：
+// 通过管理接口 POST /mockpay/admin/bill-inject 注入记录后，该记录出现在对应日期账单中。
+func TestBillInjectEndToEndMySQL(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	t.Cleanup(cancel)
+	my, err := testkit.Ready(ctx)
+	if err != nil {
+		t.Fatal(testkit.Redact(err))
+	}
+	schema, err := my.OpenSchema(ctx, "channel_mock")
+	if err != nil {
+		t.Fatal(testkit.Redact(err))
+	}
+	t.Cleanup(func() {
+		closeCtx, closeCancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer closeCancel()
+		if err := schema.Close(closeCtx); err != nil {
+			t.Errorf("close schema: %s", testkit.Redact(err))
+		}
+	})
+
+	clk := &clock.Fake{}
+	clk.Set(time.Date(2026, 10, 13, 10, 0, 0, 0, shanghaiTZ))
+	store := dal.New(schema.DB)
+	ids, err := idgen.New(1, clk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sched := biz.NewTimerScheduler(clk)
+	t.Cleanup(sched.Stop)
+	svc := biz.New(store, ids, clk, sched, biz.Options{DelayMinMS: 200, DelayMaxMS: 200})
+
+	// 1. 通过管理处理器注入两笔账单记录（一笔默认 req_no，一笔指定 req_no）
+	adminH := NewAdminBillInjectHandler(svc)
+	inject := func(payload string) (string, string) {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequestWithContext(ctx, http.MethodPost, AdminBillInjectPath, strings.NewReader(payload))
+		adminH.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("inject %s status=%d body=%s", payload, rec.Code, rec.Body.String())
+		}
+		var out struct {
+			ReqNo        string `json:"req_no"`
+			ChannelTxnNo string `json:"channel_txn_no"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out.ReqNo, out.ChannelTxnNo
+	}
+
+	reqNo1, mc1 := inject(`{"date":"2026-10-12","txn_type":"PAY","amount":10500}`)
+	reqNo2, mc2 := inject(`{"date":"2026-10-12","txn_type":"REFUND","amount":2500,"req_no":"INJ_RF_MYSQL_01"}`)
+
+	// 2. 从业务端口下载 2026-10-12 账单，验证注入的两条记录均出现
+	srv := server.New(server.WithDisablePrintRoute(true))
+	New(svc, []byte(testKey), clk).Register(srv)
+	ts := sign.FormatTimestamp(clk.Now())
+	w := ut.PerformRequest(srv.Engine, http.MethodGet, BillPath+"?date=2026-10-12", nil,
+		ut.Header{Key: sign.HeaderMockTimestamp, Value: ts},
+		ut.Header{Key: sign.HeaderMockSignature, Value: signBody(t, testKey, ts, nil)})
+	resp := w.Result()
+	if resp.StatusCode() != http.StatusOK {
+		t.Fatalf("bill status=%d body=%s", resp.StatusCode(), resp.Body())
+	}
+	if count := string(resp.Header.Peek("X-Bill-Count")); count != "2" {
+		t.Fatalf("X-Bill-Count=%q, want 2", count)
+	}
+	records, err := csv.NewReader(strings.NewReader(string(resp.Body()))).ReadAll()
+	if err != nil {
+		t.Fatalf("parse csv: %v", err)
+	}
+	if len(records) != 3 {
+		t.Fatalf("csv rows=%d, want 3: %v", len(records), records)
+	}
+	got := map[string][]string{}
+	for _, r := range records[1:] {
+		got[r[1]] = r
+	}
+	if r, ok := got[reqNo1]; !ok || r[0] != "PAY" || r[2] != mc1 || r[3] != "10500" || r[4] != "SUCCESS" {
+		t.Fatalf("missing or mismatched PAY row: %v", got)
+	}
+	if r, ok := got[reqNo2]; !ok || r[0] != "REFUND" || r[2] != mc2 || r[3] != "2500" || r[4] != "SUCCESS" {
+		t.Fatalf("missing or mismatched REFUND row: %v", got)
 	}
 }

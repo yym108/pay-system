@@ -133,6 +133,7 @@ func serve(cfg config.ChannelMock, logOut io.Writer) error {
 	})
 	admin.RequireDB(server.PingCheck(db), 0)
 	admin.Handle(handler.AdminConfigPath, handler.NewAdminConfigHandler(svc.FaultConfig()))
+	admin.Handle(handler.AdminBillInjectPath, handler.NewAdminBillInjectHandler(svc))
 	admin.RegisterCloser(closeFunc(closeDB))
 	admin.RegisterGroup(server.FuncGroup(
 		func() error {

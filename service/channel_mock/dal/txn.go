@@ -118,16 +118,25 @@ func (r txnRow) txn() Txn {
 }
 
 // Insert 写入一笔新交易并返回 id。created_at 取 t.CreatedAt（调用方的注入时钟），不用列默认值。
+// FinishedAt / BillDate 为零值时写入 NULL。
 // (txn_type, req_no) 或 channel_txn_no 冲突时返回驱动的 1062 错误。
 func (d *DB) Insert(ctx context.Context, t Txn) (uint64, error) {
 	var orig any
 	if t.OrigReqNo != "" {
 		orig = t.OrigReqNo
 	}
+	var finishedAt any
+	if !t.FinishedAt.IsZero() {
+		finishedAt = t.FinishedAt
+	}
+	var billDate any
+	if t.BillDate != "" {
+		billDate = t.BillDate
+	}
 	res, err := d.db.ExecContext(ctx, `
-INSERT INTO mock_txn (channel_txn_no, txn_type, req_no, orig_req_no, amount, status, scenario, notify_url, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ChannelTxnNo, t.TxnType, t.ReqNo, orig, int64(t.Amount), t.Status, t.Scenario, t.NotifyURL, t.CreatedAt)
+INSERT INTO mock_txn (channel_txn_no, txn_type, req_no, orig_req_no, amount, status, scenario, notify_url, finished_at, bill_date, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ChannelTxnNo, t.TxnType, t.ReqNo, orig, int64(t.Amount), t.Status, t.Scenario, t.NotifyURL, finishedAt, billDate, t.CreatedAt)
 	if err != nil {
 		return 0, fmt.Errorf("insert mock_txn: %w", err)
 	}

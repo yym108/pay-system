@@ -2,9 +2,9 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 3.6.1 |
+| 文档版本 | 3.6.2 |
 | API 版本 | v1（路径前缀 `/v1`） |
-| 最后修改 | 2026-11-14 |
+| 最后修改 | 2026-11-15 |
 | 状态 | 设计基线，实现须与本文一致 |
 
 关联文档：需求 `docs/02-requirements.md`（各接口的业务规则以功能点为准）、约定 `docs/03-conventions.md`（错误码、单号、时间格式）。
@@ -89,6 +89,7 @@
 | 3.5.0 | 2026-11-11 | 正在监听的管理端口提供 `GET /metrics`。正文是 Prometheus 文本，含 Go runtime 与进程指标，以及 OPS-03 登记的 `pay_*`。这不是商户 API，不签名，不用 JSON 信封，也不用错误码。商户端口、网关管理 API、channel-mock 业务端口和 Kitex 业务端口不提供这份正文。不改商户 HTTP，不改 IDL，不新增错误码 | §1、§8.4、§12 | OPS-03 |
 | 3.6.0 | 2026-11-11 | 每条生产消息增加头 `produced_at_ns`（发送到 Kafka 时的十进制纳秒）。JSON 信封和 `trace_context` 不变，仍只有 `traceparent`。account 消费 `payment.succeeded` 时用这个头计算 `mq_wait`；头缺失或无法解析不记样本，不进 DLQ。不改商户 HTTP，不改 IDL，不新增错误码，不加表字段 | §1、§11.2 | OPT-01 |
 | 3.6.1 | 2026-11-14 | 文字对齐：CH-07 已在管理端口（:6064）实现 `GET /mockpay/admin/config` 与 `PUT /mockpay/admin/config`（业务端口 :9080 不提供）。`PUT` 支持局部或全量 JSON 更新，非法 JSON、未知/重复/`null` 字段或越界值返回 400，非 GET/PUT 返回 405。CH-09 的 `bill-inject` 仍待实现。不新增错误码，不改 IDL | §1、§9.8 | CH-07 |
+| 3.6.2 | 2026-11-15 | CH-09 已在管理端口（:6064）实现 `POST /mockpay/admin/bill-inject`（业务端口 :9080 不提供）。非法 JSON、缺必填字段、未知/重复/`null` 字段或非法参数返回 400，同 `(txn_type, req_no)` 冲突返回 409，同参数重复注入幂等返回 200，非 POST 返回 405。不新增错误码，不改 IDL | §1、§9.8 | CH-09 |
 
 ## 1. 接口总览
 
@@ -125,7 +126,7 @@
 | `POST /admin/accounts/check` 余额核对 | §8.4 | `AccountService.CheckBalance` | ACC-10 | 1.0.0 | 2026-10-27 |
 | 模拟渠道 `pay` / `query` / `close` / `refund` / `bills` | §9.2–§9.6 | — | CH-01~04、CH-08 | 1.0.0 | 2026-11-03 |
 | 模拟渠道回调 | §9.7 | — | CH-05、CH-06 | 1.0.0 | 2026-10-27 |
-| 模拟渠道管理 `config` / `bill-inject` | §9.8 | — | CH-07、CH-09 | 1.0.0 | 2026-11-14 |
+| 模拟渠道管理 `config` / `bill-inject` | §9.8 | — | CH-07、CH-09 | 1.0.0 | 2026-11-15 |
 | AccountService / PaymentService / ReconService | §10 | — | 见各方法 | 1.0.0 | 2026-10-27 |
 | 事件 `payment.succeeded`、`refund.succeeded`、`refund.failed`、`transfer.succeeded`、`transfer.failed` | §11 | — | MQ-01、MQ-04、NTF-01、OPT-01 | 1.0.0 | 2026-11-11 |
 | `GET /healthz`、`GET /readyz` 进程探针 | §12 | — | OPS-01 | 3.2.0 | 2026-11-10 |
@@ -942,7 +943,7 @@ DUP_NOTIFY（CH-06）不走上一段的 5 次和 5s、15s、30s、60s。交易�
 
 ### 9.8 模拟渠道管理接口
 
-地址 `http://127.0.0.1:6064`（仅管理端口，业务端口 `:9080` 不提供），仅供测试与演练。同端口的 `GET /healthz`、`GET /readyz`、`GET /metrics` 与 pprof 见 §12。`POST /mockpay/admin/bill-inject`（CH-09）尚未实现。
+地址 `http://127.0.0.1:6064`（仅管理端口，业务端口 `:9080` 不提供），仅供测试与演练。同端口的 `GET /healthz`、`GET /readyz`、`GET /metrics` 与 pprof 见 §12。
 
 `GET /mockpay/admin/config`、`PUT /mockpay/admin/config` · CH-07（P0）
 
@@ -965,7 +966,7 @@ DUP_NOTIFY（CH-06）不走上一段的 5 次和 5s、15s、30s、60s。交易�
 | `amount` | int64 | 是 | 金额 |
 | `req_no` | string | 否 | 默认生成平台不存在的单号 |
 
-响应：`{"req_no": "...", "channel_txn_no": "MC..."}`。
+响应：`{"req_no": "...", "channel_txn_no": "MC..."}`。非法 JSON、缺必填字段、未知/重复/`null` 字段或非法参数返回 400；同 `(txn_type, req_no)` 已存在且参数一致幂等返回 200，参数不一致返回 409；其他 HTTP 方法返回 405。
 
 ## 10. 内部 RPC
 

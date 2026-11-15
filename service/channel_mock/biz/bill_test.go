@@ -190,3 +190,110 @@ func TestDownloadBillPropagatesStoreError(t *testing.T) {
 		t.Fatalf("err = %v, want %v", err, errStore)
 	}
 }
+
+// CH-09 验收 1：注入后该记录出现在对应日期账单中（含默认生成 req_no、指定 req_no、PAY/REFUND、幂等与冲突）。
+func TestInjectBillAndAppearsInDownloadBill(t *testing.T) {
+	now := time.Date(2026, 10, 13, 10, 0, 0, 0, shanghai)
+	store := newMemStore()
+	clk := &clock.Fake{}
+	clk.Set(now)
+	svc := New(store, &seqIDs{}, clk, &manualSched{}, Options{
+		DelayMinMS: 200,
+		DelayMaxMS: 200,
+	})
+
+	// 1. 默认生成 req_no 注入 PAY 记录
+	res1, err := svc.InjectBill(t.Context(), BillInjectRequest{
+		Date:    "2026-10-12",
+		TxnType: dal.TxnTypePay,
+		Amount:  12345,
+	})
+	if err != nil {
+		t.Fatalf("InjectBill 1 err = %v", err)
+	}
+	if res1.ReqNo == "" || !strings.HasPrefix(res1.ChannelTxnNo, "MC") {
+		t.Fatalf("unexpected res1 = %+v", res1)
+	}
+
+	// 2. 指定 req_no 注入 REFUND 记录
+	res2, err := svc.InjectBill(t.Context(), BillInjectRequest{
+		Date:    "2026-10-12",
+		TxnType: dal.TxnTypeRefund,
+		Amount:  6789,
+		ReqNo:   "INJ_CUSTOM_RF_001",
+	})
+	if err != nil {
+		t.Fatalf("InjectBill 2 err = %v", err)
+	}
+	if res2.ReqNo != "INJ_CUSTOM_RF_001" || !strings.HasPrefix(res2.ChannelTxnNo, "MC") {
+		t.Fatalf("unexpected res2 = %+v", res2)
+	}
+
+	// 3. 相同参数重复注入同一 req_no 幂等返回已有流水号
+	res2Dup, err := svc.InjectBill(t.Context(), BillInjectRequest{
+		Date:    "2026-10-12",
+		TxnType: dal.TxnTypeRefund,
+		Amount:  6789,
+		ReqNo:   "INJ_CUSTOM_RF_001",
+	})
+	if err != nil {
+		t.Fatalf("InjectBill dup err = %v", err)
+	}
+	if res2Dup != res2 {
+		t.Fatalf("dup = %+v, want %+v", res2Dup, res2)
+	}
+
+	// 4. 同一 (txn_type, req_no) 但金额/日期不同返回 ErrConflict
+	if _, err := svc.InjectBill(t.Context(), BillInjectRequest{
+		Date:    "2026-10-12",
+		TxnType: dal.TxnTypeRefund,
+		Amount:  9999,
+		ReqNo:   "INJ_CUSTOM_RF_001",
+	}); !errors.Is(err, ErrConflict) {
+		t.Fatalf("conflict err = %v, want ErrConflict", err)
+	}
+
+	// 5. 下载对应日期账单，两条注入记录均在其中
+	bill, err := svc.DownloadBill(t.Context(), "2026-10-12")
+	if err != nil {
+		t.Fatalf("DownloadBill err = %v", err)
+	}
+	if !bill.Ready || bill.Count != 2 {
+		t.Fatalf("bill Ready=%v Count=%d, want true/2", bill.Ready, bill.Count)
+	}
+	body := string(bill.Content)
+	if !strings.Contains(body, fmt.Sprintf("PAY,%s,%s,12345,SUCCESS,2026-10-12T", res1.ReqNo, res1.ChannelTxnNo)) {
+		t.Fatalf("bill missing injected PAY: %s", body)
+	}
+	if !strings.Contains(body, fmt.Sprintf("REFUND,INJ_CUSTOM_RF_001,%s,6789,SUCCESS,2026-10-12T", res2.ChannelTxnNo)) {
+		t.Fatalf("bill missing injected REFUND: %s", body)
+	}
+}
+
+// CH-09：账单注入参数校验。
+func TestInjectBillValidation(t *testing.T) {
+	store := newMemStore()
+	clk := &clock.Fake{}
+	clk.Set(time.Date(2026, 10, 13, 10, 0, 0, 0, shanghai))
+	svc := New(store, &seqIDs{}, clk, &manualSched{}, Options{})
+
+	cases := []struct {
+		name string
+		req  BillInjectRequest
+	}{
+		{name: "empty date", req: BillInjectRequest{Date: "", TxnType: dal.TxnTypePay, Amount: 100}},
+		{name: "invalid date", req: BillInjectRequest{Date: "2026-02-30", TxnType: dal.TxnTypePay, Amount: 100}},
+		{name: "bad txn_type", req: BillInjectRequest{Date: "2026-10-12", TxnType: "TRANSFER", Amount: 100}},
+		{name: "zero amount", req: BillInjectRequest{Date: "2026-10-12", TxnType: dal.TxnTypePay, Amount: 0}},
+		{name: "negative amount", req: BillInjectRequest{Date: "2026-10-12", TxnType: dal.TxnTypePay, Amount: -1}},
+		{name: "too long req_no", req: BillInjectRequest{Date: "2026-10-12", TxnType: dal.TxnTypePay, Amount: 100, ReqNo: strings.Repeat("a", 33)}},
+		{name: "invalid utf8 req_no", req: BillInjectRequest{Date: "2026-10-12", TxnType: dal.TxnTypePay, Amount: 100, ReqNo: "abc\xff"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := svc.InjectBill(t.Context(), tc.req); !errors.Is(err, ErrInvalidRequest) {
+				t.Fatalf("err = %v, want ErrInvalidRequest", err)
+			}
+		})
+	}
+}
