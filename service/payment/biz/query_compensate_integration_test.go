@@ -308,11 +308,12 @@ FROM channel_txn WHERE biz_no = ?`, bizNo).Scan(
 }
 
 type mockRow struct {
-	count        int
-	status       string
-	channelTxnNo string
-	amount       int64
-	finished     sql.NullTime
+	count           int
+	status          string
+	channelTxnNo    string
+	amount          int64
+	finished        sql.NullTime
+	notifySentCount int
 }
 
 func loadMockRow(t *testing.T, ctx context.Context, db *sqlx.DB, txnType, reqNo string) mockRow {
@@ -326,8 +327,8 @@ func loadMockRow(t *testing.T, ctx context.Context, db *sqlx.DB, txnType, reqNo 
 		return row
 	}
 	err = db.QueryRowContext(ctx, `
-SELECT status, channel_txn_no, amount, finished_at
-FROM mock_txn WHERE txn_type = ? AND req_no = ?`, txnType, reqNo).Scan(&row.status, &row.channelTxnNo, &row.amount, &row.finished)
+SELECT status, channel_txn_no, amount, finished_at, notify_sent_count
+FROM mock_txn WHERE txn_type = ? AND req_no = ?`, txnType, reqNo).Scan(&row.status, &row.channelTxnNo, &row.amount, &row.finished, &row.notifySentCount)
 	if err != nil {
 		t.Fatal(testkit.Redact(err))
 	}
@@ -995,8 +996,8 @@ func TestCH07DropNotifyRateOneCompensatedByQuery(t *testing.T) {
 			t.Fatalf("order %d status = %s, want SUCCESS", i, stored.status)
 		}
 		mock := loadMockRow(t, e.ctx, e.mock.db, txnTypePay, payNo)
-		if mock.status != payStatusSuccess || mock.count != 0 {
-			t.Fatalf("mock row %d = %+v, want SUCCESS with notify_sent_count=0", i, mock)
+		if mock.count != 1 || mock.status != payStatusSuccess || mock.notifySentCount != 0 {
+			t.Fatalf("mock row %d = %+v, want count=1, SUCCESS with notify_sent_count=0", i, mock)
 		}
 		if n := e.mock.queries(txnTypePay, payNo); n == 0 {
 			t.Fatalf("order %d expected channel query, got 0", i)
