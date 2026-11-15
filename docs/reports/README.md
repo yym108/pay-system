@@ -77,3 +77,4 @@
 | OPS-03 | 业务与运行指标 | 基础设施 | `e391bd8` | 2026-11-11 | [OPS-03-metrics.md](OPS-03-metrics.md) |
 | OPT-01 | 分阶段耗时埋点 | 性能 | `a8bf9b8` | 2026-11-11 | [OPT-01-stage-timing.md](OPT-01-stage-timing.md) |
 | CH-07 | 全局故障配置 | 支付 | `e23311f` | 2026-11-14 | [CH-07-global-fault-config.md](CH-07-global-fault-config.md) |
+| CH-08 | 账单下载 | 支付 | `26a725a` | 2026-11-15 | [CH-08-bill-download.md](CH-08-bill-download.md) |
