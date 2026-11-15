@@ -1,7 +1,6 @@
 package base
 
 import (
-	"os"
 	"regexp"
 	"testing"
 )
@@ -49,10 +48,7 @@ func TestBASE12IDLMethods(t *testing.T) {
 
 func serviceMethods(t *testing.T, path, service string) map[string]struct{} {
 	t.Helper()
-	content, err := os.ReadFile(path) //nolint:gosec // path is a fixed IDL path from the test table.
-	if err != nil {
-		t.Fatalf("读取 %s：%v", path, err)
-	}
+	content := []byte(readRepoFile(t, path))
 	re := regexp.MustCompile(`(?s)service\s+` + service + `\s*\{(.*?)\n\}`)
 	match := re.FindSubmatch(content)
 	if match == nil {

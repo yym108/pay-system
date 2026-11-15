@@ -2,7 +2,6 @@ package base
 
 import (
 	"encoding/base64"
-	"os"
 	"regexp"
 	"strings"
 	"testing"
@@ -132,15 +131,6 @@ func TestBASE02ConventionsRegisterRootPassword(t *testing.T) {
 	if !strings.Contains(text, "MYSQL_ROOT_PASSWORD") {
 		t.Fatal("约定 §8 未登记 MYSQL_ROOT_PASSWORD")
 	}
-}
-
-func readRepoFile(t *testing.T, path string) string {
-	t.Helper()
-	content, err := os.ReadFile(path) //nolint:gosec // path is a test constant.
-	if err != nil {
-		t.Fatalf("读取 %s：%v", path, err)
-	}
-	return string(content)
 }
 
 func parseEnvExample(text string) map[string]string {

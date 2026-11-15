@@ -95,26 +95,26 @@ func TestBASE02Stack(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
 	defer cancel()
 	envFile := copyEnvExample(t)
-	existed := fileExists("deploy/.env")
+	existed := fileExists(repoPath(t, "deploy/.env"))
 	t.Cleanup(func() {
 		downCtx, downCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer downCancel()
-		if err := runMake(downCtx, envFile, "down", "V=1"); err != nil {
+		if err := runMake(t, downCtx, envFile, "down", "V=1"); err != nil {
 			t.Errorf("清理 make down V=1：%v", err)
 		}
-		if !existed && fileExists("deploy/.env") {
+		if !existed && fileExists(repoPath(t, "deploy/.env")) {
 			t.Error("测试留下了 deploy/.env")
 		}
 	})
 
-	if err := runMake(ctx, envFile, "down", "V=1"); err != nil {
+	if err := runMake(t, ctx, envFile, "down", "V=1"); err != nil {
 		t.Fatalf("预清理失败：%v", err)
 	}
 	ensureImages(ctx, t)
 
 	// 计时从镜像已在本地开始，对应验收“镜像已拉取的前提下”。
 	start := time.Now()
-	if err := runMake(ctx, envFile, "up"); err != nil {
+	if err := runMake(t, ctx, envFile, "up"); err != nil {
 		t.Fatalf("make up：%v", err)
 	}
 	elapsed := time.Since(start)
@@ -135,7 +135,7 @@ func TestBASE02Stack(t *testing.T) {
 		t.Fatal("make up 后应存在本项目数据卷")
 	}
 
-	if err := runMake(ctx, envFile, "down"); err != nil {
+	if err := runMake(t, ctx, envFile, "down"); err != nil {
 		t.Fatalf("make down：%v", err)
 	}
 	if running := projectContainers(t, ctx); len(running) != 0 {
@@ -145,14 +145,14 @@ func TestBASE02Stack(t *testing.T) {
 		t.Fatal("make down 不应删除数据卷")
 	}
 
-	if err := runMake(ctx, envFile, "down", "V=1"); err != nil {
+	if err := runMake(t, ctx, envFile, "down", "V=1"); err != nil {
 		t.Fatalf("make down V=1：%v", err)
 	}
 	if remaining := projectVolumes(t, ctx); len(remaining) != 0 {
 		t.Fatalf("make down V=1 后仍有数据卷：%v", remaining)
 	}
 
-	if err := runMake(ctx, envFile, "up-lite"); err != nil {
+	if err := runMake(t, ctx, envFile, "up-lite"); err != nil {
 		t.Fatalf("make up-lite：%v", err)
 	}
 	assertServicesHealthy(t, ctx, envFile, []string{"mysql", "redis", "kafka"})
@@ -166,12 +166,9 @@ func TestBASE02Stack(t *testing.T) {
 
 func copyEnvExample(t *testing.T) string {
 	t.Helper()
-	src, err := os.ReadFile("deploy/.env.example")
-	if err != nil {
-		t.Fatalf("读取 deploy/.env.example：%v", err)
-	}
+	src := readRepoFile(t, "deploy/.env.example")
 	path := filepath.Join(t.TempDir(), "env")
-	if err := os.WriteFile(path, src, 0o600); err != nil { //nolint:gosec // path is t.TempDir plus a fixed filename, not external input.
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil { //nolint:gosec // path is t.TempDir plus a fixed filename, not external input.
 		t.Fatalf("写入临时 env：%v", err)
 	}
 	return path
@@ -203,10 +200,11 @@ func ensureImages(ctx context.Context, t *testing.T) {
 	}
 }
 
-func runMake(ctx context.Context, envFile string, args ...string) error {
+func runMake(t *testing.T, ctx context.Context, envFile string, args ...string) error {
+	t.Helper()
 	// 命令行变量覆盖 Makefile 的 ?=，不依赖 make 是否导入环境变量。
 	cmdArgs := append([]string{"ENV_FILE=" + envFile}, args...)
-	cmd := exec.CommandContext(ctx, "make", cmdArgs...) //nolint:gosec // targets are fixed by the caller; env file is a temp copy of the example.
+	cmd := repoCommand(t, ctx, "make", cmdArgs...)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%w\n%s", err, out)
@@ -214,9 +212,10 @@ func runMake(ctx context.Context, envFile string, args ...string) error {
 	return nil
 }
 
-func compose(ctx context.Context, envFile string, args ...string) ([]byte, error) {
+func compose(t *testing.T, ctx context.Context, envFile string, args ...string) ([]byte, error) {
+	t.Helper()
 	cmdArgs := append([]string{"deploy/compose.sh"}, args...)
-	cmd := exec.CommandContext(ctx, "sh", cmdArgs...) //nolint:gosec // compose.sh plus fixed compose subcommands.
+	cmd := repoCommand(t, ctx, "sh", cmdArgs...)
 	cmd.Env = append(os.Environ(), "ENV_FILE="+envFile)
 	return cmd.CombinedOutput()
 }
@@ -269,7 +268,7 @@ func composeConfigFiles(t *testing.T, ctx context.Context, envFile, overlay stri
 
 func decodeCompose(t *testing.T, ctx context.Context, envFile string, args ...string) composeFile {
 	t.Helper()
-	out, err := compose(ctx, envFile, args...)
+	out, err := compose(t, ctx, envFile, args...)
 	if err != nil {
 		t.Fatalf("docker compose config：%v\n%s", err, out)
 	}
@@ -369,7 +368,7 @@ type composePs struct {
 
 func composePsAll(t *testing.T, ctx context.Context, envFile string) []composePs {
 	t.Helper()
-	out, err := compose(ctx, envFile, "ps", "-a", "--format", "json")
+	out, err := compose(t, ctx, envFile, "ps", "-a", "--format", "json")
 	if err != nil {
 		t.Fatalf("compose ps：%v\n%s", err, out)
 	}
@@ -435,7 +434,7 @@ func assertAppsNotRunning(t *testing.T, ctx context.Context, envFile string) {
 
 func assertTopics(t *testing.T, ctx context.Context, envFile string) {
 	t.Helper()
-	out, err := compose(ctx, envFile, "exec", "-T", "kafka",
+	out, err := compose(t, ctx, envFile, "exec", "-T", "kafka",
 		"/opt/kafka/bin/kafka-topics.sh", "--bootstrap-server", "localhost:9092", "--describe")
 	if err != nil {
 		t.Fatalf("描述 topic：%v\n%s", err, out)
@@ -465,7 +464,7 @@ func topicLine(text, topic string) string {
 func assertMySQLSettings(t *testing.T, ctx context.Context, envFile string) {
 	t.Helper()
 	password := envValue(t, envFile, "MYSQL_ROOT_PASSWORD")
-	out, err := compose(ctx, envFile, "exec", "-T", "-e", "MYSQL_PWD="+password, "mysql",
+	out, err := compose(t, ctx, envFile, "exec", "-T", "-e", "MYSQL_PWD="+password, "mysql",
 		"mysql", "-uroot", "-N", "-e",
 		"SELECT @@innodb_buffer_pool_size, @@max_connections, @@global.time_zone")
 	if err != nil {
@@ -488,7 +487,7 @@ func assertMySQLSettings(t *testing.T, ctx context.Context, envFile string) {
 
 func assertKafkaRuntime(t *testing.T, ctx context.Context, envFile string) {
 	t.Helper()
-	cmdline, err := compose(ctx, envFile, "exec", "-T", "kafka",
+	cmdline, err := compose(t, ctx, envFile, "exec", "-T", "kafka",
 		"/bin/bash", "-c", `tr '\0' ' ' < /proc/1/cmdline`)
 	if err != nil {
 		t.Fatalf("读取 Kafka 命令行：%v\n%s", err, cmdline)
@@ -496,7 +495,7 @@ func assertKafkaRuntime(t *testing.T, ctx context.Context, envFile string) {
 	if !strings.Contains(strings.ToLower(string(cmdline)), "-xmx512") {
 		t.Errorf("Kafka 堆不是 512MB：%s", cmdline)
 	}
-	props, err := compose(ctx, envFile, "exec", "-T", "kafka",
+	props, err := compose(t, ctx, envFile, "exec", "-T", "kafka",
 		"/bin/bash", "-c", "grep -E '^auto.create.topics.enable=' /opt/kafka/config/server.properties")
 	if err != nil {
 		t.Fatalf("读取 auto.create.topics.enable：%v\n%s", err, props)
