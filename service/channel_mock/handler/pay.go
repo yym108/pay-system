@@ -36,6 +36,8 @@ const (
 	ClosePath = "/mockpay/v1/close"
 	// RefundPath 是退款受理路由。
 	RefundPath = "/mockpay/v1/refund"
+	// BillPath 是账单下载路由。
+	BillPath = "/mockpay/v1/bills"
 )
 
 const (
@@ -56,6 +58,7 @@ type Payer interface {
 	Refund(ctx context.Context, req biz.RefundRequest) (biz.PayResult, error)
 	Query(ctx context.Context, req biz.QueryRequest) (biz.QueryResult, error)
 	Close(ctx context.Context, req biz.CloseRequest) (biz.CloseResult, error)
+	DownloadBill(ctx context.Context, date string) (biz.BillResult, error)
 }
 
 // Handler 持有路由依赖。
@@ -77,6 +80,7 @@ func (h *Handler) Register(srv *server.Hertz) {
 	srv.POST(QueryPath, h.handleQuery)
 	srv.POST(ClosePath, h.handleClose)
 	srv.POST(RefundPath, h.handleRefund)
+	srv.GET(BillPath, h.handleBill)
 }
 
 func recoverPanic(ctx context.Context, c *app.RequestContext) {

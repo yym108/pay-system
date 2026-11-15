@@ -71,6 +71,8 @@ type Store interface {
 	Close(ctx context.Context, id uint64) (bool, error)
 	// ListProcessing 按 id 升序分页列出 PROCESSING 行。
 	ListProcessing(ctx context.Context, txnType string, afterID uint64, limit int) ([]dal.Txn, error)
+	// ListBillTxns 按 bill_date 列出所有 SUCCESS 交易，按 finished_at、channel_txn_no 升序。
+	ListBillTxns(ctx context.Context, billDate string) ([]dal.Txn, error)
 }
 
 // IDGenerator 发渠道流水号，由 idgen.Generator 实现。
@@ -88,6 +90,8 @@ type Options struct {
 	// DelayMinMS、DelayMaxMS 是 MOCK_DELAY_MIN_MS、MOCK_DELAY_MAX_MS，见 Delay。
 	DelayMinMS int
 	DelayMaxMS int
+	// AllowPartialBill 对应 MOCK_ALLOW_PARTIAL_BILL，为 true 时允许下载当天的账单。
+	AllowPartialBill bool
 	// OnFinished 在 CAS 生效、事务提交后调用一次，参数是完成后的行。供 CH-05 回调使用，可为 nil。
 	// 在调度器的 goroutine 里执行，不能长时间阻塞。
 	// ctx 只带受理请求的值，不会被取消、也没有截止时间：钩子做 I/O 时自己设超时。

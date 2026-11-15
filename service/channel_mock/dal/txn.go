@@ -342,3 +342,20 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 	}
 	return id, reject, nil
 }
+
+// ListBillTxns 按 bill_date 列出所有 SUCCESS 交易（支付与退款），按 finished_at、channel_txn_no 升序排列。
+func (d *DB) ListBillTxns(ctx context.Context, billDate string) ([]Txn, error) {
+	var rows []txnRow
+	err := d.db.SelectContext(ctx, &rows, `
+SELECT `+txnColumns+` FROM mock_txn
+WHERE bill_date = ? AND status = ?
+ORDER BY finished_at ASC, channel_txn_no ASC`, billDate, StatusSuccess)
+	if err != nil {
+		return nil, fmt.Errorf("list bill mock_txn: %w", err)
+	}
+	out := make([]Txn, len(rows))
+	for i, r := range rows {
+		out[i] = r.txn()
+	}
+	return out, nil
+}

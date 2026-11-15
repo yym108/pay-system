@@ -52,6 +52,10 @@ type fakePayer struct {
 	cgot      []biz.CloseRequest
 	closeCtx  context.Context
 	refundCtx context.Context
+	bres      biz.BillResult
+	berr      error
+	bgot      []string
+	billCtx   context.Context
 }
 
 func (f *fakePayer) Pay(ctx context.Context, req biz.PayRequest) (biz.PayResult, error) {
@@ -124,6 +128,23 @@ func (f *fakePayer) closeCalls() []biz.CloseRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]biz.CloseRequest(nil), f.cgot...)
+}
+
+func (f *fakePayer) DownloadBill(ctx context.Context, date string) (biz.BillResult, error) {
+	f.mu.Lock()
+	f.bgot = append(f.bgot, date)
+	f.billCtx = ctx
+	res, err := f.bres, f.berr
+	f.mu.Unlock()
+	if f.panic {
+		panic("payer exploded")
+	}
+	if f.validate {
+		if _, parseErr := time.Parse("2006-01-02", date); parseErr != nil {
+			return biz.BillResult{}, fmt.Errorf("%w: date", biz.ErrInvalidRequest)
+		}
+	}
+	return res, err
 }
 
 func testClock() *clock.Fake {

@@ -290,6 +290,27 @@ func (m *memStore) update(reqNo string, fn func(*dal.Txn)) {
 	fn(m.rows[key(dal.TxnTypePay, reqNo)])
 }
 
+func (m *memStore) ListBillTxns(_ context.Context, billDate string) ([]dal.Txn, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.listErr != nil {
+		return nil, m.listErr
+	}
+	var out []dal.Txn
+	for _, r := range m.rows {
+		if r.Status == dal.StatusSuccess && r.BillDate == billDate {
+			out = append(out, *r)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if !out[i].FinishedAt.Equal(out[j].FinishedAt) {
+			return out[i].FinishedAt.Before(out[j].FinishedAt)
+		}
+		return out[i].ChannelTxnNo < out[j].ChannelTxnNo
+	})
+	return out, nil
+}
+
 func (m *memStore) rowOf(txnType, reqNo string) (dal.Txn, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()

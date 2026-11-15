@@ -105,8 +105,9 @@ func serve(cfg config.ChannelMock, logOut io.Writer) error {
 	}()
 	store := dal.New(db)
 	svc := biz.New(store, ids, clk, sched, biz.Options{
-		DelayMinMS: cfg.MockDelayMinMS,
-		DelayMaxMS: cfg.MockDelayMaxMS,
+		DelayMinMS:       cfg.MockDelayMinMS,
+		DelayMaxMS:       cfg.MockDelayMaxMS,
+		AllowPartialBill: cfg.MockAllowPartialBill,
 	})
 	// 钩子只入队。Recover 仍只重建 PROCESSING 的自动完成，不扫描已终态的回调。
 	notifier := biz.NewNotifier(store, ids, clk, sched, []byte(cfg.ChannelMockpayKey))

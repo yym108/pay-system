@@ -372,7 +372,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | CH-05 | 渠道异步回调 | P0 | M3 | CH-01 | DONE |
 | CH-06 | 确定性故障场景 | P0 | M3–M4 | CH-01、CH-02、CH-03、CH-05 | DONE |
 | CH-07 | 全局故障配置（压测延迟） | P0 | M6 | CH-06、PAY-05 | DONE |
-| CH-08 | 账单下载 | P0 | M6 | CH-01、CH-04 | TODO |
+| CH-08 | 账单下载 | P0 | M6 | CH-01、CH-04 | DONE |
 | CH-09 | 账单注入 | P0 | M6 | CH-08 | TODO |
 | PAY-01 | 商户与密钥 | P0 | M3 | BASE-14、BASE-03 | DONE |
 | PAY-02 | 创建支付单 | P0 | M3 | PAY-01 | DONE |
@@ -1397,8 +1397,8 @@ M4：
 
 验收：
 
-- [ ] 账单行数与 `X-Bill-Count` 一致，内容哈希与 `X-Bill-Sha256` 一致。
-- [ ] BILL_MISSING 交易不在账单中，BILL_AMOUNT_DIFF 交易金额 +1（由 CH-06 移来：这两个场景的账单表现在本功能点验收）。
+- [x] 账单行数与 `X-Bill-Count` 一致，内容哈希与 `X-Bill-Sha256` 一致。
+- [x] BILL_MISSING 交易不在账单中，BILL_AMOUNT_DIFF 交易金额 +1（由 CH-06 移来：这两个场景的账单表现在本功能点验收）。
 
 #### CH-09 账单注入
 
