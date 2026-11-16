@@ -34,6 +34,7 @@ const openDBTimeout = 3 * time.Second
 var (
 	errOpenDB        = errors.New("open recon database failed")
 	errOpenPaymentDB = errors.New("open payment database failed")
+	errOpenAccountDB = errors.New("open account database failed")
 )
 
 func main() {
@@ -121,6 +122,18 @@ func executeCLI(cfg config.Recon, opt cliOptions, stdout io.Writer) error {
 	}
 	defer func() { _ = paymentDB.Close() }()
 
+	accountDB0, err := dbx.Open(openCtx, cfg.DSNPayAccount0, dbx.PoolConfig{})
+	if err != nil {
+		return errOpenAccountDB
+	}
+	defer func() { _ = accountDB0.Close() }()
+
+	accountDB1, err := dbx.Open(openCtx, cfg.DSNPayAccount1, dbx.PoolConfig{})
+	if err != nil {
+		return errOpenAccountDB
+	}
+	defer func() { _ = accountDB1.Close() }()
+
 	ids, err := idgen.New(cfg.WorkerID, clock.Real{})
 	if err != nil {
 		return err
@@ -133,7 +146,9 @@ func executeCLI(cfg config.Recon, opt cliOptions, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	checker := biz.NewExternalChecker(db, paymentDB, ids, clock.Real{})
+	extChecker := biz.NewExternalChecker(db, paymentDB, ids, clock.Real{})
+	intChecker := biz.NewInternalChecker(db, paymentDB, accountDB0, accountDB1, ids, clock.Real{})
+	checker := biz.NewCompositeChecker(extChecker, intChecker)
 	svc := biz.NewRecon(db, ids, clock.Real{}, []string{"mockpay"}, dl, checker)
 	ctx, rcancel := context.WithTimeout(context.Background(), handler.ServerTimeout)
 	defer rcancel()
@@ -169,11 +184,21 @@ func serve(cfg config.Recon, logOut io.Writer) error {
 		_ = db.Close()
 		return errOpenPaymentDB
 	}
+	accountDB0, err := dbx.Open(openCtx, cfg.DSNPayAccount0, dbx.PoolConfig{})
+	if err != nil {
+		_ = errors.Join(db.Close(), paymentDB.Close())
+		return errOpenAccountDB
+	}
+	accountDB1, err := dbx.Open(openCtx, cfg.DSNPayAccount1, dbx.PoolConfig{})
+	if err != nil {
+		_ = errors.Join(db.Close(), paymentDB.Close(), accountDB0.Close())
+		return errOpenAccountDB
+	}
 	var closeOnce sync.Once
 	closeDB := func() error {
 		var cerr error
 		closeOnce.Do(func() {
-			cerr = errors.Join(db.Close(), paymentDB.Close())
+			cerr = errors.Join(db.Close(), paymentDB.Close(), accountDB0.Close(), accountDB1.Close())
 		})
 		return cerr
 	}
@@ -191,7 +216,9 @@ func serve(cfg config.Recon, logOut io.Writer) error {
 	if err != nil {
 		return err
 	}
-	checker := biz.NewExternalChecker(db, paymentDB, ids, clock.Real{})
+	extChecker := biz.NewExternalChecker(db, paymentDB, ids, clock.Real{})
+	intChecker := biz.NewInternalChecker(db, paymentDB, accountDB0, accountDB1, ids, clock.Real{})
+	checker := biz.NewCompositeChecker(extChecker, intChecker)
 	svc := biz.NewRecon(db, ids, clock.Real{}, []string{"mockpay"}, dl, checker)
 	sched := job.NewScheduler(svc, clock.Real{}, cfg.ReconRunAt, nil)
 	svc.UseRetryScheduler(sched)

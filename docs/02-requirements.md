@@ -415,7 +415,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | REC-02 | 账单下载与导入 | P0 | M6 | REC-01、CH-08 | DONE |
 | REC-03 | 外部对账比对（按单号） | P0 | M6 | REC-02、CH-06、CH-09、PAY-05 | DONE |
 | REC-04 | 跨日处理 | P0 | — | — | CUT |
-| REC-05 | 内部对账（支付、退款、转账） | P0 | M6 | REC-01、PAY-04、REF-03、TRF-02、TRF-03、MQ-04 | TODO |
+| REC-05 | 内部对账（支付、退款、转账） | P0 | M6 | REC-01、PAY-04、REF-03、TRF-02、TRF-03、MQ-04 | DONE |
 | REC-06 | 差错自动处理 | P0 | M6 | REC-03、REC-05、PAY-09、MQ-05 | TODO |
 | REC-07 | 差错人工处理与挂账 | P0 | — | — | CUT |
 | REC-08 | 对账报告 | P0 | M6 | REC-03、REC-05 | TODO |
@@ -2562,8 +2562,10 @@ account 进程在现有生产者之外用同一组 broker 启动消费组 `accou
 
 验收：
 
-- [ ] 删除某笔支付对应的 outbox 事件并阻止入账后，对账识别为 `LEDGER_MISSING`。
-- [ ] 测试中删除一张 `TRANSFER_IN` 凭证（构造数据），对账识别为 `TRANSFER_MISMATCH`；正常转账差错数为 0。
+- [x] 删除某笔支付对应的 outbox 事件并阻止入账后，对账识别为 `LEDGER_MISSING`。
+- [x] 测试中删除一张 `TRANSFER_IN` 凭证（构造数据），对账识别为 `TRANSFER_MISMATCH`；正常转账差错数为 0。
+
+实现说明（2026-11-16）：`service/recon/dal/internal.go` 分别从 `pay_payment` 只读查询 D 日终态 `payment_order`、`refund_order`、`transfer_order`，以及从两个账户分片（`pay_account_0`、`pay_account_1`）只读查询 `ledger_txn`、`account_freeze`、`transfer_branch`（不做跨 schema JOIN）；`service/recon/biz/internal_recon.go` 实现 `InternalChecker`（按商户分片路由核对 `LEDGER_MISSING`，按不变量 12 核对 `TRANSFER_MISMATCH` 并记录各分片实际情况到 `handle_note`）及 `CompositeChecker`，通过 `InsertDiffsSkipDuplicate`（已补充 `handle_note` 列写入）同键跳过插入并按实际影响行数计入 `pay_recon_diffs_total`；`cmd/recon/main.go` 已接入 `DSNPayAccount0`、`DSNPayAccount1` 与 `CompositeChecker(extChecker, intChecker)`。
 
 #### REC-06 差错自动处理
 

@@ -117,14 +117,14 @@ func insertDiffChunkSkipDuplicate(ctx context.Context, exec sqlx.ExtContext, chu
 	sb.WriteString(`INSERT INTO recon_diff
 		(diff_no, batch_no, channel, bill_date, diff_type, txn_type, biz_no,
 		 channel_txn_no, local_amount, channel_amount, local_status, channel_status,
-		 status, created_at, updated_at)
+		 status, handle_note, created_at, updated_at)
 		VALUES `)
-	args := make([]any, 0, len(chunk)*15)
+	args := make([]any, 0, len(chunk)*16)
 	for i, d := range chunk {
 		if i > 0 {
 			sb.WriteByte(',')
 		}
-		sb.WriteString("(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
+		sb.WriteString("(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)")
 		status := d.Status
 		if status == "" {
 			status = DiffStatusPending
@@ -143,6 +143,7 @@ func insertDiffChunkSkipDuplicate(ctx context.Context, exec sqlx.ExtContext, chu
 			d.LocalStatus,
 			d.ChannelStatus,
 			status,
+			d.HandleNote,
 			d.CreatedAt,
 			d.UpdatedAt,
 		)
