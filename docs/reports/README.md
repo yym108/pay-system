@@ -83,3 +83,4 @@
 | REC-02 | 账单下载与导入 | 对账 | `87dbe01` | 2026-11-16 | [REC-02-bill-import.md](REC-02-bill-import.md) |
 | REC-03 | 外部对账比对（按单号） | 对账 | `9c0d738` | 2026-11-16 | [REC-03-external-reconcile.md](REC-03-external-reconcile.md) |
 | REC-05 | 内部对账（支付、退款、转账） | 对账 | `2b1c0e5` | 2026-11-16 | [REC-05-internal-reconcile.md](REC-05-internal-reconcile.md) |
+| PAY-09 | 立即同步渠道状态 | 支付 | `2ce98f2` | 2026-11-16 | [PAY-09-sync-channel.md](PAY-09-sync-channel.md) |
