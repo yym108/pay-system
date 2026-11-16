@@ -744,7 +744,7 @@
 - **Purpose:** 每渠道每账期一个批次及汇总结果。
 - **Lifecycle:** INIT → DOWNLOADED → CHECKING → DONE；任一步 → FAILED；FAILED、DONE（force）可重跑。重跑（REC-01 第 3 条）：删除本批次的 `recon_channel_bill` 和 `status = 'PENDING' AND handle_action IS NULL` 的差错，CAS 把批次重置为 INIT 并把 `retry_count` 归 0，从下载开始。卡死接管（REC-01 第 5 条）：距计时列满 30 分钟（now − 时间戳 ≥ 30 分钟）视为卡死，CHECKING 按 `started_at`，INIT 与 DOWNLOADED 按 `updated_at`；接管后 INIT 从下载开始，DOWNLOADED 不重新下载、CAS 推进为 CHECKING 后比对，CHECKING 改写 `started_at` 后删除未自动处理的 PENDING 差错再重新比对。超时只在 RunBatch 被调用时判定（每日定时，含 D−8 到 D−2 的未完成批次；`BILL_NOT_READY` 的单批次延迟重试；CLI；管理接口），没有独立的后台扫描。渠道返回 `BILL_NOT_READY`（REC-01 第 6 条）：批次保持 INIT，`retry_count` 用 CAS 加一，30 分钟后对该批次再调用一次 RunBatch，按 `updated_at` 超时接管并重新下载；`retry_count` 已到 6 时 CAS 置 FAILED，`error_msg = BILL_NOT_READY`。计数在表里，进程重启不丢；重启丢失的只是调度器里待执行的那次调用，由下一次每日定时、CLI 或管理接口接管后从已有 `retry_count` 继续。
 - **Sensitivity:** 内部。
-- **Authoritative source:** `migrations/recon/000001_init.up.sql`。`retry_count` 列已规划、迁移未落，随 REC-01 新增（见 §6）。
+- **Authoritative source:** `migrations/recon/000001_init.up.sql`、`migrations/recon/000002_batch_retry_count.up.sql`。
 - **Write owners/read consumers:** recon 写；管理接口读。
 - **Retention/archival:** 长期。
 
@@ -765,7 +765,7 @@
 | `matched_count` | INT | 否 | 0 | — | 匹配笔数 | 内部 |
 | `diff_count` | INT | 否 | 0 | — | 差错笔数 | 内部 |
 | `error_msg` | VARCHAR(512) | 是 | NULL | — | FAILED 原因 | 内部 |
-| `retry_count` | INT | 否 | 0 | — | **REC-01 新增，迁移未落。** `BILL_NOT_READY` 已重试次数（REC-01 第 6 条）。小于 6 时 `UPDATE recon_batch SET retry_count = retry_count + 1, updated_at = now WHERE id = ? AND status = 'INIT' AND retry_count = ?`，批次保持 INIT；已到 6 时用同一条件 CAS 置 FAILED、`error_msg = BILL_NOT_READY`。重跑重置为 INIT 时归 0。不对外输出（`ReconBatch` 无此字段） | 内部 |
+| `retry_count` | INT | 否 | 0 | — | `migrations/recon/000002_batch_retry_count.up.sql` 新增。`BILL_NOT_READY` 已重试次数（REC-01 第 6 条）。小于 6 时 `UPDATE recon_batch SET retry_count = retry_count + 1, updated_at = now WHERE id = ? AND status = 'INIT' AND retry_count = ?`，批次保持 INIT；已到 6 时用同一条件 CAS 置 FAILED、`error_msg = BILL_NOT_READY`。重跑重置为 INIT 时归 0。不对外输出（`ReconBatch` 无此字段） | 内部 |
 | `started_at` | DATETIME(3) | 是 | NULL | — | 本次 CHECKING 运行的开始时间，只用于 CHECKING。进入 CHECKING（含 DOWNLOADED 接管时的 `DOWNLOADED → CHECKING`）时写 now；距它满 30 分钟视为卡死，接管 CAS 带 `status = 'CHECKING' AND started_at = <原值>` 并把它改写为 now（REC-01 第 5 条）。CHECKING 运行把批次推进为 DONE 或 FAILED 的 CAS 带本次运行写入的 `started_at`，批次被接管后旧运行的这条 CAS 影响 0 行，旧运行放弃。INIT、DOWNLOADED 不看此列 | 内部 |
 | `finished_at` | DATETIME(3) | 是 | NULL | — | | 内部 |
 | `created_at` | DATETIME(3) | 否 | CURRENT_TIMESTAMP(3) | — | | 审计 |
@@ -988,6 +988,7 @@
 | 2026-11-10 | 无（仅文档） | outbox.status、outbox.updated_at、outbox.next_retry_at（写路径说明） | MQ-05：SENT / DEAD 改回 PENDING 时显式写注入时钟的 `updated_at` 和 `next_retry_at`，不改 `sent_at`、`last_error`。按业务单号重建调用已有的 `outbox.Add`。无 DDL | 未执行迁移 |
 | 2026-11-10 | 无（仅文档） | merchant_notify.next_attempt_at、created_at、updated_at（写路径说明） | NTF-01：INSERT 显式写这三列，避免 DEFAULT 和 ON UPDATE CURRENT_TIMESTAMP 用数据库时间。无 DDL | 未执行迁移 |
 | 2026-11-11 | 无（仅文档） | merchant_notify.attempt_count、merchant_notify.next_attempt_at、merchant_notify.updated_at、merchant_notify.status（写路径说明） | NTF-02：抢占在同一事务里 `attempt_count + 1`、推后 `next_attempt_at`，并显式写 `updated_at`，不改 `status`。回写 CAS 带 `status = 'PENDING'`，SUCCESS / DEAD / 失败的 `last_error` 都显式写 `updated_at`。无 DDL | 未执行迁移 |
+| 2026-11-16 | `migrations/recon/000002_batch_retry_count.up.sql` | `recon_batch.retry_count` | REC-01 新增 `retry_count INT NOT NULL DEFAULT 0 AFTER error_msg` | MySQL 8.4.11 testcontainers 验证 up 与 down |
 
 ## 6. Open Questions
 
@@ -1000,5 +1001,5 @@
 | 转账差错归属哪个对账批次 | REC-01 批次按渠道建立，REC-05 第 4 条按 `finished_at` 检查转账；转账与渠道无关 | 目前只有 `mockpay` 一个渠道，TRANSFER_MISMATCH 写入当日该渠道批次；渠道增加后会在每个批次重复检查 | 已关闭（2026-10-27）：需求 REC-05 第 4 条定为挂在该账期的 mockpay 批次中执行，差错归入该批次，重跑时一并重算。增加渠道后的归属仍未定义 |
 | TRANSFER_MISMATCH 的 `local_amount` / `local_status` 取值 | REC-05 只规定 `handle_note` 记录各分片情况 | 报告展示口径 | 已关闭（2026-10-27）：需求 REC-05 第 4 条定为取转账单的金额与状态，渠道字段为空 |
 | 设计稿中 `pay_account_1` 的 CHECK 约束名与分片 0 不同 | BASE-03 在 MySQL 8.4.11 上对两个分片各执行 `migrations/account/000001_init.up.sql`，`%_chk_%` 计数为 0，比较脚本无差异 | 已消除 | 已关闭（2026-10-14） |
-| 计划变更：`recon_batch` 新增 `retry_count INT NOT NULL DEFAULT 0` | 需求 REC-01 标头与第 6 条；当前 `migrations/recon/000001_init.up.sql` 无此列 | 迁移落地前，代码不能读写此列；§4.13 已按规划写出该列 | REC-01 实现时新增迁移，落地后把 §4.13 的“迁移未落”标注改为迁移文件路径 |
+| 计划变更：`recon_batch` 新增 `retry_count INT NOT NULL DEFAULT 0` | 需求 REC-01 标头与第 6 条 | 已落地 | 已关闭（REC-01）：见 `migrations/recon/000002_batch_retry_count.up.sql` |
 | 计划变更：`recon_diff` 唯一键 `uk_batch_type_biz_no` 换成 `uk_batch_type_biz_no_diff_type (batch_no, txn_type, biz_no, diff_type)` | 需求 REC-03 标头与第 4 条；当前迁移仍是 `uk_batch_type_biz_no` | 迁移落地前，同一笔交易的外部差错与内部差错会冲突（1062）；§4.15 两个键都列出 | REC-03 实现时新增迁移，落地后删除 §4.15 中旧键一行 |

@@ -411,7 +411,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | GW-07 | 管理接口（重放、核对、触发对账） | P0 | M6 | GW-01、MQ-05、ACC-10、ACC-11、REC-01 | TODO |
 | GW-08 | 商户密钥缓存 | P0 | M7 | GW-03、OPT-01、QA-02 | TODO |
 | GW-09 | 商户 API 路由（退款与转账） | P0 | M4 | GW-01、GW-02、GW-06、TL-01、REF-01、REF-05、TRF-01、TRF-05 | DONE |
-| REC-01 | 对账批次与调度 | P0 | M6 | BASE-03 | TODO |
+| REC-01 | 对账批次与调度 | P0 | M6 | BASE-03 | DONE |
 | REC-02 | 账单下载与导入 | P0 | M6 | REC-01、CH-08 | TODO |
 | REC-03 | 外部对账比对（按单号） | P0 | M6 | REC-02、CH-06、CH-09、PAY-05 | TODO |
 | REC-04 | 跨日处理 | P0 | — | — | CUT |

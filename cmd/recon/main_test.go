@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"strings"
 	"testing"
+
+	"github.com/yym108/pay-system/pkg/config"
 )
 
 func TestReconRunRejectsMissingPassword(t *testing.T) {
@@ -34,7 +36,9 @@ func TestReconFaultPointsCheckedBeforeStart(t *testing.T) {
 		"MYSQL_RECON_PASSWORD=recon-plain-password",
 	}
 	var stdout, stderr bytes.Buffer
-	code := run(append(append([]string{}, base...), "FAULT_POINTS=pay.after_tx"), &stdout, &stderr)
+	code := runWith(append(append([]string{}, base...), "FAULT_POINTS=pay.after_tx"), &stdout, &stderr, func(config.Recon) error {
+		return nil
+	})
 	if code == 0 {
 		t.Fatal("exit code = 0, want non-zero")
 	}
@@ -48,8 +52,24 @@ func TestReconFaultPointsCheckedBeforeStart(t *testing.T) {
 
 	stdout.Reset()
 	stderr.Reset()
-	code = run(base, &stdout, &stderr)
+	code = runWith(base, &stdout, &stderr, func(config.Recon) error {
+		return nil
+	})
 	if code != 0 {
 		t.Fatalf("empty FAULT_POINTS: code=%d stderr=%s", code, stderr.String())
+	}
+}
+
+func TestReconCLIRunFlagParsing(t *testing.T) {
+	var stderr bytes.Buffer
+	if _, err := parseCLIArgs([]string{"--channel", "mockpay"}, &stderr); err == nil {
+		t.Fatal("expected error when --date is missing")
+	}
+	opt, err := parseCLIArgs([]string{"--channel", "mockpay", "--date", "2026-10-26", "--force"}, &stderr)
+	if err != nil {
+		t.Fatalf("parseCLIArgs err: %v", err)
+	}
+	if opt.channel != "mockpay" || opt.billDate != "2026-10-26" || !opt.force {
+		t.Fatalf("unexpected opt: %+v", opt)
 	}
 }
