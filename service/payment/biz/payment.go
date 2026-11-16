@@ -204,6 +204,14 @@ func (a *App) ApplyRefundNotify(ctx context.Context, in RefundResult) (string, e
 	return a.payments.ApplyRefundNotify(ctx, in)
 }
 
+// SyncChannelTxn 转给立即同步渠道状态（PAY-09）。
+func (a *App) SyncChannelTxn(ctx context.Context, bizNo string) (SyncChannelTxnResult, error) {
+	if a == nil || a.payments == nil {
+		return SyncChannelTxnResult{}, errno.ErrInternal
+	}
+	return a.payments.SyncChannelTxn(ctx, bizNo)
+}
+
 func newPayments(merchants MerchantLookup, ids Numberer, clk clock.Clock, allowHosts string, orders orderStore) *Payments {
 	return &Payments{
 		merchants:            merchants,

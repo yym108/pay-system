@@ -201,12 +201,11 @@ func TestUnimplementedMethodsReturnInternal(t *testing.T) {
 	if n := svc.callCount(); n != 0 {
 		t.Fatalf("nil ReplayEvent called biz %d times", n)
 	}
-	for name, fn := range map[string]func() error{
-		"SyncChannelTxn": func() error { _, err := h.SyncChannelTxn(ctx, nil); return err },
-	} {
-		if !errors.Is(errno.FromBizStatus(fn()), errno.ErrInternal) {
-			t.Fatalf("%s nil request", name)
-		}
+	if _, err := h.SyncChannelTxn(ctx, nil); !errors.Is(errno.FromBizStatus(err), errno.ErrInvalidParam) {
+		t.Fatal("nil SyncChannelTxn request")
+	}
+	if n := svc.callCount(); n != 0 {
+		t.Fatalf("nil SyncChannelTxn called biz %d times", n)
 	}
 }
 
@@ -414,14 +413,8 @@ type call struct {
 	fn   func() error
 }
 
-func unimplementedCalls(cli paymentservice.Client) []call {
-	ctx := context.Background()
-	return []call{
-		{"SyncChannelTxn", func() error {
-			_, err := cli.SyncChannelTxn(ctx, &payment.SyncChannelTxnRequest{BizNo: "PA1"})
-			return err
-		}},
-	}
+func unimplementedCalls(_ paymentservice.Client) []call {
+	return nil
 }
 
 func itoa(code int32) string {
@@ -544,6 +537,8 @@ type scripted struct {
 	// transferQueryIn 只给 TRF-05 的 QueryTransfer 使用。
 	transferQueryIn biz.TransferQueryInput
 	rebuilt         bool
+	syncRes         biz.SyncChannelTxnResult
+	syncBizNo       string
 }
 
 func (s *scripted) set(fn func(*scripted)) {
@@ -1386,5 +1381,66 @@ func TestQueryTransferRPCPayee(t *testing.T) {
 	}
 	if in := svc.lastTransferQuery(); in.MerchantID != "M100002" || in.TransferNo != transferNo {
 		t.Fatalf("biz input = %+v", in)
+	}
+}
+
+func (s *scripted) SyncChannelTxn(ctx context.Context, bizNo string) (biz.SyncChannelTxnResult, error) {
+	s.mu.Lock()
+	s.calls++
+	s.syncBizNo = bizNo
+	res, err, panicking, block := s.syncRes, s.err, s.panicking, s.block
+	s.mu.Unlock()
+	if panicking {
+		panic("boom")
+	}
+	if block != nil {
+		if berr := block(ctx); berr != nil {
+			return biz.SyncChannelTxnResult{}, berr
+		}
+	}
+	return res, err
+}
+
+// PAY-09：经 Kitex 调用 SyncChannelTxn，透传结果与错误码，空参数返回 10001 不进 biz。
+func TestKitexSyncChannelTxn(t *testing.T) {
+	svc := &scripted{
+		syncRes: biz.SyncChannelTxnResult{
+			LocalStatus:   "SUCCESS",
+			ChannelStatus: "SUCCESS",
+			Changed:       true,
+		},
+	}
+	access := &accessLog{}
+	addr := startServer(t, svc, Config{Access: access.record})
+	cli := dialKitex(t, addr, time.Second)
+	ctx := context.Background()
+
+	got, err := cli.SyncChannelTxn(ctx, &payment.SyncChannelTxnRequest{BizNo: "PA0000000000000000001"})
+	if err != nil {
+		t.Fatalf("SyncChannelTxn: %v", err)
+	}
+	if got.GetLocalStatus() != "SUCCESS" || got.GetChannelStatus() != "SUCCESS" || !got.GetChanged() {
+		t.Fatalf("got = %+v", got)
+	}
+	svc.mu.Lock()
+	gotBizNo := svc.syncBizNo
+	svc.mu.Unlock()
+	if gotBizNo != "PA0000000000000000001" {
+		t.Fatalf("bizNo = %q", gotBizNo)
+	}
+
+	// 空 biz_no 返回 10001 且不进 biz。
+	callsBefore := svc.callCount()
+	_, err = cli.SyncChannelTxn(ctx, &payment.SyncChannelTxnRequest{BizNo: ""})
+	assertBizCode(t, "empty biz_no", err, errno.ErrInvalidParam.Code)
+	if svc.callCount() != callsBefore {
+		t.Fatalf("empty biz_no called biz")
+	}
+
+	// 业务错误 30001 / 10004 透传。
+	for _, code := range []*errno.Error{errno.ErrOrderNotFound, errno.ErrUnavailable} {
+		svc.set(func(s *scripted) { s.err = code })
+		_, err = cli.SyncChannelTxn(ctx, &payment.SyncChannelTxnRequest{BizNo: "PA0000000000000000002"})
+		assertBizCode(t, itoa(code.Code), err, code.Code)
 	}
 }

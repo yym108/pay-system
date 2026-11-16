@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/base64"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,6 +22,7 @@ import (
 	"github.com/yym108/pay-system/pkg/errno"
 	"github.com/yym108/pay-system/pkg/idgen"
 	"github.com/yym108/pay-system/pkg/secretbox"
+	"github.com/yym108/pay-system/pkg/sign"
 	"github.com/yym108/pay-system/service/payment/biz"
 )
 
@@ -136,6 +139,120 @@ func TestRPCMerchantCredentialSeeded(t *testing.T) {
 	}
 	if status != "INIT" {
 		t.Fatalf("unsupported channel changed status to %s", status)
+	}
+}
+
+// PAY-09 验收 1、2（RPC）：真实 Kitex 客户端 + 真实 MySQL + 签名渠道 HTTP。
+func TestRPCSyncChannelTxn(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 4*time.Minute)
+	defer cancel()
+	demo := demoEnv(t)
+	my, err := testkit.Ready(ctx)
+	if err != nil {
+		t.Fatal(testkit.Redact(err))
+	}
+	var schemas [3]*testkit.Schema
+	for i, service := range []string{"payment", "account", "account"} {
+		s, err := my.OpenSchema(ctx, service)
+		if err != nil {
+			t.Fatal(testkit.Redact(err))
+		}
+		t.Cleanup(func() { closeSchema(t, s) })
+		schemas[i] = s
+	}
+	pay, acc0, acc1 := schemas[0], schemas[1], schemas[2]
+	key, err := base64.StdEncoding.DecodeString(demo["SECRET_MASTER_KEY"])
+	if err != nil {
+		t.Fatal("SECRET_MASTER_KEY in .env.example is not base64")
+	}
+	if _, err := seed.Run(ctx, seed.Config{
+		AccountDSN0: acc0.DSN(), AccountDSN1: acc1.DSN(), PaymentDSN: pay.DSN(),
+		MasterKey: key, PlatformSubAccounts: seed.DefaultPlatformSubAccounts,
+		SecretFormat: demo["DEMO_APP_SECRET_FORMAT"],
+	}); err != nil {
+		t.Fatal(testkit.Redact(err))
+	}
+	box, err := secretbox.NewFromBase64(demo["SECRET_MASTER_KEY"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	const channelKey = "demo_channel_mockpay_key"
+	finished := time.Date(2026, 11, 16, 10, 0, 0, 0, time.FixedZone("CST", 8*3600))
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body string
+		switch r.URL.Path {
+		case "/mockpay/v1/pay":
+			body = `{"result":"OK","channel_txn_no":"MC-RPC-1","status":"PROCESSING"}`
+		case "/mockpay/v1/query":
+			body = `{"result":"OK","status":"SUCCESS","amount":10000,"channel_txn_no":"MC-RPC-1","finished_at":"` + finished.Format("2006-01-02T15:04:05.000-07:00") + `"}`
+		default:
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		ts := r.Header.Get(sign.HeaderMockTimestamp)
+		sig, serr := sign.SignChannel([]byte(channelKey), sign.ChannelMessage{Timestamp: ts, Body: []byte(body)})
+		if serr != nil {
+			t.Errorf("sign: %v", serr)
+			w.WriteHeader(http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set(sign.HeaderMockTimestamp, ts)
+		w.Header().Set(sign.HeaderMockSignature, sig)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	merchants := biz.NewMerchants(pay.DB, box, clock.Real{}, time.Minute)
+	ids, err := idgen.New(1, clock.Real{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payments := biz.NewPayments(merchants, ids, clock.Real{}, "merchant-demo", pay.DB)
+	client, err := biz.NewChannelClient(biz.ChannelClientConfig{
+		BaseURL: srv.URL,
+		Key:     []byte(channelKey),
+		Clock:   clock.Real{},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payments.UsePay(client, payments, "http://merchant-demo/notify")
+	payments.UseClose(client)
+	payments.UseQuery(client, biz.QueryPolicy{})
+	addr := startServer(t, biz.NewApp(merchants, payments), Config{})
+	cli := dialKitex(t, addr, 2*time.Second)
+
+	// 不存在的流水返回 30001。
+	_, err = cli.SyncChannelTxn(ctx, &payment.SyncChannelTxnRequest{BizNo: "PA0000000000000999999"})
+	assertBizCode(t, "missing biz_no", err, errno.ErrOrderNotFound.Code)
+
+	created, err := cli.CreatePayment(ctx, &payment.CreatePaymentRequest{
+		MerchantId: "M100002", OutTradeNo: "RPC-SYNC-01", Amount: 10000, Subject: "sync",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	payResp, err := cli.Pay(ctx, &payment.PayRequest{MerchantId: "M100002", PayNo: created.GetPayNo(), Channel: "mockpay"})
+	if err != nil || payResp.GetPaymentOrder().GetStatus() != "PAYING" {
+		t.Fatalf("Pay = %+v err=%v", payResp, err)
+	}
+
+	// 验收 1：本地 PAYING、渠道 SUCCESS -> 订单 SUCCESS，changed = true。
+	syncResp, err := cli.SyncChannelTxn(ctx, &payment.SyncChannelTxnRequest{BizNo: created.GetPayNo()})
+	if err != nil {
+		t.Fatalf("SyncChannelTxn: %v", err)
+	}
+	if syncResp.GetLocalStatus() != "SUCCESS" || syncResp.GetChannelStatus() != "SUCCESS" || !syncResp.GetChanged() {
+		t.Fatalf("syncResp = %+v", syncResp)
+	}
+
+	// 验收 2（幂等/终态不改）：再次调用 -> 仍为 SUCCESS，changed = false。
+	syncResp2, err := cli.SyncChannelTxn(ctx, &payment.SyncChannelTxnRequest{BizNo: created.GetPayNo()})
+	if err != nil {
+		t.Fatalf("SyncChannelTxn 2: %v", err)
+	}
+	if syncResp2.GetLocalStatus() != "SUCCESS" || syncResp2.GetChannelStatus() != "SUCCESS" || syncResp2.GetChanged() {
+		t.Fatalf("syncResp2 = %+v", syncResp2)
 	}
 }
 

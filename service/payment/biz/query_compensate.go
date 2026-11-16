@@ -207,11 +207,25 @@ func (p *Payments) compensate(ctx context.Context, task queryTask) {
 // applyPayQuery 把查得的 PAY 终态交给 ApplyPayResult（source = QUERY）。
 // SUCCESS 缺金额或完成时间时等下一档；CLOSED 是渠道防悬挂行，不带金额。
 func (p *Payments) applyPayQuery(ctx context.Context, task queryTask, res channelQueryResult) {
-	in := PayResult{BizNo: task.BizNo, Source: paySourceQuery, ChannelTxnNo: res.ChannelTxnNo}
+	in, ok := buildPayQueryResult(task.BizNo, res)
+	if !ok {
+		return
+	}
+	if p.applier == nil {
+		p.logQueryErr(ctx, task, "channel query apply", errno.ErrInternal)
+		return
+	}
+	if _, err := p.applier.ApplyPayResult(ctx, in); err != nil {
+		p.logQueryErr(ctx, task, "channel query apply", err)
+	}
+}
+
+func buildPayQueryResult(bizNo string, res channelQueryResult) (PayResult, bool) {
+	in := PayResult{BizNo: bizNo, Source: paySourceQuery, ChannelTxnNo: res.ChannelTxnNo}
 	switch res.Status {
 	case payStatusSuccess:
 		if !res.OK {
-			return
+			return PayResult{}, false
 		}
 		amount := res.Amount
 		in.Result = payResultSuccess
@@ -228,25 +242,33 @@ func (p *Payments) applyPayQuery(ctx context.Context, task queryTask, res channe
 	case payStatusClosed:
 		in.Result = payResultClosed
 	default:
-		return
+		return PayResult{}, false
 	}
-	if p.applier == nil {
-		p.logQueryErr(ctx, task, "channel query apply", errno.ErrInternal)
-		return
-	}
-	if _, err := p.applier.ApplyPayResult(ctx, in); err != nil {
-		p.logQueryErr(ctx, task, "channel query apply", err)
-	}
+	return in, true
 }
 
 // applyRefundQuery 把查得的 REFUND 终态交给 ApplyRefundResult（source = QUERY）。
 // fail_code 由 ApplyRefundResult 补为 CHANNEL_FAILED。退款不会被渠道关闭，查得 CLOSED 只记日志并等下一档。
 func (p *Payments) applyRefundQuery(ctx context.Context, task queryTask, res channelQueryResult) {
-	in := RefundResult{RefundNo: task.BizNo, Source: paySourceQuery, ChannelTxnNo: res.ChannelTxnNo}
+	in, ok := buildRefundQueryResult(ctx, task.BizNo, res)
+	if !ok {
+		return
+	}
+	if p.refundApplier == nil {
+		p.logQueryErr(ctx, task, "channel query apply", errno.ErrInternal)
+		return
+	}
+	if _, err := p.refundApplier.ApplyRefundResult(ctx, in); err != nil {
+		p.logQueryErr(ctx, task, "channel query apply", err)
+	}
+}
+
+func buildRefundQueryResult(ctx context.Context, refundNo string, res channelQueryResult) (RefundResult, bool) {
+	in := RefundResult{RefundNo: refundNo, Source: paySourceQuery, ChannelTxnNo: res.ChannelTxnNo}
 	switch res.Status {
 	case payStatusSuccess:
 		if !res.OK {
-			return
+			return RefundResult{}, false
 		}
 		amount := res.Amount
 		in.Result = payResultSuccess
@@ -261,20 +283,14 @@ func (p *Payments) applyRefundQuery(ctx context.Context, task queryTask, res cha
 		}
 	case payStatusClosed:
 		slog.WarnContext(ctx, "channel query refund closed",
-			"biz_type", task.TxnType,
-			"biz_no", task.BizNo,
+			"biz_type", txnTypeRefund,
+			"biz_no", refundNo,
 		)
-		return
+		return RefundResult{}, false
 	default:
-		return
+		return RefundResult{}, false
 	}
-	if p.refundApplier == nil {
-		p.logQueryErr(ctx, task, "channel query apply", errno.ErrInternal)
-		return
-	}
-	if _, err := p.refundApplier.ApplyRefundResult(ctx, in); err != nil {
-		p.logQueryErr(ctx, task, "channel query apply", err)
-	}
+	return in, true
 }
 
 // closeNotFound 在渠道查无此单超过 60 秒时走 PAY-06 的关单路径（source = QUERY）。
@@ -290,29 +306,34 @@ func (p *Payments) closeNotFound(ctx context.Context, task queryTask) {
 // resubmitRefund 在渠道没收到退款请求超过 60 秒时，按 REF-02 的同一段代码重新提交（渠道按 req_no 幂等）。
 // 退款单已不是 PROCESSING 时不提交。OK 回填流水号；REJECTED 写 FAILED（CHANNEL_REJECTED）；结果未知等下一档。
 func (p *Payments) resubmitRefund(ctx context.Context, task queryTask) {
-	row, ok, err := p.orders.refundByNo(ctx, task.BizNo)
-	if err != nil {
-		p.logQueryErr(ctx, task, "channel query refund read", callErr(err))
+	err := p.resubmitRefundErr(ctx, task.BizNo)
+	if err == nil || errors.Is(err, errno.ErrChannelRejected) {
 		return
 	}
+	p.logQueryErr(ctx, task, "channel query refund", err)
+}
+
+func (p *Payments) resubmitRefundErr(ctx context.Context, refundNo string) error {
+	row, ok, err := p.orders.refundByNo(ctx, refundNo)
+	if err != nil {
+		return callErr(err)
+	}
 	if !ok {
-		p.logQueryErr(ctx, task, "channel query refund missing", errno.ErrInternal)
-		return
+		return errno.ErrInternal
 	}
 	if row.Status != refundStatusProcessing {
 		slog.WarnContext(ctx, "channel query refund not processing",
-			"biz_type", task.TxnType,
-			"biz_no", task.BizNo,
+			"biz_type", txnTypeRefund,
+			"biz_no", refundNo,
 		)
-		return
+		return nil
 	}
 	// 只给重新提交的渠道调用写 refund。查单和关单不走这里。
 	if ctx != nil {
 		ctx = obs.WithChain(ctx, obs.ChainRefund)
 	}
-	if _, err = p.callRefundChannel(ctx, row); err != nil && !errors.Is(err, errno.ErrChannelRejected) {
-		p.logQueryErr(ctx, task, "channel query refund resubmit", err)
-	}
+	_, err = p.callRefundChannel(ctx, row)
+	return err
 }
 
 // logQueryErr 只记错误码，不记错误文本，避免带出地址或密钥。本地配置错误记 ERROR，其余 WARN。

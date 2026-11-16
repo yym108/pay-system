@@ -1,8 +1,8 @@
 // Package handler 是 payment 的 Kitex 适配。
 // 只做协议转换和错误码转换，不改 biz 的幂等与 CAS。
 // 已实现 GetMerchantCredential（PAY-01）、CreatePayment（PAY-02）、Pay（PAY-03）、ClosePayment（PAY-06）、QueryPayment（PAY-08）、
-// CreateRefund（REF-02）、QueryRefund（REF-05）、CreateTransfer（TRF-01）、QueryTransfer（TRF-05）、HandleChannelNotify（PAY 分支 GW-06，REFUND 分支 REF-03）和 ReplayEvent（MQ-05）。
-// 其余方法属于各自的功能点，实现前调用一律返回 10003，不进 biz。
+// SyncChannelTxn（PAY-09）、CreateRefund（REF-02）、QueryRefund（REF-05）、CreateTransfer（TRF-01）、QueryTransfer（TRF-05）、
+// HandleChannelNotify（PAY 分支 GW-06，REFUND 分支 REF-03）和 ReplayEvent（MQ-05）。
 package handler
 
 import (
@@ -44,11 +44,6 @@ func (h *Handler) ready() error {
 		return errno.ToBizStatus(errno.ErrInternal)
 	}
 	return nil
-}
-
-// notImplemented 是尚未实现方法的统一出口。不是这些方法将来的错误码语义。
-func notImplemented() error {
-	return errno.ToBizStatus(errno.ErrInternal)
 }
 
 // GetMerchantCredential 返回商户凭证，含明文密钥。响应对象的 String() 会打印全部字段，任何地方都不能记录它。
@@ -347,9 +342,25 @@ func (h *Handler) HandleChannelNotify(ctx context.Context, req *payment.HandleCh
 	return &payment.HandleChannelNotifyResponse{Result_: kind}, nil
 }
 
-// SyncChannelTxn 属于 PAY-09，未实现，返回 10003。
-func (h *Handler) SyncChannelTxn(_ context.Context, _ *payment.SyncChannelTxnRequest) (*payment.SyncChannelTxnResponse, error) {
-	return nil, notImplemented()
+// SyncChannelTxn 立即同步渠道状态（PAY-09，仅对账自动处理 REC-06 使用）。
+// 请求为 nil 或 biz_no 为空返回 10001，不进 biz。
+func (h *Handler) SyncChannelTxn(ctx context.Context, req *payment.SyncChannelTxnRequest) (r *payment.SyncChannelTxnResponse, err error) {
+	defer recoverBiz(ctx, &err)
+	if err = h.ready(); err != nil {
+		return nil, err
+	}
+	if req == nil || req.BizNo == "" {
+		return nil, errno.ToBizStatus(errno.ErrInvalidParam)
+	}
+	got, callErr := h.svc.SyncChannelTxn(ctx, req.BizNo)
+	if callErr != nil {
+		return nil, statusErr(ctx, callErr)
+	}
+	return &payment.SyncChannelTxnResponse{
+		LocalStatus:   got.LocalStatus,
+		ChannelStatus: got.ChannelStatus,
+		Changed:       got.Changed,
+	}, nil
 }
 
 // ReplayEvent 重放一条 outbox（MQ-05）。响应是 event_id 和 rebuilt，不带 biz_code。

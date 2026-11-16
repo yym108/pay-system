@@ -2,9 +2,9 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 3.6.2 |
+| 文档版本 | 3.6.3 |
 | API 版本 | v1（路径前缀 `/v1`） |
-| 最后修改 | 2026-11-15 |
+| 最后修改 | 2026-11-16 |
 | 状态 | 设计基线，实现须与本文一致 |
 
 关联文档：需求 `docs/02-requirements.md`（各接口的业务规则以功能点为准）、约定 `docs/03-conventions.md`（错误码、单号、时间格式）。
@@ -90,6 +90,7 @@
 | 3.6.0 | 2026-11-11 | 每条生产消息增加头 `produced_at_ns`（发送到 Kafka 时的十进制纳秒）。JSON 信封和 `trace_context` 不变，仍只有 `traceparent`。account 消费 `payment.succeeded` 时用这个头计算 `mq_wait`；头缺失或无法解析不记样本，不进 DLQ。不改商户 HTTP，不改 IDL，不新增错误码，不加表字段 | §1、§11.2 | OPT-01 |
 | 3.6.1 | 2026-11-14 | 文字对齐：CH-07 已在管理端口（:6064）实现 `GET /mockpay/admin/config` 与 `PUT /mockpay/admin/config`（业务端口 :9080 不提供）。`PUT` 支持局部或全量 JSON 更新，非法 JSON、未知/重复/`null` 字段或越界值返回 400，非 GET/PUT 返回 405。CH-09 的 `bill-inject` 仍待实现。不新增错误码，不改 IDL | §1、§9.8 | CH-07 |
 | 3.6.2 | 2026-11-15 | CH-09 已在管理端口（:6064）实现 `POST /mockpay/admin/bill-inject`（业务端口 :9080 不提供）。非法 JSON、缺必填字段、未知/重复/`null` 字段或非法参数返回 400，同 `(txn_type, req_no)` 冲突返回 409，同参数重复注入幂等返回 200，非 POST 返回 405。不新增错误码，不改 IDL | §1、§9.8 | CH-09 |
+| 3.6.3 | 2026-11-16 | `SyncChannelTxn`（PAY-09）已实现，仅对账自动处理 REC-06 使用。请求为 nil 或 `biz_no` 为空返回 `10001`（不进 biz）；`channel_txn` 不存在返回 `30001`；渠道查单失败返回 `10004`，本地配置错误返回 `10003`。本地终态只返回双方状态且 `changed = false`；本地 `PROCESSING` 按 PAY-05 分发推进并重读 `local_status`。`PaymentService` 全部 12 个方法均已实现。服务端处理超时 2 秒。不新增字段，不新增错误码，不改 IDL | §1、§10.2 | PAY-09 |
 
 ## 1. 接口总览
 
@@ -127,7 +128,7 @@
 | 模拟渠道 `pay` / `query` / `close` / `refund` / `bills` | §9.2–§9.6 | — | CH-01~04、CH-08 | 1.0.0 | 2026-11-03 |
 | 模拟渠道回调 | §9.7 | — | CH-05、CH-06 | 1.0.0 | 2026-10-27 |
 | 模拟渠道管理 `config` / `bill-inject` | §9.8 | — | CH-07、CH-09 | 1.0.0 | 2026-11-15 |
-| AccountService / PaymentService / ReconService | §10 | — | 见各方法 | 1.0.0 | 2026-10-27 |
+| AccountService / PaymentService / ReconService | §10 | — | 见各方法 | 1.0.0 | 2026-11-16 |
 | 事件 `payment.succeeded`、`refund.succeeded`、`refund.failed`、`transfer.succeeded`、`transfer.failed` | §11 | — | MQ-01、MQ-04、NTF-01、OPT-01 | 1.0.0 | 2026-11-11 |
 | `GET /healthz`、`GET /readyz` 进程探针 | §12 | — | OPS-01 | 3.2.0 | 2026-11-10 |
 | `GET /debug/pprof/` 及 cmdline、profile、symbol、trace | §12 | — | OPS-05 | 3.3.0 | 2026-11-01 |
@@ -1031,7 +1032,7 @@ account RPC 以商户号（或 owner）为入参，由 account 按商户号路�
 
 `GetMerchantCredential` 返回明文密钥，只允许网关调用；调用双方都不得记录响应内容。
 
-`GetMerchantCredential`（PAY-01）：请求为 nil 返回 `10001`。`app_id` 按字节精确匹配，为空、不存在或只是大小写、首尾空格不同都返回 `20004`（`X-App-Id` 不在签名串里，放宽匹配会让同一请求换个写法绕过按 `app_id` 记的 nonce）。`merchant` 表列跟随库默认 `utf8mb4_bin`，区分大小写，但 PAD SPACE 会忽略尾部空格；集成测试临时库为 `utf8mb4_0900_ai_ci`，不区分大小写与重音。两种规则下 SQL 都可能匹配到字节不同的值，所以服务端读回 `app_id` 再逐字节比较。DISABLED 商户照常返回，由网关返回 `20004`。密文解不开是平台内部故障，返回 `10003`。payment 不缓存凭证，网关侧缓存属于 GW-08。除 `GetMerchantCredential`、`CreatePayment`、`Pay`、`ClosePayment`、`QueryPayment`、`CreateRefund`、`QueryRefund`、`CreateTransfer`、`QueryTransfer`、`HandleChannelNotify` 与 `ReplayEvent` 外，PaymentService 其余方法在各自功能点实现前一律返回 `10003`，不是这些方法将来的错误码语义。服务端处理超时：`Pay` 与 `CreateRefund` 为 5 秒，与需求 §5.4.1、GW-01 第 5 条的网关调用超时一致，使渠道的 3 秒总超时先到期并返回 PAYING 或 PROCESSING；其余方法仍为 2 秒。不新增环境变量。
+`GetMerchantCredential`（PAY-01）：请求为 nil 返回 `10001`。`app_id` 按字节精确匹配，为空、不存在或只是大小写、首尾空格不同都返回 `20004`（`X-App-Id` 不在签名串里，放宽匹配会让同一请求换个写法绕过按 `app_id` 记的 nonce）。`merchant` 表列跟随库默认 `utf8mb4_bin`，区分大小写，但 PAD SPACE 会忽略尾部空格；集成测试临时库为 `utf8mb4_0900_ai_ci`，不区分大小写与重音。两种规则下 SQL 都可能匹配到字节不同的值，所以服务端读回 `app_id` 再逐字节比较。DISABLED 商户照常返回，由网关返回 `20004`。密文解不开是平台内部故障，返回 `10003`。payment 不缓存凭证，网关侧缓存属于 GW-08。`PaymentService` 全部 12 个方法均已实现；nil handler 或 nil service 仍由 `ready` 返回 `10003`。服务端处理超时：`Pay` 与 `CreateRefund` 为 5 秒，与需求 §5.4.1、GW-01 第 5 条的网关调用超时一致，使渠道的 3 秒总超时先到期并返回 PAYING 或 PROCESSING；其余方法仍为 2 秒。不新增环境变量。
 
 `QueryPayment`（PAY-08）已实现。响应类型仍是 `PaymentOrder`，不是带 `biz_code` 的包装。成功时 RPC error 为 nil 并返回订单。请求为 nil，或 `pay_no` 与 `out_trade_no` 两个都空、两个都非空，返回已有的 `10001`（空串算没提供，不 trim），handler 用 `ToBizStatus`，不读库。`10001` 不进上表业务错误列。只提供 `pay_no` 时直接读 `payment_order`：没有行，或 `merchant_id` 与库中逐字节不同（含空商户号），都返回已有的 `30001`。只提供 `out_trade_no` 时按 `(merchant_id, out_trade_no)` 读：没有行返回 `30001`，他人的商户订单号因此也是 `30001`。两种情况同一个错误，走 `BizStatusError`，不带订单，调用方看不出订单是否存在。查到且商户匹配则原样返回该行，状态可以是 `INIT`、`PAYING`、`SUCCESS`、`FAILED`、`CLOSED`，不推进状态，不改 `version`，不调渠道，不写 outbox。不缓存。服务端处理超时仍是 2 秒。`Pay` 仍是 5 秒。nil handler 或 nil service 仍由 `ready` 返回 `10003`。不新增错误码，不改 IDL。
 
@@ -1048,6 +1049,8 @@ account RPC 以商户号（或 owner）为入参，由 account 按商户号路�
 `QueryTransfer`（TRF-05）已实现，规则同 `QueryRefund`，只有付款商户可以查询。响应类型是 `Transfer`，不带 `biz_code`。成功时 RPC error 为 nil 并返回转账单。请求为 nil，或 `transfer_no` 与 `out_transfer_no` 两个都空、两个都非空，返回已有的 `10001`（空串算没提供，不 trim），handler 用 `ToBizStatus`，不读库。`10001` 不进上表业务错误列。只提供 `transfer_no` 时直接读 `transfer_order`：没有行，或 `merchant_id` 与库中逐字节不同（收款商户、其他商户、空商户号），都返回已有的 `30001`。只提供 `out_transfer_no` 时按 `(merchant_id, out_transfer_no)` 读：没有行返回 `30001`。库列排序规则可能放宽匹配，读回后单号和商户号都逐字节比较，不同也是 `30001`。几种情况同一个错误，走 `BizStatusError`，不带转账单。查到且商户匹配则原样返回该行，状态可以是 `TRYING`、`CONFIRMING`、`CANCELLING`、`SUCCESS`、`FAILED`，不推进状态，不改 `version`，不调用 account，不读商户配置，不写 outbox。不缓存。读库失败返回 `10003`。服务端处理超时 2 秒。不新增错误码，不改 IDL。
 
 `ReplayEvent`（MQ-05）已实现。响应是 `event_id`、`rebuilt`，不带 `biz_code`。请求为 nil，或 `event_id` 与 `biz_no` + `event_type` 不是二选一（空串算没提供，不 trim；两个都非空也是），返回已有的 `10001`，handler 用 `ToBizStatus`，不进 biz。`10001` 不进上表业务错误列。只提供 `event_id` 时一条 UPDATE 把 SENT / DEAD 改成 PENDING，`retry_count = 0`，`next_retry_at` 与 `updated_at` 都写成注入时钟的当前时间（截断到毫秒，东八区，不用 SQL `NOW()`）。不改 `sent_at`、`last_error`。影响 1 行返回该 `event_id`，`rebuilt = false`。影响 0 行再读：没有行，或读回后 `event_id` 字节不同，是 `10002`，不重建；已是 PENDING 则不改行，code 0，`rebuilt = false`。只提供 `biz_no` 与 `event_type` 时按 `idx_biz_no_event_type` 取 `id` 最大的一行，再按上面重置；已是 PENDING 不改行。没有行且事件类型未知是 `10001`。没有行且类型已知时，同一事务先按单号锁单据，再查一次 outbox；等锁期间已经插入的行直接返回，`rebuilt = false`，不再插入。单据不存在是 `10002`。状态与事件类型不一致是 `30003`，不插入：`payment.succeeded` 只允许支付单 SUCCESS，`refund.succeeded` 只允许退款单 SUCCESS，`refund.failed` 只允许退款单 FAILED，`transfer.succeeded` 只允许转账单 SUCCESS，`transfer.failed` 只允许转账单 FAILED。重建调用 `outbox.Add`，新 `event_id` 前缀仍是 `EV`，状态 PENDING，`rebuilt = true`。金额用单据上的 int64 分。事务内不调用 Kafka、HTTP 或 RPC。重放不直接记账。不消费 `pay.dlq`。发号时钟回拨是已有的 `10004`。没有库、没有时钟或发号器不是 `*idgen.Generator` 是 `10003`。nil handler 或 nil service 仍由 `ready` 返回 `10003`。服务端处理超时 2 秒。`Pay` 与 `CreateRefund` 仍是 5 秒。不新增错误码，不改 IDL。
+
+`SyncChannelTxn`（PAY-09）已实现，仅对账自动处理（REC-06）使用。请求为 nil 或 `biz_no` 为空返回 `10001`，不进 biz（`10001` 不进上表业务错误列）。按 `biz_no` 读 `channel_txn`（不存在或字节不同返回 `30001`），然后立即调用渠道查单一次；渠道调用失败返回 `10004`，本地配置错误返回 `10003`。本地已是终态（`SUCCESS`、`FAILED`、`CLOSED`）时不做修改，返回 `{local_status, channel_status, changed: false}`；本地仍为 `PROCESSING` 时按 PAY-05 分发规则推进，并重读 `channel_txn` 返回同步后的 `local_status` 与 `changed`。服务端处理超时 2 秒。不新增错误码，不改 IDL。
 
 ### 10.3 ReconService（:8883）
 
