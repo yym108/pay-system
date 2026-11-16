@@ -85,3 +85,4 @@
 | REC-05 | 内部对账（支付、退款、转账） | 对账 | `2b1c0e5` | 2026-11-16 | [REC-05-internal-reconcile.md](REC-05-internal-reconcile.md) |
 | PAY-09 | 立即同步渠道状态 | 支付 | `2ce98f2` | 2026-11-16 | [PAY-09-sync-channel.md](PAY-09-sync-channel.md) |
 | REC-06 | 差错自动处理 | 对账 | `9bb68ab` | 2026-11-16 | [REC-06-auto-handle.md](REC-06-auto-handle.md) |
+| REC-08 | 对账报告 | 对账 | `8565580` | 2026-11-16 | [REC-08-recon-report.md](REC-08-recon-report.md) |
