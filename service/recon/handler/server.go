@@ -15,8 +15,8 @@ import (
 const (
 	// ListenAddr 是 recon 的 Kitex 端口，接口 §10.3 约定为 8883。
 	ListenAddr = ":8883"
-	// ServerTimeout 是 ReconService.RunBatch 的服务端处理超时。
-	ServerTimeout = 60 * time.Second
+	// ServerTimeout 是 ReconService.RunBatch 的服务端处理超时，与网关调用 RunBatch 的 120 秒上限一致。
+	ServerTimeout = 120 * time.Second
 )
 
 // Config 是 ReconService Kitex 服务端监听配置。

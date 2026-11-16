@@ -434,7 +434,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | TL-03 | 一键演示脚本 | P1 | M8 | TL-01、GW-07、GW-09、MQ-04、REF-03、TRF-02、TRF-03、REC-08 | TODO |
 | TL-04 | OpenAPI 文档 | P1 | M8 | GW-02、GW-09 | TODO |
 | QA-01 | 故障演练 | P0 | M7 | BASE-15、QA-02、CH-06、GW-04、GW-06、GW-07、GW-09、PAY-05、REF-04、TRF-04、MQ-02、MQ-04、OPT-02、REC-03、REC-05、OPS-01 | TODO |
-| QA-02 | 基线压测与报告 | P0 | M6 | CH-07、OPT-01、GW-02、GW-04、GW-05、GW-06、GW-07、GW-09、MQ-02、MQ-04、REF-03、REF-04、TRF-04、REC-03、REC-05 | DOING |
+| QA-02 | 基线压测与报告 | P0 | M6 | CH-07、OPT-01、GW-02、GW-04、GW-05、GW-06、GW-07、GW-09、MQ-02、MQ-04、REF-03、REF-04、TRF-04、REC-03、REC-05 | DONE |
 | QA-03 | pprof 调优记录 | P0 | M7 | QA-02 | TODO |
 | QA-04 | 验收运行 | P0 | M8 | BASE-07、BASE-10、BASE-11、PAY-07、PAY-10、NTF-02、REC-06、REC-08、OPS-05、QA-01、QA-03、QA-05 | TODO |
 | QA-05 | 优化后复测与对比报告 | P0 | M7 | QA-02、OPT-02、OPT-03、OPT-04、GW-08 | TODO |
@@ -2960,7 +2960,7 @@ ACC-10 只在进程内把无标签的 `pay_ledger_check_failures_total` 加 1（
 验收（A8）：
 
 - [x] `docs/perf-report.md` 包含规则 6 的全部内容，S1–S7 每个场景有规则 5 的各项记录，6 条链路各有分阶段耗时表（由 OPT-01 移来）；报告写明脚本、命令与开关值，按此可复现。
-- [ ] 每个场景压测结束后 `verify.sh` 退出码 0，结果记录在报告中。（S1–S4 退出码 0；S5–S7 累计分录量大后受 `fix/ACC-11` 全量 `CheckBalance` 120s 服务端超时未合入及 S7 10万+大批量账单导入 3s 事务超时影响，待修复后复验）
+- [x] 每个场景压测结束后 `verify.sh` 退出码 0，结果记录在报告中。（S1–S4 退出码 0；修复 `ACC-11` 全量 `CheckBalance` 120s 服务端超时及 `recon` 大账单导入/比对/清理 90s 事务超时与 `RunBatch` 120s 服务端超时后，S5–S7 复验均退出码 0）
 - [x] `verify.sh` 在正常数据上退出码 0；测试中用 SQL 篡改一笔余额、删除一张 PAY 凭证，分别使其退出码非 0 并指出对应检查项。
 
 #### QA-03 pprof 调优记录

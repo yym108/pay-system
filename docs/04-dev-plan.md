@@ -118,7 +118,7 @@
 - [x] REC-06 自动处理
 - [x] REC-08 报告
 - [x] GW-07 管理接口（重放、核对、触发对账）
-- [ ] QA-02 基线压测与报告：`make seed-load`、k6 场景 S1–S7、全部优化开关关闭跑基线，导出分阶段耗时；交付 `test/chaos/verify.sh`
+- [x] QA-02 基线压测与报告：`make seed-load`、k6 场景 S1–S7、全部优化开关关闭跑基线，导出分阶段耗时；交付 `test/chaos/verify.sh`
 
 交付：A6；`docs/perf-report.md` 基线部分（6 条链路的分阶段耗时表），据此确定第 7 周的优化顺序。
 

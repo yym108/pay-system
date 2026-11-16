@@ -31,6 +31,7 @@ const (
 	billDownloadDialTimeout   = 5 * time.Second
 	billDownloadRetryInterval = 10 * time.Second
 	billDownloadMaxRetries    = 3
+	billImportTxTimeout       = 90 * time.Second
 	billDownloadPath          = "/mockpay/v1/bills"
 	billCSVTimestampLayout    = "2006-01-02T15:04:05.000Z07:00"
 	maxBillResponseBytes      = 256 << 20 // 256 MiB
@@ -141,7 +142,7 @@ func (d *BillDownloader) DownloadAndImport(ctx context.Context, _ sqlx.ExtContex
 	}
 
 	dlNow := d.clk.Now().In(shanghai).Truncate(time.Millisecond)
-	err = dbx.WithTx(ctx, d.db, func(tx *sqlx.Tx) error {
+	err = dbx.WithTxTimeout(ctx, d.db, billImportTxTimeout, func(tx *sqlx.Tx) error {
 		if err := dal.InsertChannelBillsBatch(ctx, tx, rows); err != nil {
 			return err
 		}

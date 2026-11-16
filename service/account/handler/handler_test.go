@@ -342,8 +342,77 @@ func TestServerTimeoutConstant(t *testing.T) {
 	if ServerTimeout != 2*time.Second {
 		t.Fatalf("ServerTimeout = %s", ServerTimeout)
 	}
+	if CheckBalanceFullTimeout != 120*time.Second {
+		t.Fatalf("CheckBalanceFullTimeout = %s", CheckBalanceFullTimeout)
+	}
 	if ListenAddr != ":8882" {
 		t.Fatalf("ListenAddr = %s", ListenAddr)
+	}
+
+	empty := ""
+	merchant := "M100002"
+	cfg := Config{}
+	if got := cfg.timeoutFor("CheckBalance", nil); got != CheckBalanceFullTimeout {
+		t.Fatalf("CheckBalance nil args timeoutFor = %s, want %s", got, CheckBalanceFullTimeout)
+	}
+	if got := cfg.timeoutFor("CheckBalance", &account.AccountServiceCheckBalanceArgs{Req: &account.CheckBalanceRequest{}}); got != CheckBalanceFullTimeout {
+		t.Fatalf("CheckBalance unset merchant timeoutFor = %s, want %s", got, CheckBalanceFullTimeout)
+	}
+	if got := cfg.timeoutFor("CheckBalance", &account.AccountServiceCheckBalanceArgs{Req: &account.CheckBalanceRequest{MerchantId: &empty}}); got != CheckBalanceFullTimeout {
+		t.Fatalf("CheckBalance empty merchant timeoutFor = %s, want %s", got, CheckBalanceFullTimeout)
+	}
+	if got := cfg.timeoutFor("CheckBalance", &account.AccountServiceCheckBalanceArgs{Req: &account.CheckBalanceRequest{MerchantId: &merchant}}); got != ServerTimeout {
+		t.Fatalf("CheckBalance merchant timeoutFor = %s, want %s", got, ServerTimeout)
+	}
+	if got := cfg.timeoutFor("Freeze", nil); got != ServerTimeout {
+		t.Fatalf("Freeze timeoutFor = %s, want %s", got, ServerTimeout)
+	}
+	if got := (Config{Timeout: 80 * time.Millisecond}).timeoutFor("CheckBalance", &account.AccountServiceCheckBalanceArgs{Req: &account.CheckBalanceRequest{}}); got != 80*time.Millisecond {
+		t.Fatalf("override timeoutFor = %s, want 80ms", got)
+	}
+}
+
+// ACC-11 规则 3 / A7：CheckBalance 全量模式服务端超时 120 秒，商户模式仍为 2 秒；调用方 ctx 更短时先到期。
+func TestCheckBalanceTimeoutDifferentiation(t *testing.T) {
+	svc := &scripted{
+		check: biz.CheckBalanceResult{Passed: true},
+		block: func(ctx context.Context) error {
+			select {
+			case <-time.After(2200 * time.Millisecond):
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		},
+	}
+	addr := startServer(t, svc, Config{})
+	cli := dialKitex(t, addr, 10*time.Second)
+
+	// 1. 全量模式超过 2 秒仍正常返回（不被 2s 服务端默认超时截断）
+	got, err := cli.CheckBalance(context.Background(), &account.CheckBalanceRequest{})
+	if err != nil || !got.GetPassed() {
+		t.Fatalf("full CheckBalance >2s failed: got=%+v err=%v", got, err)
+	}
+
+	// 2. 商户模式仍受 2 秒服务端超时限制
+	merchant := "M100002"
+	start := time.Now()
+	_, err = cli.CheckBalance(context.Background(), &account.CheckBalanceRequest{MerchantId: &merchant})
+	elapsed := time.Since(start)
+	if !isCallTimeout(err) {
+		t.Fatalf("merchant CheckBalance want timeout, got %v", err)
+	}
+	if elapsed < 1500*time.Millisecond || elapsed > 4*time.Second {
+		t.Fatalf("merchant CheckBalance elapsed %s, want ~2s", elapsed)
+	}
+
+	// 3. 调用方 ctx 更短时，全量模式也按调用方更短截止时间超时
+	shortCtx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	start = time.Now()
+	_, err = cli.CheckBalance(shortCtx, &account.CheckBalanceRequest{})
+	if !isCallTimeout(err) || time.Since(start) > time.Second {
+		t.Fatalf("short caller ctx CheckBalance err=%v elapsed=%s", err, time.Since(start))
 	}
 }
 

@@ -13,13 +13,22 @@ import (
 // fn 返回错误或 panic 时回滚。1213 和 1205 会把整个 fn 重试，含第一次最多 4 次。
 // 总时长默认 3 秒，从父 ctx 派生；先到期的那个生效。超时后取消并回滚。
 func WithTx(ctx context.Context, db *sqlx.DB, fn func(tx *sqlx.Tx) error) error {
+	return WithTxTimeout(ctx, db, txTimeout, fn)
+}
+
+// WithTxTimeout 在一个事务里执行 fn，使用指定的 timeout 作为总时长上限（<= 0 时退回默认 3 秒）。
+// 从父 ctx 派生；先到期的那个生效。超时后取消并回滚。
+func WithTxTimeout(ctx context.Context, db *sqlx.DB, timeout time.Duration, fn func(tx *sqlx.Tx) error) error {
 	if db == nil {
 		return errors.New("dbx: nil db")
 	}
 	if fn == nil {
 		return errors.New("dbx: nil fn")
 	}
-	ctx, cancel := context.WithTimeout(ctx, txTimeout)
+	if timeout <= 0 {
+		timeout = txTimeout
+	}
+	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	var err error

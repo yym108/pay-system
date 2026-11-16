@@ -64,18 +64,28 @@ func (c Config) access() AccessFunc {
 	return c.Access
 }
 
-func (c Config) timeout() time.Duration {
-	if c.Timeout <= 0 {
-		return ServerTimeout
+func (c Config) timeoutFor(method string, req interface{}) time.Duration {
+	if c.Timeout > 0 {
+		return c.Timeout
 	}
-	return c.Timeout
+	if method == "CheckBalance" && isFullCheckBalance(req) {
+		return CheckBalanceFullTimeout
+	}
+	return ServerTimeout
+}
+
+func isFullCheckBalance(req interface{}) bool {
+	args, ok := req.(*account.AccountServiceCheckBalanceArgs)
+	if !ok || args == nil || args.Req == nil {
+		return true
+	}
+	return !args.Req.IsSetMerchantId() || args.Req.GetMerchantId() == ""
 }
 
 func (c Config) middleware() endpoint.Middleware {
 	tr := c.tracer()
 	mt := c.metrics()
 	access := c.access()
-	limit := c.timeout()
 	return func(next endpoint.Endpoint) endpoint.Endpoint {
 		return func(ctx context.Context, req, resp interface{}) (err error) {
 			method := methodName(ctx)
@@ -83,7 +93,7 @@ func (c Config) middleware() endpoint.Middleware {
 			if tp, ok := metainfo.GetPersistentValue(ctx, "traceparent"); ok && tp != "" {
 				ctx = obs.ExtractMap(ctx, map[string]string{"traceparent": tp})
 			}
-			ctx, cancel := context.WithTimeout(ctx, limit)
+			ctx, cancel := context.WithTimeout(ctx, c.timeoutFor(method, req))
 			defer cancel()
 			ctx, endSpan := tr.Start(ctx, method)
 			defer func() {

@@ -26,8 +26,9 @@ const (
 	DiffStatusResolved = "RESOLVED"
 	DiffStatusIgnored  = "IGNORED"
 
-	queryChunkSize = 1000
-	diffChunkSize  = 500
+	queryChunkSize       = 1000
+	diffChunkSize        = 500
+	externalCheckTxLimit = 90 * time.Second
 )
 
 // ChannelTxn 是 pay_payment.channel_txn 的只读视图（由 recon 经只读 DSN 查询，不 import payment 包）。
@@ -165,7 +166,7 @@ func insertDiffChunkSkipDuplicate(ctx context.Context, exec sqlx.ExtContext, chu
 // SaveExternalCheckResultTx 在同一事务内更新账单行 match_status 并插入外部差错。
 func SaveExternalCheckResultTx(ctx context.Context, db *sqlx.DB, matchedBillIDs, diffBillIDs []uint64, diffs []Diff) (map[string]int, error) {
 	var inserted map[string]int
-	err := dbx.WithTx(ctx, db, func(tx *sqlx.Tx) error {
+	err := dbx.WithTxTimeout(ctx, db, externalCheckTxLimit, func(tx *sqlx.Tx) error {
 		if err := UpdateChannelBillMatchStatus(ctx, tx, matchedBillIDs, BillMatchMatched); err != nil {
 			return err
 		}

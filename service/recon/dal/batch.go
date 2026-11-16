@@ -161,7 +161,7 @@ func ListPendingBatches(ctx context.Context, exec sqlx.ExtContext, channel, from
 // 只在原状态为 FAILED 或 DONE 时调用。返回是否成功抢占重置。
 func ResetForRerunTx(ctx context.Context, db *sqlx.DB, id uint64, batchNo, expectedStatus string, expectedUpdatedAt, now time.Time) (bool, error) {
 	var won bool
-	err := dbx.WithTx(ctx, db, func(tx *sqlx.Tx) error {
+	err := dbx.WithTxTimeout(ctx, db, 90*time.Second, func(tx *sqlx.Tx) error {
 		res, err := tx.ExecContext(ctx, `UPDATE recon_batch
 			SET status = ?, bill_file_hash = NULL,
 			    channel_count = 0, channel_amount = 0,
@@ -348,10 +348,20 @@ func ListBatchDiffs(ctx context.Context, exec sqlx.ExtContext, batchNo string, l
 }
 
 func deleteChannelBills(ctx context.Context, exec sqlx.ExtContext, batchNo string) error {
-	if _, err := exec.ExecContext(ctx, `DELETE FROM recon_channel_bill WHERE batch_no = ?`, batchNo); err != nil {
-		return fmt.Errorf("delete recon_channel_bill: %w", err)
+	const deleteBatchSize = 5000
+	for {
+		res, err := exec.ExecContext(ctx, `DELETE FROM recon_channel_bill WHERE batch_no = ? LIMIT ?`, batchNo, deleteBatchSize)
+		if err != nil {
+			return fmt.Errorf("delete recon_channel_bill: %w", err)
+		}
+		n, err := res.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("delete recon_channel_bill rows affected: %w", err)
+		}
+		if n < deleteBatchSize {
+			return nil
+		}
 	}
-	return nil
 }
 
 func deleteUnprocessedDiffs(ctx context.Context, exec sqlx.ExtContext, batchNo string) error {

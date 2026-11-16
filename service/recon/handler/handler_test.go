@@ -93,3 +93,9 @@ func TestHandlerRunBatchValidationAndConversion(t *testing.T) {
 		t.Fatalf("ManualDiffs = %+v, want [RD000]", resp.ManualDiffs)
 	}
 }
+
+func TestServerTimeoutMatchesGateway(t *testing.T) {
+	if handler.ServerTimeout != 120*time.Second {
+		t.Fatalf("ServerTimeout = %s, want 120s", handler.ServerTimeout)
+	}
+}

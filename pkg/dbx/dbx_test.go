@@ -217,6 +217,10 @@ func TestWithTxRejectsNilDB(t *testing.T) {
 	if err == nil {
 		t.Fatal("nil db should fail")
 	}
+	err = WithTxTimeout(context.Background(), nil, 10*time.Second, func(*sqlx.Tx) error { return nil })
+	if err == nil {
+		t.Fatal("nil db with timeout should fail")
+	}
 }
 
 func TestWaitBackoffCanceled(t *testing.T) {

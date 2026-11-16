@@ -15,12 +15,15 @@ import (
 const (
 	// ListenAddr 是 account 的 Kitex 端口。需求写死 8882，compose 也映射这个端口，不另设环境变量。
 	ListenAddr = ":8882"
-	// ServerTimeout 是服务端处理超时。调用方 ctx 更短时，先到期的生效。
+	// ServerTimeout 是除全量 CheckBalance 以外的服务端处理超时。调用方 ctx 更短时，先到期的生效。
 	// 截止时间交给 biz；biz 返回的取消或截止时间会变成 Kitex 超时，不是 10003。
 	ServerTimeout = 2 * time.Second
+	// CheckBalanceFullTimeout 是 CheckBalance 全量模式（merchant_id 为空）的服务端处理超时，
+	// 与网关调用 CheckBalance 的 120 秒上限一致；商户模式（指定 merchant_id）仍为 ServerTimeout。
+	CheckBalanceFullTimeout = 120 * time.Second
 )
 
-// Config 是一次监听。Timeout 小于等于 0 时用 ServerTimeout。
+// Config 是一次监听。Timeout 小于等于 0 时，CheckBalance 全量模式用 CheckBalanceFullTimeout，其余用 ServerTimeout。
 // Listener 非空时优先于 Addr，测试用它拿随机端口。
 // Exit 非空时替代 Kitex 的默认信号。生产由 pkg/server 送入，避免两处同时接收 SIGTERM。
 // ExitWait 大于 0 时作为 Kitex 停服务的等待上限。0 保持框架默认值，已有测试不改变。

@@ -65,14 +65,14 @@ make load
 | **S2** | 0 | 0 | 0 ms | 0 | 0 | 2.31% / 512.0 MiB | 0.53% / 44.8 MiB | 0.04% / 21.7 MiB | 0.53% / 44.2 MiB | **PASS (exit 0)** |
 | **S3** | 0 | 11,508 | 158,612 ms | 19,404 | 0 | 106.89% / 599.5 MiB | 31.06% / 47.5 MiB | 48.41% / 24.9 MiB | 0.25% / 57.4 MiB | **PASS (exit 0)** |
 | **S4** | 0 | 7,733 | 252,082 ms | 15,881 | 0 | 113.52% / 656.1 MiB | 33.53% / 36.5 MiB | 46.57% / 28.4 MiB | 0.25% / 41.5 MiB | **PASS (exit 0)** |
-| **S5** | 0 | 23,056 | 383,830 ms | 100,801 | 0 | 60.41% / 621.9 MiB | 26.73% / 38.7 MiB | 0.16% / 27.8 MiB | 0.55% / 43.4 MiB | SQL/对账 PASS；`CheckBalance` 超过 2s 超时（待 `fix/ACC-11`） |
-| **S6** | 0 | **63,012** | **11,966,436 ms** | 45,341 | 0 | 72.62% / 667.1 MiB | 27.44% / 36.4 MiB | 0.05% / 31.3 MiB | 0.47% / 38.2 MiB | （延迟至 S7 后统一核对） |
-| **S7** | 0 | 16,329 | 1,976,694 ms | 44,333 | 0 | 77.26% / 706.2 MiB | 26.38% / 61.9 MiB | 0.00% / 32.4 MiB | 0.33% / 38.4 MiB | 见下文说明 |
+| **S5** | 0 | 23,056 | 383,830 ms | 100,801 | 0 | 60.41% / 621.9 MiB | 26.73% / 38.7 MiB | 0.16% / 27.8 MiB | 0.55% / 43.4 MiB | **PASS (exit 0)**（复验） |
+| **S6** | 0 | **63,012** | **11,966,436 ms** | 45,341 | 0 | 72.62% / 667.1 MiB | 27.44% / 36.4 MiB | 0.05% / 31.3 MiB | 0.47% / 38.2 MiB | **PASS (exit 0)**（复验） |
+| **S7** | 0 | 16,329 | 1,976,694 ms | 44,333 | 0 | 77.26% / 706.2 MiB | 26.38% / 61.9 MiB | 0.00% / 32.4 MiB | 0.33% / 38.4 MiB | **PASS (exit 0)**（复验） |
 
 > 说明：
 > 1. S1–S4 结束后 `verify.sh` 全部 7 项检查通过（退出码 0）。
-> 2. 从 S5 起，累计分录量达到数十万行，全量 `CheckBalance` 耗时超过 `account` 服务端当前固定的 2 秒超时（返回 `10004`；`docs/02-requirements.md` §8.2 已规划在 `fix/ACC-11` 将全量 `CheckBalance` 服务端超时改为 120 秒）。
-> 3. S7 结束时因前面 S5–S7 累积了大量 `outbox` 与超过 10 万笔 `mock_txn`，180 秒排空窗口内仍有 16,305 条待投递，且 `RECON_RUN` 在单个事务批量插入 `recon_channel_bill` 时触发了 `dbx.WithTx` 默认 3 秒事务超时（见第 4 节瓶颈分析）。
+> 2. 最初在 S5–S7 后受两个超时问题阻塞：全量 `CheckBalance` 耗时超过 `account` 服务端原 2 秒固定超时（`10004`），以及 `recon` 在 10 万+ `mock_txn` 下触发 `dbx.WithTx` 默认 3 秒事务超时。
+> 3. 修复落地后（`ACC-11` 全量 `CheckBalance` 服务端超时 120s、商户模式仍 2s；`recon` 批量账单导入/外部对账/重跑清理事务超时 90s + 分批删除 + `ReconService.RunBatch` 服务端超时 120s），在累计 64 万+分录与 10.4 万+ `mock_txn` 数据集及 S5–S7 压测复验后，`verify.sh` 全部 7 项检查均 **PASS（退出码 0）**。
 
 ---
 
@@ -148,9 +148,9 @@ make load
    - **证据**：`pay_create` 链路中 `gw_auth` 平均耗时 **28.34 ms（占比 30.6%）**，P99 达 122.98 ms；这是因为 `GW_CREDENTIAL_CACHE_TTL=0` 且 `MERCHANT_CONFIG_CACHE_TTL=0` 时，每个请求都经 `gateway -> payment RPC -> MySQL -> AES 解密` 获取密钥。同时 `transfer_tcc` 的 `try` / `confirm` 在 `TRANSFER_PARALLEL_BRANCH=false` 下串行调用两个分片。
 3. **Outbox 投递与逐条消费积压（对应 OPT-02）**：
    - **证据**：高吞吐下（如 S5 产生近 10 万条 `transfer.succeeded` 事件、S3/S7 并发支付），`outbox_pending_end` 峰值达到 **100,801 条**，`pay_settle` 的 `outbox_wait` 均值高达 **158.7 s**，`mq_wait` P99 达 **2.19 s**。关闭批量记账（`LEDGER_BATCH_ENABLED=false`）时 `account` 消费端每次只能逐条开启 MySQL 事务提交，MySQL CPU 超过 100% 后吞吐见顶。
-4. **工程/非功能边界发现（供后续优化与修复参考）**：
-   - 全量 `CheckBalance` 在累计 25 万+分录后耗时超过 `account` 服务端当前的 2 秒固定超时（`docs/02-requirements.md` §8.2 已规划 `fix/ACC-11` 将全量 `CheckBalance` 超时调整为 120 秒）。
-   - 单日 `mock_txn` 超过 10 万笔后，`recon` 的 `DownloadAndImport` 在单个 `dbx.WithTx`（默认 3 秒总超时）内批量插入 `recon_channel_bill` 会触发事务超时回滚。
+4. **工程/非功能边界发现（已在 `fix/QA-02-timeouts` 修复并复验通过）**：
+   - 全量 `CheckBalance` 在累计数十万分录后耗时超过 2 秒，已按需求 §8.2 A7 将全量模式服务端超时调整为 120 秒（商户模式及其余方法仍为 2 秒）。
+   - 单日 `mock_txn` 超过 10 万笔后，`recon` 的 `DownloadAndImport`、`SaveExternalCheckResultTx`、`ResetForRerunTx` 原使用 `dbx.WithTx`（默认 3 秒总超时）会触发超时回滚，已通过 `dbx.WithTxTimeout(..., 90s)`、分批删除及 `ReconService.RunBatch` 服务端超时 120s 修复。
 
 ---
 
