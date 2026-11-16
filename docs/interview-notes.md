@@ -359,3 +359,11 @@ Kafka 容器 `Stop` 再 `Start` 时，OrbStack 会改随机映射的宿主机端
 - `obs.WithChain(nil)` 会换成 `context.Background()`。转账要先做 `transferReady`，确认 ctx 不是 nil、也没取消，再写入链路名。顺序反了，`CreateTransfer(nil)` 不再返回 `10003`，还会把单写进去。
 - 验收里的 Jaeger 必须在 MySQL、账户和网关都起来之后再 `obs.Install`。安装会换掉全局 TracerProvider，testcontainers 之后的 Docker 调用会被 otelhttp 记成 `service.name=gateway`。`query.num_traces=20` 会被这些 span 占满，转账那条 trace 查不到。查询再加 `query.operation_name=/v1/transfers`。
 - Jaeger 2.22 的 `/api/v3/traces` 把整数属性写成 `"intValue":"200"` 这种字符串。`duration_ns` 用 `strconv.ParseInt` 读，不能用浮点。
+
+## QA-02
+
+- 全部优化开关关闭（`PLATFORM_SUB_ACCOUNTS=1`、`LEDGER_BATCH_ENABLED=false`、`TRANSFER_PARALLEL_BRANCH=false`、`GW_CREDENTIAL_CACHE_TTL=0`、`MERCHANT_CONFIG_CACHE_TTL=0`）跑 S1–S7 基线（每场景 1m 预热 + 5m 稳态），直接用分阶段直方图定位出三大真实瓶颈：
+  1. 热点平台账户单行锁（S6 `Innodb_row_lock_waits` 63,012 次、累计等待 11,966s，`transfer_tcc.confirm` P99 974ms 占比 81.9%）。
+  2. 网关无凭证缓存（`pay_create.gw_auth` P50 23.4ms 占比 30.6%）。
+  3. 逐条记账导致 outbox 积压（S5 结束积压 100,801 条，`pay_settle.outbox_wait` 均值 158.7s）。
+- 在百万级累计流水/分录场景下还暴露了两个工程边界：全量 `CheckBalance` 超过当前 `account` 服务端固定 2s 超时（已规划 `fix/ACC-11` 改为 120s）；`recon` 下载导入 10 万+渠道账单在单个 `dbx.WithTx`（默认 3s）内超时回滚。

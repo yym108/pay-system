@@ -75,5 +75,5 @@ chaos:
 	@exit 1
 
 load:
-	@echo "load 由 QA-02 实现"
-	@exit 1
+	@test -f "$(ENV_FILE)" || { echo "缺少 $(ENV_FILE)，请复制 deploy/.env.example 为 deploy/.env"; exit 1; }
+	ENV_FILE="$(ENV_FILE)" bash test/load/run.sh
