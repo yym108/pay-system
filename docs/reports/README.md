@@ -86,3 +86,4 @@
 | PAY-09 | 立即同步渠道状态 | 支付 | `2ce98f2` | 2026-11-16 | [PAY-09-sync-channel.md](PAY-09-sync-channel.md) |
 | REC-06 | 差错自动处理 | 对账 | `9bb68ab` | 2026-11-16 | [REC-06-auto-handle.md](REC-06-auto-handle.md) |
 | REC-08 | 对账报告 | 对账 | `8565580` | 2026-11-16 | [REC-08-recon-report.md](REC-08-recon-report.md) |
+| GW-07 | 管理接口（重放、核对、触发对账） | 基础设施 | `a04acff` | 2026-11-16 | [GW-07-admin-api.md](GW-07-admin-api.md) |
