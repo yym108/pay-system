@@ -416,7 +416,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | REC-03 | 外部对账比对（按单号） | P0 | M6 | REC-02、CH-06、CH-09、PAY-05 | DONE |
 | REC-04 | 跨日处理 | P0 | — | — | CUT |
 | REC-05 | 内部对账（支付、退款、转账） | P0 | M6 | REC-01、PAY-04、REF-03、TRF-02、TRF-03、MQ-04 | DONE |
-| REC-06 | 差错自动处理 | P0 | M6 | REC-03、REC-05、PAY-09、MQ-05 | TODO |
+| REC-06 | 差错自动处理 | P0 | M6 | REC-03、REC-05、PAY-09、MQ-05 | DONE |
 | REC-07 | 差错人工处理与挂账 | P0 | — | — | CUT |
 | REC-08 | 对账报告 | P0 | M6 | REC-03、REC-05 | TODO |
 | OPS-01 | 健康检查与优雅退出 | P0 | M3 | BASE-08、BASE-09 | DONE |
@@ -2594,14 +2594,16 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 
 验收：
 
-- [ ] 状态不符（本地 PAYING）自动修复后，订单 SUCCESS 且商户入账。
-- [ ] `LEDGER_MISSING` 经重放后，下一次任意账期的对账运行（差错的 `bill_date` 在自动重试窗口内）把它置为 RESOLVED。
-- [ ] 自动处理失败也写 `handle_action`：假渠道查单返回错误时，`STATUS_MISMATCH`（本地 PROCESSING）差错保持 PENDING，`handle_action = REQUERY`、`handler = system`，`handle_note` 含失败原因；对同一批次 force 重跑后该行仍在（`id` 不变）；下一次任意账期的批次运行（差错在窗口内）在查单恢复后把它置为 RESOLVED。
-- [ ] `ReplayEvent` 调用失败的 `LEDGER_MISSING`：`handle_action = REPLAY`、保持 PENDING；下一次任意账期的批次运行复核时凭证仍缺失，再次重放；重放入账后的下一次运行置为 RESOLVED。
-- [ ] 自动重试窗口：Fake 时钟日期为 D，构造 `handle_action = REQUERY` 的 PENDING 差错，`bill_date` 分别为 D−1、D−2、D−8、D−9，查单都会成功；一次任意账期的批次运行只对 D−2、D−8 两条调用 `SyncChannelTxn` 并置为终态，D−1、D−9 不变。对 `handle_action = REPLAY`、凭证仍缺失、`bill_date` 为 D−9 的 `LEDGER_MISSING`，复核不再重放，差错保持 PENDING。
-- [ ] 严重不一致：本地 SUCCESS 的 `CHANNEL_MISSING`，假渠道查单返回 FAILED：差错保持 PENDING，`handle_action = REQUERY`，`channel_status = FAILED`，`handle_note` 含渠道状态；有一条 ERROR 日志，`pay_recon_channel_inconsistent_total` +1；之后窗口内的批次运行都不再对它查单，指标不再增加。查单返回错误的同类差错 `channel_status` 仍为空，下一次运行会重试。
-- [ ] CAS 读不到行：测试删除一条正在处理的 PENDING 差错后，处理方的 CAS 影响 0 行，重新读取查不到，返回“已不存在”，不报错、不重新插入，有一条 WARN 日志。
-- [ ] 同一条 PENDING 差错被两个运行并发置为终态：只有一次更新影响 1 行；另一次影响 0 行，重新读取后返回 RESOLVED（或 IGNORED），不报错，`handle_note` 保持先完成那次写入的值。
+- [x] 状态不符（本地 PAYING）自动修复后，订单 SUCCESS 且商户入账。
+- [x] `LEDGER_MISSING` 经重放后，下一次任意账期的对账运行（差错的 `bill_date` 在自动重试窗口内）把它置为 RESOLVED。
+- [x] 自动处理失败也写 `handle_action`：假渠道查单返回错误时，`STATUS_MISMATCH`（本地 PROCESSING）差错保持 PENDING，`handle_action = REQUERY`、`handler = system`，`handle_note` 含失败原因；对同一批次 force 重跑后该行仍在（`id` 不变）；下一次任意账期的批次运行（差错在窗口内）在查单恢复后把它置为 RESOLVED。
+- [x] `ReplayEvent` 调用失败的 `LEDGER_MISSING`：`handle_action = REPLAY`、保持 PENDING；下一次任意账期的批次运行复核时凭证仍缺失，再次重放；重放入账后的下一次运行置为 RESOLVED。
+- [x] 自动重试窗口：Fake 时钟日期为 D，构造 `handle_action = REQUERY` 的 PENDING 差错，`bill_date` 分别为 D−1、D−2、D−8、D−9，查单都会成功；一次任意账期的批次运行只对 D−2、D−8 两条调用 `SyncChannelTxn` 并置为终态，D−1、D−9 不变。对 `handle_action = REPLAY`、凭证仍缺失、`bill_date` 为 D−9 的 `LEDGER_MISSING`，复核不再重放，差错保持 PENDING。
+- [x] 严重不一致：本地 SUCCESS 的 `CHANNEL_MISSING`，假渠道查单返回 FAILED：差错保持 PENDING，`handle_action = REQUERY`，`channel_status = FAILED`，`handle_note` 含渠道状态；有一条 ERROR 日志，`pay_recon_channel_inconsistent_total` +1；之后窗口内的批次运行都不再对它查单，指标不再增加。查单返回错误的同类差错 `channel_status` 仍为空，下一次运行会重试。
+- [x] CAS 读不到行：测试删除一条正在处理的 PENDING 差错后，处理方的 CAS 影响 0 行，重新读取查不到，返回“已不存在”，不报错、不重新插入，有一条 WARN 日志。
+- [x] 同一条 PENDING 差错被两个运行并发置为终态：只有一次更新影响 1 行；另一次影响 0 行，重新读取后返回 RESOLVED（或 IGNORED），不报错，`handle_note` 保持先完成那次写入的值。
+
+实现说明（2026-11-16）：`service/recon/biz/auto_handle.go` 实现 `AutoHandler`（实现 `Checker` 接口）与 Kitex `PaymentRPCClient` 适配器（仅依赖 `kitex_gen/payment/paymentservice`，不 import `service/payment`），在 `CompositeChecker` 中先执行窗口 `[D-8, D-2]` 内的跨批次 `REQUERY` 重试与 `LEDGER_MISSING` 复核（CF-41），再执行本批次新插入差错自动处理（CF-29）；`service/recon/dal/diff.go` 与 `internal.go` 新增 CAS 更新、重读及订单只读查询；`pkg/obs/metrics.go` 导出 `AddReconChannelInconsistent`；`cmd/recon/main.go` 已接入 `payment:8881` RPC 客户端与 `AutoHandler`。
 
 #### REC-07 差错人工处理与挂账
 

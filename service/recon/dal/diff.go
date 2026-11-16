@@ -2,6 +2,8 @@ package dal
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -215,4 +217,100 @@ func ListChannelTxnsByBizNos(ctx context.Context, paymentExec sqlx.ExtContext, c
 		out = append(out, part...)
 	}
 	return out, nil
+}
+
+// GetDiffByID 按主键查询单条差错。不存在时返回 ErrNotFound。
+func GetDiffByID(ctx context.Context, exec sqlx.ExtContext, id uint64) (Diff, error) {
+	var d Diff
+	err := sqlx.GetContext(ctx, exec, &d,
+		`SELECT `+diffColumns+` FROM recon_diff WHERE id = ?`, id)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return Diff{}, ErrNotFound
+		}
+		return Diff{}, fmt.Errorf("get recon_diff by id %d: %w", id, err)
+	}
+	return d, nil
+}
+
+// ListPendingUnhandledDiffsByBatch 查询本批次新插入且尚未自动处理的 PENDING 差错。
+func ListPendingUnhandledDiffsByBatch(ctx context.Context, exec sqlx.ExtContext, batchNo string) ([]Diff, error) {
+	var list []Diff
+	err := sqlx.SelectContext(ctx, exec, &list,
+		`SELECT `+diffColumns+` FROM recon_diff
+		WHERE batch_no = ? AND status = 'PENDING' AND handle_action IS NULL
+		ORDER BY id ASC`,
+		batchNo)
+	if err != nil {
+		return nil, fmt.Errorf("list pending unhandled recon_diff: %w", err)
+	}
+	return list, nil
+}
+
+// ListRetryableRequeryDiffs 查询自动重试窗口 [fromDate, toDate] 内待 REQUERY 重试的 PENDING 差错
+// （排除已判定严重不一致的 CHANNEL_MISSING）。
+func ListRetryableRequeryDiffs(ctx context.Context, exec sqlx.ExtContext, fromDate, toDate string) ([]Diff, error) {
+	var list []Diff
+	err := sqlx.SelectContext(ctx, exec, &list,
+		`SELECT `+diffColumns+` FROM recon_diff
+		WHERE status = 'PENDING' AND bill_date >= ? AND bill_date <= ?
+		  AND handle_action = 'REQUERY'
+		  AND (diff_type <> 'CHANNEL_MISSING' OR channel_status IS NULL)
+		ORDER BY id ASC`,
+		fromDate, toDate)
+	if err != nil {
+		return nil, fmt.Errorf("list retryable requery recon_diff: %w", err)
+	}
+	return list, nil
+}
+
+// ListRetryableReplayLedgerDiffs 查询自动重试窗口 [fromDate, toDate] 内待复核或重放的 LEDGER_MISSING 差错。
+func ListRetryableReplayLedgerDiffs(ctx context.Context, exec sqlx.ExtContext, fromDate, toDate string) ([]Diff, error) {
+	var list []Diff
+	err := sqlx.SelectContext(ctx, exec, &list,
+		`SELECT `+diffColumns+` FROM recon_diff
+		WHERE status = 'PENDING' AND bill_date >= ? AND bill_date <= ?
+		  AND diff_type = 'LEDGER_MISSING' AND handle_action = 'REPLAY'
+		ORDER BY id ASC`,
+		fromDate, toDate)
+	if err != nil {
+		return nil, fmt.Errorf("list retryable replay recon_diff: %w", err)
+	}
+	return list, nil
+}
+
+// ResolveDiffCAS 用 CAS 将 PENDING 差错置为终态（RESOLVED 或 IGNORED）。
+func ResolveDiffCAS(ctx context.Context, exec sqlx.ExtContext, id uint64, status, handleAction, handler, handleNote string, resolvedAt, now time.Time) (bool, error) {
+	res, err := exec.ExecContext(ctx,
+		`UPDATE recon_diff
+		SET status = ?, handle_action = ?, handler = ?, handle_note = ?, resolved_at = ?, updated_at = ?
+		WHERE id = ? AND status = 'PENDING'`,
+		status, handleAction, handler, handleNote, resolvedAt, now, id)
+	if err != nil {
+		return false, fmt.Errorf("resolve recon_diff %d CAS: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("resolve recon_diff %d rows affected: %w", id, err)
+	}
+	return n > 0, nil
+}
+
+// UpdateDiffPendingCAS 用 CAS 更新 PENDING 差错的处理动作、说明与（可选的）渠道状态，差错保持 PENDING。
+func UpdateDiffPendingCAS(ctx context.Context, exec sqlx.ExtContext, id uint64, handleAction, handler, handleNote string, channelStatus *string, now time.Time) (bool, error) {
+	res, err := exec.ExecContext(ctx,
+		`UPDATE recon_diff
+		SET handle_action = ?, handler = ?, handle_note = ?,
+		    channel_status = COALESCE(?, channel_status),
+		    updated_at = ?
+		WHERE id = ? AND status = 'PENDING'`,
+		handleAction, handler, handleNote, channelStatus, now, id)
+	if err != nil {
+		return false, fmt.Errorf("update pending recon_diff %d CAS: %w", id, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("update pending recon_diff %d rows affected: %w", id, err)
+	}
+	return n > 0, nil
 }

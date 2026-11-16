@@ -303,6 +303,11 @@ func AddReconDiff(diffType string) {
 	reconDiffs.WithLabelValues(label(diffType)).Inc()
 }
 
+// AddReconChannelInconsistent 记录一次渠道侧严重不一致（CHANNEL_MISSING 查单非 SUCCESS）。
+func AddReconChannelInconsistent(channel string) {
+	reconChannelInconsistent.WithLabelValues(label(channel)).Inc()
+}
+
 func label(v string) string {
 	if v == "" {
 		return labelUnknown

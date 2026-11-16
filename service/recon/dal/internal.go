@@ -177,3 +177,57 @@ func ListTransferBranchesByTransferNos(ctx context.Context, accExec sqlx.ExtCont
 	}
 	return out, nil
 }
+
+// ListPaymentOrdersByPayNos 只读查询 pay_payment.payment_order 中指定 pay_no 集合的记录。
+func ListPaymentOrdersByPayNos(ctx context.Context, paymentExec sqlx.ExtContext, payNos []string) ([]InternalPaymentOrder, error) {
+	if len(payNos) == 0 {
+		return nil, nil
+	}
+	var out []InternalPaymentOrder
+	for start := 0; start < len(payNos); start += queryChunkSize {
+		end := start + queryChunkSize
+		if end > len(payNos) {
+			end = len(payNos)
+		}
+		chunk := payNos[start:end]
+		query, args, err := sqlx.In(
+			`SELECT pay_no, merchant_id, amount, status FROM payment_order WHERE pay_no IN (?)`,
+			chunk)
+		if err != nil {
+			return nil, fmt.Errorf("build payment_order IN: %w", err)
+		}
+		var part []InternalPaymentOrder
+		if err := sqlx.SelectContext(ctx, paymentExec, &part, paymentExec.Rebind(query), args...); err != nil {
+			return nil, fmt.Errorf("list payment_order by pay_nos: %w", err)
+		}
+		out = append(out, part...)
+	}
+	return out, nil
+}
+
+// ListRefundOrdersByRefundNos 只读查询 pay_payment.refund_order 中指定 refund_no 集合的记录。
+func ListRefundOrdersByRefundNos(ctx context.Context, paymentExec sqlx.ExtContext, refundNos []string) ([]InternalRefundOrder, error) {
+	if len(refundNos) == 0 {
+		return nil, nil
+	}
+	var out []InternalRefundOrder
+	for start := 0; start < len(refundNos); start += queryChunkSize {
+		end := start + queryChunkSize
+		if end > len(refundNos) {
+			end = len(refundNos)
+		}
+		chunk := refundNos[start:end]
+		query, args, err := sqlx.In(
+			`SELECT refund_no, merchant_id, amount, status FROM refund_order WHERE refund_no IN (?)`,
+			chunk)
+		if err != nil {
+			return nil, fmt.Errorf("build refund_order IN: %w", err)
+		}
+		var part []InternalRefundOrder
+		if err := sqlx.SelectContext(ctx, paymentExec, &part, paymentExec.Rebind(query), args...); err != nil {
+			return nil, fmt.Errorf("list refund_order by refund_nos: %w", err)
+		}
+		out = append(out, part...)
+	}
+	return out, nil
+}

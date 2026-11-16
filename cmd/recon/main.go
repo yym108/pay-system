@@ -11,6 +11,12 @@ import (
 	"sync"
 	"time"
 
+	"github.com/cloudwego/kitex/client"
+	"github.com/cloudwego/kitex/pkg/transmeta"
+	"github.com/cloudwego/kitex/transport"
+	"github.com/jmoiron/sqlx"
+
+	"github.com/yym108/pay-system/kitex_gen/payment/paymentservice"
 	"github.com/yym108/pay-system/pkg/clock"
 	"github.com/yym108/pay-system/pkg/config"
 	"github.com/yym108/pay-system/pkg/dbx"
@@ -28,7 +34,12 @@ type closeFunc func() error
 
 func (f closeFunc) Close() error { return f() }
 
-const openDBTimeout = 3 * time.Second
+const (
+	openDBTimeout  = 3 * time.Second
+	paymentRPCAddr = "payment:8881"
+	rpcConnTimeout = 100 * time.Millisecond
+	rpcCallTimeout = 3 * time.Second
+)
 
 // errOpenDB 不带地址和口令，防止泄漏 DSN。
 var (
@@ -134,22 +145,10 @@ func executeCLI(cfg config.Recon, opt cliOptions, stdout io.Writer) error {
 	}
 	defer func() { _ = accountDB1.Close() }()
 
-	ids, err := idgen.New(cfg.WorkerID, clock.Real{})
+	svc, err := buildReconService(cfg, db, paymentDB, accountDB0, accountDB1)
 	if err != nil {
 		return err
 	}
-	dl, err := biz.NewBillDownloader(db, biz.BillDownloaderConfig{
-		BaseURL: cfg.ChannelMockpayURL,
-		Key:     []byte(cfg.ChannelMockpayKey),
-		Clock:   clock.Real{},
-	})
-	if err != nil {
-		return err
-	}
-	extChecker := biz.NewExternalChecker(db, paymentDB, ids, clock.Real{})
-	intChecker := biz.NewInternalChecker(db, paymentDB, accountDB0, accountDB1, ids, clock.Real{})
-	checker := biz.NewCompositeChecker(extChecker, intChecker)
-	svc := biz.NewRecon(db, ids, clock.Real{}, []string{"mockpay"}, dl, checker)
 	ctx, rcancel := context.WithTimeout(context.Background(), handler.ServerTimeout)
 	defer rcancel()
 	out, err := svc.RunBatch(ctx, biz.RunBatchInput{
@@ -204,22 +203,10 @@ func serve(cfg config.Recon, logOut io.Writer) error {
 	}
 	defer func() { _ = closeDB() }()
 
-	ids, err := idgen.New(cfg.WorkerID, clock.Real{})
+	svc, err := buildReconService(cfg, db, paymentDB, accountDB0, accountDB1)
 	if err != nil {
 		return err
 	}
-	dl, err := biz.NewBillDownloader(db, biz.BillDownloaderConfig{
-		BaseURL: cfg.ChannelMockpayURL,
-		Key:     []byte(cfg.ChannelMockpayKey),
-		Clock:   clock.Real{},
-	})
-	if err != nil {
-		return err
-	}
-	extChecker := biz.NewExternalChecker(db, paymentDB, ids, clock.Real{})
-	intChecker := biz.NewInternalChecker(db, paymentDB, accountDB0, accountDB1, ids, clock.Real{})
-	checker := biz.NewCompositeChecker(extChecker, intChecker)
-	svc := biz.NewRecon(db, ids, clock.Real{}, []string{"mockpay"}, dl, checker)
 	sched := job.NewScheduler(svc, clock.Real{}, cfg.ReconRunAt, nil)
 	svc.UseRetryScheduler(sched)
 
@@ -249,4 +236,35 @@ func serve(cfg config.Recon, logOut io.Writer) error {
 	))
 	admin.RegisterGroup(sched)
 	return admin.Run(context.Background())
+}
+
+func buildReconService(cfg config.Recon, db, paymentDB, accountDB0, accountDB1 *sqlx.DB) (*biz.Recon, error) {
+	ids, err := idgen.New(cfg.WorkerID, clock.Real{})
+	if err != nil {
+		return nil, err
+	}
+	dl, err := biz.NewBillDownloader(db, biz.BillDownloaderConfig{
+		BaseURL: cfg.ChannelMockpayURL,
+		Key:     []byte(cfg.ChannelMockpayKey),
+		Clock:   clock.Real{},
+	})
+	if err != nil {
+		return nil, err
+	}
+	payCli, err := paymentservice.NewClient("PaymentService",
+		client.WithHostPorts(paymentRPCAddr),
+		client.WithConnectTimeout(rpcConnTimeout),
+		client.WithRPCTimeout(rpcCallTimeout),
+		client.WithTransportProtocol(transport.TTHeader),
+		client.WithMetaHandler(transmeta.ClientTTHeaderHandler),
+		client.WithMiddleware(obs.ClientMiddleware("recon")),
+	)
+	if err != nil {
+		return nil, err
+	}
+	extChecker := biz.NewExternalChecker(db, paymentDB, ids, clock.Real{})
+	intChecker := biz.NewInternalChecker(db, paymentDB, accountDB0, accountDB1, ids, clock.Real{})
+	autoHandler := biz.NewAutoHandler(db, paymentDB, accountDB0, accountDB1, biz.NewPaymentRPCClient(payCli), clock.Real{})
+	checker := biz.NewCompositeChecker(extChecker, intChecker, autoHandler)
+	return biz.NewRecon(db, ids, clock.Real{}, []string{"mockpay"}, dl, checker), nil
 }
