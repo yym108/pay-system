@@ -298,6 +298,11 @@ func AddTransferInconsistent(mode string) {
 	transferInconsistent.WithLabelValues(label(mode)).Inc()
 }
 
+// AddReconDiff 记录一次新插入的对账差错（同键跳过时不调用）。
+func AddReconDiff(diffType string) {
+	reconDiffs.WithLabelValues(label(diffType)).Inc()
+}
+
 func label(v string) string {
 	if v == "" {
 		return labelUnknown

@@ -31,7 +31,10 @@ func (f closeFunc) Close() error { return f() }
 const openDBTimeout = 3 * time.Second
 
 // errOpenDB 不带地址和口令，防止泄漏 DSN。
-var errOpenDB = errors.New("open recon database failed")
+var (
+	errOpenDB        = errors.New("open recon database failed")
+	errOpenPaymentDB = errors.New("open payment database failed")
+)
 
 func main() {
 	os.Exit(runArgs(os.Args[1:], os.Environ(), os.Stdout, os.Stderr))
@@ -112,6 +115,12 @@ func executeCLI(cfg config.Recon, opt cliOptions, stdout io.Writer) error {
 	}
 	defer func() { _ = db.Close() }()
 
+	paymentDB, err := dbx.Open(openCtx, cfg.DSNPayPayment, dbx.PoolConfig{})
+	if err != nil {
+		return errOpenPaymentDB
+	}
+	defer func() { _ = paymentDB.Close() }()
+
 	ids, err := idgen.New(cfg.WorkerID, clock.Real{})
 	if err != nil {
 		return err
@@ -124,7 +133,8 @@ func executeCLI(cfg config.Recon, opt cliOptions, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	svc := biz.NewRecon(db, ids, clock.Real{}, []string{"mockpay"}, dl, nil)
+	checker := biz.NewExternalChecker(db, paymentDB, ids, clock.Real{})
+	svc := biz.NewRecon(db, ids, clock.Real{}, []string{"mockpay"}, dl, checker)
 	ctx, rcancel := context.WithTimeout(context.Background(), handler.ServerTimeout)
 	defer rcancel()
 	out, err := svc.RunBatch(ctx, biz.RunBatchInput{
@@ -154,10 +164,17 @@ func serve(cfg config.Recon, logOut io.Writer) error {
 	if err != nil {
 		return errOpenDB
 	}
+	paymentDB, err := dbx.Open(openCtx, cfg.DSNPayPayment, dbx.PoolConfig{})
+	if err != nil {
+		_ = db.Close()
+		return errOpenPaymentDB
+	}
 	var closeOnce sync.Once
 	closeDB := func() error {
 		var cerr error
-		closeOnce.Do(func() { cerr = db.Close() })
+		closeOnce.Do(func() {
+			cerr = errors.Join(db.Close(), paymentDB.Close())
+		})
 		return cerr
 	}
 	defer func() { _ = closeDB() }()
@@ -174,7 +191,8 @@ func serve(cfg config.Recon, logOut io.Writer) error {
 	if err != nil {
 		return err
 	}
-	svc := biz.NewRecon(db, ids, clock.Real{}, []string{"mockpay"}, dl, nil)
+	checker := biz.NewExternalChecker(db, paymentDB, ids, clock.Real{})
+	svc := biz.NewRecon(db, ids, clock.Real{}, []string{"mockpay"}, dl, checker)
 	sched := job.NewScheduler(svc, clock.Real{}, cfg.ReconRunAt, nil)
 	svc.UseRetryScheduler(sched)
 

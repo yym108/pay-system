@@ -844,7 +844,7 @@
   - 自动处理（REC-06）：写 `handle_action`、`handler`、`handle_note` 和置为 RESOLVED / IGNORED 都用 CAS `WHERE id = ? AND status = 'PENDING'`；影响 0 行时重新读取，按当前状态返回，不覆盖。处理失败同样写 `handle_action`，差错保持 PENDING。
   - 跨批次重试：任意账期的批次运行都处理 `bill_date` 在 D−8 到 D−2 之间（D 为运行时的东八区日期）、`status = 'PENDING'` 的 `REQUERY` 差错（排除 `channel_status` 非空的 `CHANNEL_MISSING`）和 `REPLAY` 的 `LEDGER_MISSING`。窗口外仍为 PENDING 的不再自动处理，列入对账报告的“等待人工处理”（REC-08）。
 - **Sensitivity:** 内部，`handler` 为处理方标识（目前只有 `system`）。
-- **Authoritative source:** `migrations/recon/000001_init.up.sql`。唯一键 `uk_batch_type_biz_no_diff_type` 已规划、迁移未落，随 REC-03 新增（见 §6）。
+- **Authoritative source:** `migrations/recon/000001_init.up.sql`、`migrations/recon/000003_diff_unique_key.up.sql`。
 - **Write owners/read consumers:** recon；管理接口（触发对账的响应）只读。
 - **Retention/archival:** 长期，作为审计记录。
 
@@ -854,12 +854,12 @@
 | --- | --- | --- | --- | --- | --- | --- |
 | `id` | BIGINT UNSIGNED | 否 | AUTO_INCREMENT | PK | | 内部 |
 | `diff_no` | VARCHAR(32) | 否 | — | `uk_diff_no` | `RD` 前缀 | 内部 |
-| `batch_no` | VARCHAR(32) | 否 | — | `uk_batch_type_biz_no` 1；REC-03 后 `uk_batch_type_biz_no_diff_type` 1 | 发现差错的批次 | 内部 |
+| `batch_no` | VARCHAR(32) | 否 | — | `uk_batch_type_biz_no_diff_type` 1 | 发现差错的批次 | 内部 |
 | `channel` | VARCHAR(16) | 否 | — | — | 批次渠道；内部对账差错（LEDGER_MISSING、TRANSFER_MISMATCH）同样取批次渠道 | 内部 |
 | `bill_date` | DATE | 否 | — | `idx_status_bill_date` 2 | | 内部 |
-| `diff_type` | VARCHAR(32) | 否 | — | `ck_diff_type`；REC-03 后 `uk_batch_type_biz_no_diff_type` 4 | LOCAL_MISSING / CHANNEL_MISSING / AMOUNT_MISMATCH / STATUS_MISMATCH（外部对账）；LEDGER_MISSING / TRANSFER_MISMATCH（内部对账） | 内部 |
-| `txn_type` | VARCHAR(16) | 否 | — | `uk_batch_type_biz_no` 2（REC-03 后 `uk_batch_type_biz_no_diff_type` 2）、`ck_diff_txn_type` | PAY / REFUND / TRANSFER；TRANSFER 只用于 TRANSFER_MISMATCH | 内部 |
-| `biz_no` | VARCHAR(32) | 否 | — | `uk_batch_type_biz_no` 3；REC-03 后 `uk_batch_type_biz_no_diff_type` 3 | pay_no / refund_no / transfer_no | 内部 |
+| `diff_type` | VARCHAR(32) | 否 | — | `ck_diff_type`、`uk_batch_type_biz_no_diff_type` 4 | LOCAL_MISSING / CHANNEL_MISSING / AMOUNT_MISMATCH / STATUS_MISMATCH（外部对账）；LEDGER_MISSING / TRANSFER_MISMATCH（内部对账） | 内部 |
+| `txn_type` | VARCHAR(16) | 否 | — | `uk_batch_type_biz_no_diff_type` 2、`ck_diff_txn_type` | PAY / REFUND / TRANSFER；TRANSFER 只用于 TRANSFER_MISMATCH | 内部 |
+| `biz_no` | VARCHAR(32) | 否 | — | `uk_batch_type_biz_no_diff_type` 3 | pay_no / refund_no / transfer_no | 内部 |
 | `channel_txn_no` | VARCHAR(64) | 是 | NULL | — | 内部对账差错为 NULL | 内部 |
 | `local_amount` | BIGINT | 是 | NULL | — | 本地侧金额，一侧缺失时为 NULL | 财务 |
 | `channel_amount` | BIGINT | 是 | NULL | — | 渠道侧金额，一侧缺失或内部对账时为 NULL | 财务 |
@@ -879,8 +879,7 @@
 | --- | --- | --- | --- | --- |
 | `PRIMARY` | PK | `id` | | migrations/recon/000001_init.up.sql |
 | `uk_diff_no` | UNIQUE | `diff_no` | | migrations/recon/000001_init.up.sql |
-| `uk_batch_type_biz_no` | UNIQUE | `batch_no, txn_type, biz_no` | 当前迁移：同一批次同一交易只记一条差错。REC-03 新增迁移删除此键，换成 `uk_batch_type_biz_no_diff_type` | migrations/recon/000001_init.up.sql |
-| `uk_batch_type_biz_no_diff_type` | UNIQUE | `batch_no, txn_type, biz_no, diff_type` | **REC-03 新增，迁移未落。** 同一批次同一交易的每类差错一条，使外部差错与内部差错可以并存（如 `AMOUNT_MISMATCH` 与 `LEDGER_MISSING`）；插入同键时 `ON DUPLICATE KEY UPDATE id = id` 跳过 | 计划（REC-03 迁移，见 §6） |
+| `uk_batch_type_biz_no_diff_type` | UNIQUE | `batch_no, txn_type, biz_no, diff_type` | 同一批次同一交易的每类差错一条，使外部差错与内部差错可以并存（如 `AMOUNT_MISMATCH` 与 `LEDGER_MISSING`）；插入同键时 `ON DUPLICATE KEY UPDATE id = id` 跳过 | migrations/recon/000003_diff_unique_key.up.sql |
 | `idx_status_bill_date` | INDEX | `status, bill_date` | `status = 'PENDING'` 加 `bill_date` 范围：D−8 到 D−2 窗口内的跨批次 REQUERY 重试与 LEDGER_MISSING 复核（REC-06）；对账报告“等待人工处理”列表（`bill_date` 早于 D−8，或严重不一致的 `CHANNEL_MISSING`，REC-08） | migrations/recon/000001_init.up.sql |
 | `ck_diff_type` | CHECK | `diff_type IN ('LOCAL_MISSING','CHANNEL_MISSING','AMOUNT_MISMATCH','STATUS_MISMATCH','LEDGER_MISSING','TRANSFER_MISMATCH')` | | migrations/recon/000001_init.up.sql |
 | `ck_diff_txn_type` | CHECK | `txn_type IN ('PAY','REFUND','TRANSFER')` | | migrations/recon/000001_init.up.sql |
@@ -989,6 +988,7 @@
 | 2026-11-10 | 无（仅文档） | merchant_notify.next_attempt_at、created_at、updated_at（写路径说明） | NTF-01：INSERT 显式写这三列，避免 DEFAULT 和 ON UPDATE CURRENT_TIMESTAMP 用数据库时间。无 DDL | 未执行迁移 |
 | 2026-11-11 | 无（仅文档） | merchant_notify.attempt_count、merchant_notify.next_attempt_at、merchant_notify.updated_at、merchant_notify.status（写路径说明） | NTF-02：抢占在同一事务里 `attempt_count + 1`、推后 `next_attempt_at`，并显式写 `updated_at`，不改 `status`。回写 CAS 带 `status = 'PENDING'`，SUCCESS / DEAD / 失败的 `last_error` 都显式写 `updated_at`。无 DDL | 未执行迁移 |
 | 2026-11-16 | `migrations/recon/000002_batch_retry_count.up.sql` | `recon_batch.retry_count` | REC-01 新增 `retry_count INT NOT NULL DEFAULT 0 AFTER error_msg` | MySQL 8.4.11 testcontainers 验证 up 与 down |
+| 2026-11-16 | `migrations/recon/000003_diff_unique_key.up.sql` | `recon_diff.uk_batch_type_biz_no_diff_type` | REC-03 将 `uk_batch_type_biz_no` 替换为 `uk_batch_type_biz_no_diff_type (batch_no, txn_type, biz_no, diff_type)` | MySQL 8.4.11 testcontainers 验证 up 与 down |
 
 ## 6. Open Questions
 
@@ -1002,4 +1002,4 @@
 | TRANSFER_MISMATCH 的 `local_amount` / `local_status` 取值 | REC-05 只规定 `handle_note` 记录各分片情况 | 报告展示口径 | 已关闭（2026-10-27）：需求 REC-05 第 4 条定为取转账单的金额与状态，渠道字段为空 |
 | 设计稿中 `pay_account_1` 的 CHECK 约束名与分片 0 不同 | BASE-03 在 MySQL 8.4.11 上对两个分片各执行 `migrations/account/000001_init.up.sql`，`%_chk_%` 计数为 0，比较脚本无差异 | 已消除 | 已关闭（2026-10-14） |
 | 计划变更：`recon_batch` 新增 `retry_count INT NOT NULL DEFAULT 0` | 需求 REC-01 标头与第 6 条 | 已落地 | 已关闭（REC-01）：见 `migrations/recon/000002_batch_retry_count.up.sql` |
-| 计划变更：`recon_diff` 唯一键 `uk_batch_type_biz_no` 换成 `uk_batch_type_biz_no_diff_type (batch_no, txn_type, biz_no, diff_type)` | 需求 REC-03 标头与第 4 条；当前迁移仍是 `uk_batch_type_biz_no` | 迁移落地前，同一笔交易的外部差错与内部差错会冲突（1062）；§4.15 两个键都列出 | REC-03 实现时新增迁移，落地后删除 §4.15 中旧键一行 |
+| 计划变更：`recon_diff` 唯一键 `uk_batch_type_biz_no` 换成 `uk_batch_type_biz_no_diff_type (batch_no, txn_type, biz_no, diff_type)` | 需求 REC-03 标头与第 4 条 | 已落地 | 已关闭（REC-03）：见 `migrations/recon/000003_diff_unique_key.up.sql` |

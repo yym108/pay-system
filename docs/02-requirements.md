@@ -413,7 +413,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | GW-09 | 商户 API 路由（退款与转账） | P0 | M4 | GW-01、GW-02、GW-06、TL-01、REF-01、REF-05、TRF-01、TRF-05 | DONE |
 | REC-01 | 对账批次与调度 | P0 | M6 | BASE-03 | DONE |
 | REC-02 | 账单下载与导入 | P0 | M6 | REC-01、CH-08 | DONE |
-| REC-03 | 外部对账比对（按单号） | P0 | M6 | REC-02、CH-06、CH-09、PAY-05 | TODO |
+| REC-03 | 外部对账比对（按单号） | P0 | M6 | REC-02、CH-06、CH-09、PAY-05 | DONE |
 | REC-04 | 跨日处理 | P0 | — | — | CUT |
 | REC-05 | 内部对账（支付、退款、转账） | P0 | M6 | REC-01、PAY-04、REF-03、TRF-02、TRF-03、MQ-04 | TODO |
 | REC-06 | 差错自动处理 | P0 | M6 | REC-03、REC-05、PAY-09、MQ-05 | TODO |
@@ -2531,10 +2531,12 @@ account 进程在现有生产者之外用同一组 broker 启动消费组 `accou
 
 验收（A6）：
 
-- [ ] 构造账单：注入一笔平台不存在的交易（长款）、BILL_MISSING（短款）、BILL_AMOUNT_DIFF（金额不符）、DROP_NOTIFY 且关闭查单补偿（状态不符），四类各识别 1 条，其余全部匹配。
-- [ ] 全部正常的账单差错数为 0。
-- [ ] 外部差错与内部差错并存：同一笔支付本地 SUCCESS、金额与账单不同，且没有 PAY 凭证。同一批次得到 `AMOUNT_MISMATCH`（REC-03）和 `LEDGER_MISSING`（REC-05）两条差错，键只差 `diff_type`，没有 1062，也没有被跳过，`diff_count` 计 2。
-- [ ] 同键跳过：本批次已有一条 IGNORED 的 `CHANNEL_MISSING`，重新比对再次得到同键差错时不报 1062，已有行的 `status`、`handle_action`、`handle_note`、`updated_at` 都不变，`pay_recon_diffs_total` 不增加，`diff_count` 等于本批次差错实际行数。
+- [x] 构造账单：注入一笔平台不存在的交易（长款）、BILL_MISSING（短款）、BILL_AMOUNT_DIFF（金额不符）、DROP_NOTIFY 且关闭查单补偿（状态不符），四类各识别 1 条，其余全部匹配。
+- [x] 全部正常的账单差错数为 0。
+- [x] 外部差错与内部差错并存：同一笔支付本地 SUCCESS、金额与账单不同，且没有 PAY 凭证。同一批次得到 `AMOUNT_MISMATCH`（REC-03）和 `LEDGER_MISSING`（REC-05）两条差错，键只差 `diff_type`，没有 1062，也没有被跳过，`diff_count` 计 2。
+- [x] 同键跳过：本批次已有一条 IGNORED 的 `CHANNEL_MISSING`，重新比对再次得到同键差错时不报 1062，已有行的 `status`、`handle_action`、`handle_note`、`updated_at` 都不变，`pay_recon_diffs_total` 不增加，`diff_count` 等于本批次差错实际行数。
+
+实现说明（2026-11-16）：新增迁移 `migrations/recon/000003_diff_unique_key.up.sql` 将 `recon_diff` 唯一键替换为 `uk_batch_type_biz_no_diff_type`；`service/recon/biz/external_recon.go` 实现 `ExternalChecker`（实现 `Checker` 接口），通过 `pay_payment` 只读 DSN 查询 `channel_txn` 并在内存按 `(txn_type, biz_no)` 建索引比对，在 `pay_recon` 事务内更新 `recon_channel_bill.match_status` 并以 `INSERT ... ON DUPLICATE KEY UPDATE id = id` 按 `diff_type` 分组插入差错，事务提交后按实际影响行数计入 `pay_recon_diffs_total`；`cmd/recon/main.go` 已接入 `DSNPayPayment` 与 `ExternalChecker`。
 
 #### REC-04 跨日处理
 
