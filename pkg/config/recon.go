@@ -7,6 +7,8 @@ type Recon struct {
 	AccountShardCount        int    `env:"ACCOUNT_SHARD_COUNT" envDefault:"2"`
 	OTELExporterOTLPEndpoint string `env:"OTEL_EXPORTER_OTLP_ENDPOINT"`
 	ReconRunAt               string `env:"RECON_RUN_AT" envDefault:"10:00"`
+	ChannelMockpayKey        string `env:"CHANNEL_MOCKPAY_KEY,required,notEmpty" secret:"true"`
+	ChannelMockpayURL        string `env:"CHANNEL_MOCKPAY_URL" envDefault:"http://channel-mock:9080"`
 	FaultPoints              string `env:"FAULT_POINTS" envDefault:""`
 	MySQLReconPassword       string `env:"MYSQL_RECON_PASSWORD,required,notEmpty" secret:"true"`
 	AccountDBDSN0            string `env:"ACCOUNT_DB_DSN_0,required,notEmpty" secret:"true"`

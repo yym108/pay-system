@@ -412,6 +412,7 @@ func TestLoadReconAssemblesDSN(t *testing.T) {
 	env := map[string]string{
 		"WORKER_ID":                   "4",
 		"MYSQL_RECON_PASSWORD":        testReconPass,
+		"CHANNEL_MOCKPAY_KEY":         testMockKey,
 		"ACCOUNT_DB_DSN_0":            dsn0,
 		"ACCOUNT_DB_DSN_1":            dsn1,
 		"MYSQL_DSN":                   tcpDSN("svc_payment", paymentPassword, "mysql:3306", "pay_payment", testQuery),
@@ -439,8 +440,8 @@ func TestLoadReconAssemblesDSN(t *testing.T) {
 		}
 	}
 	out := Redact(cfg)
-	assertNoMaterial(t, out, "redacted recon", testReconPass, pass0, paymentPassword, "other-account-password", dsn0, dsn1)
-	if !strings.Contains(out, "***") || !strings.Contains(out, "RECON_RUN_AT=00:15") || !strings.Contains(out, "WORKER_ID=4") {
+	assertNoMaterial(t, out, "redacted recon", testReconPass, testMockKey, pass0, paymentPassword, "other-account-password", dsn0, dsn1)
+	if !strings.Contains(out, "***") || !strings.Contains(out, "RECON_RUN_AT=00:15") || !strings.Contains(out, "WORKER_ID=4") || !strings.Contains(out, "CHANNEL_MOCKPAY_URL=http://channel-mock:9080") {
 		t.Fatal("recon redact missing mask or plain fields")
 	}
 }
@@ -450,6 +451,7 @@ func TestLoadReconRejectsInvalid(t *testing.T) {
 	base := map[string]string{
 		"WORKER_ID":            "4",
 		"MYSQL_RECON_PASSWORD": testReconPass,
+		"CHANNEL_MOCKPAY_KEY":  testMockKey,
 		"ACCOUNT_DB_DSN_0":     accountDSN("pay_account_0"),
 		"ACCOUNT_DB_DSN_1":     accountDSN("pay_account_1"),
 	}

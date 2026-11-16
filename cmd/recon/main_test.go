@@ -34,6 +34,7 @@ func TestReconFaultPointsCheckedBeforeStart(t *testing.T) {
 		"ACCOUNT_DB_DSN_0=svc_account:account-plain-password@tcp(mysql:3306)/pay_account_0?parseTime=true",
 		"ACCOUNT_DB_DSN_1=svc_account:account-plain-password@tcp(mysql:3306)/pay_account_1?parseTime=true",
 		"MYSQL_RECON_PASSWORD=recon-plain-password",
+		"CHANNEL_MOCKPAY_KEY=mockpay-plain-key",
 	}
 	var stdout, stderr bytes.Buffer
 	code := runWith(append(append([]string{}, base...), "FAULT_POINTS=pay.after_tx"), &stdout, &stderr, func(config.Recon) error {

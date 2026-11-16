@@ -374,8 +374,8 @@ Hertz `hlog` 和 Kitex `klog` 经适配器写入同一个 slog handler。`SetDef
 | `OTEL_TRACES_SAMPLER` | 全部服务 | 空（等价 `parentbased_always_on`） | 采样器名。允许 `always_on`、`always_off`、`traceidratio`、`parentbased_always_on`、`parentbased_always_off`、`parentbased_traceidratio`。不认识的名字启动失败，错误文本含本变量名。空端点也不放过不合法的名字 |
 | `OTEL_TRACES_SAMPLER_ARG` | 全部服务 | 空 | `traceidratio` 与 `parentbased_traceidratio` 的比例，闭区间 [0,1]。空、非数字或越界时启动失败 |
 | `SECRET_MASTER_KEY` | payment、seed | 无（必填，secret） | 标准 base64（带填充），解码后 32 字节；`pkg/secretbox.NewFromBase64` 按同一规则解码（BASE-14） |
-| `CHANNEL_MOCKPAY_KEY` | payment、gateway、channel-mock | 无（必填，secret） | 渠道签名密钥 |
-| `CHANNEL_MOCKPAY_URL` | payment | `http://channel-mock:9080` | BASE-09 的 recon 不读取。对账要访问渠道时再加到 recon |
+| `CHANNEL_MOCKPAY_KEY` | payment、gateway、recon、channel-mock | 无（必填，secret） | 渠道签名密钥 |
+| `CHANNEL_MOCKPAY_URL` | payment、recon | `http://channel-mock:9080` | 渠道根地址 |
 | `CHANNEL_NOTIFY_URL` | payment | `http://gateway:8080/callback/mockpay` | 交给渠道的回调地址 |
 | `ADMIN_TOKEN` | gateway | 无（必填，secret，≥ 32 字符） | 管理接口 Token |
 | `NOTIFY_URL_ALLOW_HOSTS` | payment | `merchant-demo` | 商户通知地址主机白名单，逗号分隔。解析时 trim 并忽略空段。名单解析后为空时，任何显式 URL 都拒绝。主机与名单大小写不敏感精确比较，不解析 DNS |
@@ -453,3 +453,4 @@ BASE-09 只拼 DSN 文本，不连接数据库，也不调用驱动的 `ParseDSN
 | v2.30 | 2026-11-11 | TL-02：`DEMO_APP_SECRET_FORMAT` 的使用方增加 merchant-demo。变量名、默认值和 secret 标记不变，不新增环境变量。merchant-demo 加载时要求恰好一个 `%s` 且没有其他 `%`。不新增错误码、前缀。 |
 | v2.31 | 2026-11-11 | NTF-02：§7.5 日志字段 `job` 增加取值 `notify_send`（商户通知发送，每秒扫描；重试间隔仍是 `NOTIFY_RETRY_INTERVAL`）。不新增错误码、前缀或配置项。 |
 | v2.32 | 2026-11-11 | OPS-02：§8 登记 `OTEL_TRACES_SAMPLER`、`OTEL_TRACES_SAMPLER_ARG`。未设置采样器时等价 `parentbased_always_on`。不认识的名字启动失败。不新增错误码或单号前缀。 |
+| v2.33 | 2026-11-16 | REC-02：§8 `CHANNEL_MOCKPAY_KEY`、`CHANNEL_MOCKPAY_URL` 使用方增加 `recon`，用于在账单下载时签名与请求渠道。不新增配置项、错误码或单号前缀。 |

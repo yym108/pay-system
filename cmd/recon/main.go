@@ -116,7 +116,15 @@ func executeCLI(cfg config.Recon, opt cliOptions, stdout io.Writer) error {
 	if err != nil {
 		return err
 	}
-	svc := biz.NewRecon(db, ids, clock.Real{}, []string{"mockpay"}, nil, nil)
+	dl, err := biz.NewBillDownloader(db, biz.BillDownloaderConfig{
+		BaseURL: cfg.ChannelMockpayURL,
+		Key:     []byte(cfg.ChannelMockpayKey),
+		Clock:   clock.Real{},
+	})
+	if err != nil {
+		return err
+	}
+	svc := biz.NewRecon(db, ids, clock.Real{}, []string{"mockpay"}, dl, nil)
 	ctx, rcancel := context.WithTimeout(context.Background(), handler.ServerTimeout)
 	defer rcancel()
 	out, err := svc.RunBatch(ctx, biz.RunBatchInput{
@@ -158,7 +166,15 @@ func serve(cfg config.Recon, logOut io.Writer) error {
 	if err != nil {
 		return err
 	}
-	svc := biz.NewRecon(db, ids, clock.Real{}, []string{"mockpay"}, nil, nil)
+	dl, err := biz.NewBillDownloader(db, biz.BillDownloaderConfig{
+		BaseURL: cfg.ChannelMockpayURL,
+		Key:     []byte(cfg.ChannelMockpayKey),
+		Clock:   clock.Real{},
+	})
+	if err != nil {
+		return err
+	}
+	svc := biz.NewRecon(db, ids, clock.Real{}, []string{"mockpay"}, dl, nil)
 	sched := job.NewScheduler(svc, clock.Real{}, cfg.ReconRunAt, nil)
 	svc.UseRetryScheduler(sched)
 

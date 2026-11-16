@@ -412,7 +412,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | GW-08 | 商户密钥缓存 | P0 | M7 | GW-03、OPT-01、QA-02 | TODO |
 | GW-09 | 商户 API 路由（退款与转账） | P0 | M4 | GW-01、GW-02、GW-06、TL-01、REF-01、REF-05、TRF-01、TRF-05 | DONE |
 | REC-01 | 对账批次与调度 | P0 | M6 | BASE-03 | DONE |
-| REC-02 | 账单下载与导入 | P0 | M6 | REC-01、CH-08 | TODO |
+| REC-02 | 账单下载与导入 | P0 | M6 | REC-01、CH-08 | DONE |
 | REC-03 | 外部对账比对（按单号） | P0 | M6 | REC-02、CH-06、CH-09、PAY-05 | TODO |
 | REC-04 | 跨日处理 | P0 | — | — | CUT |
 | REC-05 | 内部对账（支付、退款、转账） | P0 | M6 | REC-01、PAY-04、REF-03、TRF-02、TRF-03、MQ-04 | TODO |
@@ -2506,8 +2506,8 @@ account 进程在现有生产者之外用同一组 broker 启动消费组 `accou
 
 验收：
 
-- [ ] 篡改账单内容导致哈希不一致，批次 FAILED。
-- [ ] 1 万行账单导入耗时 < 5 秒。
+- [x] 篡改账单内容导致哈希不一致，批次 FAILED。
+- [x] 1 万行账单导入耗时 < 5 秒。
 
 #### REC-03 外部对账比对
 

@@ -31,8 +31,13 @@ var shanghai = time.FixedZone("Asia/Shanghai", 8*3600)
 var ErrBillNotReady = errors.New("BILL_NOT_READY")
 
 // DownloadResult 是账单下载与导入的结果（由 REC-02 实现填充）。
+// 若 Transitioned 为 true，说明 Downloader 已在同一事务内完成账单导入与 MarkDownloadedCAS，
+// 此时 Won 表示 CAS 是否成功，UpdatedAt 为写入的更新时间。
 type DownloadResult struct {
-	FileHash string
+	FileHash     string
+	Transitioned bool
+	Won          bool
+	UpdatedAt    time.Time
 }
 
 // Downloader 抽象账单下载与导入步骤（REC-02 实现）。
@@ -369,10 +374,17 @@ func (r *Recon) runFromInit(ctx context.Context, batch dal.Batch) (*RunBatchOutp
 		return r.buildOutput(ctx, latest)
 	}
 
-	dlNow := r.now()
-	won, err := dal.MarkDownloadedCAS(ctx, r.db, batch.ID, res.FileHash, batch.UpdatedAt, dlNow)
-	if err != nil {
-		return nil, errno.Wrap(errno.ErrInternal, err)
+	var dlNow time.Time
+	var won bool
+	if res.Transitioned {
+		won = res.Won
+		dlNow = res.UpdatedAt
+	} else {
+		dlNow = r.now()
+		won, err = dal.MarkDownloadedCAS(ctx, r.db, batch.ID, res.FileHash, batch.UpdatedAt, dlNow)
+		if err != nil {
+			return nil, errno.Wrap(errno.ErrInternal, err)
+		}
 	}
 	if !won {
 		latest, gerr := dal.GetBatchByID(ctx, r.db, batch.ID)
