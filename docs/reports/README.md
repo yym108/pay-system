@@ -79,3 +79,4 @@
 | CH-07 | 全局故障配置 | 支付 | `e23311f` | 2026-11-14 | [CH-07-global-fault-config.md](CH-07-global-fault-config.md) |
 | CH-08 | 账单下载 | 支付 | `26a725a` | 2026-11-15 | [CH-08-bill-download.md](CH-08-bill-download.md) |
 | CH-09 | 账单注入 | 支付 | `721b4d6` | 2026-11-15 | [CH-09-bill-inject.md](CH-09-bill-inject.md) |
+| REC-01 | 对账批次与调度 | 对账 | `5b71f72` | 2026-11-16 | [REC-01-recon-batch.md](REC-01-recon-batch.md) |
