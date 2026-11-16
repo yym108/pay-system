@@ -314,3 +314,88 @@ func UpdateDiffPendingCAS(ctx context.Context, exec sqlx.ExtContext, id uint64, 
 	}
 	return n > 0, nil
 }
+
+type diffAggregateRow struct {
+	DiffType         string `db:"diff_type"`
+	TotalCount       int32  `db:"total_count"`
+	AutoHandledCount int32  `db:"auto_handled_count"`
+}
+
+// AggregateBatchDiffs 按 diff_type 实时聚合指定批次的差错数及已自动处理数（handle_action 非空）。
+func AggregateBatchDiffs(ctx context.Context, exec sqlx.ExtContext, batchNo string) (map[string]int32, int32, error) {
+	var rows []diffAggregateRow
+	err := sqlx.SelectContext(ctx, exec, &rows,
+		`SELECT diff_type,
+		        COUNT(*) AS total_count,
+		        COALESCE(SUM(CASE WHEN handle_action IS NOT NULL THEN 1 ELSE 0 END), 0) AS auto_handled_count
+		 FROM recon_diff
+		 WHERE batch_no = ?
+		 GROUP BY diff_type`,
+		batchNo)
+	if err != nil {
+		return nil, 0, fmt.Errorf("aggregate recon_diff by batch %s: %w", batchNo, err)
+	}
+	byType := make(map[string]int32, len(rows))
+	var autoHandled int32
+	for _, r := range rows {
+		byType[r.DiffType] = r.TotalCount
+		autoHandled += r.AutoHandledCount
+	}
+	return byType, autoHandled, nil
+}
+
+const manualDiffWhereClause = `status = 'PENDING'
+  AND ((handle_action IS NOT NULL AND bill_date < ?)
+       OR (diff_type = 'CHANNEL_MISSING' AND channel_status IS NOT NULL))`
+
+// CountManualDiffs 统计“等待人工处理”的差错总数（不限批次）。
+func CountManualDiffs(ctx context.Context, exec sqlx.ExtContext, beforeDate string) (int32, error) {
+	var total int32
+	if err := sqlx.GetContext(ctx, exec, &total,
+		`SELECT COUNT(*) FROM recon_diff WHERE `+manualDiffWhereClause,
+		beforeDate); err != nil {
+		return 0, fmt.Errorf("count manual recon_diff: %w", err)
+	}
+	return total, nil
+}
+
+// ListManualDiffs 查询“等待人工处理”的差错列表，按 bill_date 升序、同 bill_date 内按 id 升序截断。
+func ListManualDiffs(ctx context.Context, exec sqlx.ExtContext, beforeDate string, limit int) ([]Diff, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var list []Diff
+	err := sqlx.SelectContext(ctx, exec, &list,
+		`SELECT `+diffColumns+` FROM recon_diff
+		 WHERE `+manualDiffWhereClause+`
+		 ORDER BY bill_date ASC, id ASC
+		 LIMIT ?`,
+		beforeDate, limit)
+	if err != nil {
+		return nil, fmt.Errorf("list manual recon_diff: %w", err)
+	}
+	return list, nil
+}
+
+type pendingDiffCountRow struct {
+	DiffType string `db:"diff_type"`
+	Count    int64  `db:"cnt"`
+}
+
+// CountPendingDiffsByType 按 diff_type 统计当前所有 PENDING 差错数量。
+func CountPendingDiffsByType(ctx context.Context, exec sqlx.ExtContext) (map[string]int64, error) {
+	var rows []pendingDiffCountRow
+	err := sqlx.SelectContext(ctx, exec, &rows,
+		`SELECT diff_type, COUNT(*) AS cnt
+		 FROM recon_diff
+		 WHERE status = 'PENDING'
+		 GROUP BY diff_type`)
+	if err != nil {
+		return nil, fmt.Errorf("count pending recon_diff by type: %w", err)
+	}
+	out := make(map[string]int64, len(rows))
+	for _, r := range rows {
+		out[r.DiffType] = r.Count
+	}
+	return out, nil
+}

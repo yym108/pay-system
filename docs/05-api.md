@@ -1058,7 +1058,7 @@ account RPC 以商户号（或 owner）为入参，由 account 按商户号路�
 |---|---|---|---|---|---|
 | `RunBatch` | `channel`、`bill_date`、`force` | `batch`（`ReconBatch`）、`diffs`（`ReconDiff`，≤ 100 条）、`manual_total`（i32）、`manual_diffs`（`ReconDiff`，≤ 100 条） | 10001 | gateway（§8.2）、recon 定时任务、CLI | REC-01、REC-08 |
 
-`manual_total`、`manual_diffs` 是“等待人工处理”的差错（§8.2）。当前 IDL 的 `RunBatchResponse` 只有 `1: batch`、`2: diffs`；REC-08 实现时追加 `3: optional i32 manual_total`、`4: optional list<ReconDiff> manual_diffs`，只增不删，旧调用方不受影响。
+`manual_total`、`manual_diffs` 是“等待人工处理”的差错（§8.2）。`idl/recon.thrift` 的 `RunBatchResponse` 已追加 `3: optional i32 manual_total`、`4: optional list<ReconDiff> manual_diffs`，只增不删，旧调用方不受影响。
 
 ## 11. 事件
 

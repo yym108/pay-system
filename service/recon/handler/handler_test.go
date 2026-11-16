@@ -51,6 +51,20 @@ func TestHandlerRunBatchValidationAndConversion(t *testing.T) {
 						CreatedAt: now,
 					},
 				},
+				ManualTotal: 2,
+				ManualDiffs: []dal.Diff{
+					{
+						DiffNo:    "RD000",
+						BatchNo:   "RB000",
+						Channel:   "mockpay",
+						BillDate:  "2026-10-18",
+						DiffType:  "CHANNEL_MISSING",
+						TxnType:   "PAY",
+						BizNo:     "P000",
+						Status:    "PENDING",
+						CreatedAt: now,
+					},
+				},
 			}, nil
 		},
 	})
@@ -71,5 +85,11 @@ func TestHandlerRunBatchValidationAndConversion(t *testing.T) {
 	}
 	if resp.Batch.BatchNo != "RB001" || resp.Batch.Status != "DONE" || len(resp.Diffs) != 1 || resp.Diffs[0].DiffNo != "RD001" {
 		t.Fatalf("unexpected resp: %+v", resp)
+	}
+	if resp.ManualTotal == nil || *resp.ManualTotal != 2 {
+		t.Fatalf("ManualTotal = %v, want 2", resp.ManualTotal)
+	}
+	if len(resp.ManualDiffs) != 1 || resp.ManualDiffs[0].DiffNo != "RD000" {
+		t.Fatalf("ManualDiffs = %+v, want [RD000]", resp.ManualDiffs)
 	}
 }

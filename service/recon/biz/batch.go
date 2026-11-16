@@ -13,6 +13,7 @@ import (
 	"github.com/yym108/pay-system/pkg/clock"
 	"github.com/yym108/pay-system/pkg/errno"
 	"github.com/yym108/pay-system/pkg/idgen"
+	"github.com/yym108/pay-system/pkg/obs"
 	"github.com/yym108/pay-system/service/recon/dal"
 )
 
@@ -76,10 +77,14 @@ type RunBatchInput struct {
 	Force    bool
 }
 
-// RunBatchOutput 是 RunBatch 的输出结果。
+// RunBatchOutput 是 RunBatch 的输出结果（同时作为 CLI 对账报告与 RPC 响应数据源）。
 type RunBatchOutput struct {
-	Batch dal.Batch
-	Diffs []dal.Diff
+	Batch            dal.Batch
+	Diffs            []dal.Diff
+	DiffCountsByType map[string]int32
+	AutoHandledCount int32
+	ManualTotal      int32
+	ManualDiffs      []dal.Diff
 }
 
 type noopDownloader struct{}
@@ -490,6 +495,13 @@ func (r *Recon) runFromChecking(ctx context.Context, batch dal.Batch, startedAt 
 	return r.buildOutput(ctx, latest)
 }
 
+// ManualBeforeDate 返回“等待人工处理”的账期上限（早于 D-8，不含 D-8），D 为东八区当前日期。
+func ManualBeforeDate(now time.Time) string {
+	d := now.In(shanghai)
+	today := time.Date(d.Year(), d.Month(), d.Day(), 0, 0, 0, 0, shanghai)
+	return today.AddDate(0, 0, -(dailyLookbackDays + 1)).Format("2006-01-02")
+}
+
 func (r *Recon) buildOutput(ctx context.Context, batch dal.Batch) (*RunBatchOutput, error) {
 	diffs, err := dal.ListBatchDiffs(ctx, r.db, batch.BatchNo, maxReturnedDiffs)
 	if err != nil {
@@ -498,8 +510,34 @@ func (r *Recon) buildOutput(ctx context.Context, batch dal.Batch) (*RunBatchOutp
 	if diffs == nil {
 		diffs = []dal.Diff{}
 	}
+	byType, autoHandled, err := dal.AggregateBatchDiffs(ctx, r.db, batch.BatchNo)
+	if err != nil {
+		return nil, errno.Wrap(errno.ErrInternal, err)
+	}
+	beforeDate := ManualBeforeDate(r.now())
+	manualTotal, err := dal.CountManualDiffs(ctx, r.db, beforeDate)
+	if err != nil {
+		return nil, errno.Wrap(errno.ErrInternal, err)
+	}
+	manualDiffs, err := dal.ListManualDiffs(ctx, r.db, beforeDate, maxReturnedDiffs)
+	if err != nil {
+		return nil, errno.Wrap(errno.ErrInternal, err)
+	}
+	if manualDiffs == nil {
+		manualDiffs = []dal.Diff{}
+	}
+	pendingByType, err := dal.CountPendingDiffsByType(ctx, r.db)
+	if err != nil {
+		return nil, errno.Wrap(errno.ErrInternal, err)
+	}
+	obs.SetReconPendingDiffs(pendingByType)
+
 	return &RunBatchOutput{
-		Batch: batch,
-		Diffs: diffs,
+		Batch:            batch,
+		Diffs:            diffs,
+		DiffCountsByType: byType,
+		AutoHandledCount: autoHandled,
+		ManualTotal:      manualTotal,
+		ManualDiffs:      manualDiffs,
 	}, nil
 }

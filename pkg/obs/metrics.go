@@ -308,6 +308,29 @@ func AddReconChannelInconsistent(channel string) {
 	reconChannelInconsistent.WithLabelValues(label(channel)).Inc()
 }
 
+var knownReconDiffTypes = []string{
+	"LOCAL_MISSING",
+	"CHANNEL_MISSING",
+	"AMOUNT_MISMATCH",
+	"STATUS_MISMATCH",
+	"LEDGER_MISSING",
+	"TRANSFER_MISMATCH",
+}
+
+// SetReconPendingDiffs 按差错类型刷新当前 PENDING 差错数量 gauge。
+func SetReconPendingDiffs(counts map[string]int64) {
+	seen := make(map[string]struct{}, len(knownReconDiffTypes)+len(counts))
+	for _, dt := range knownReconDiffTypes {
+		seen[dt] = struct{}{}
+		reconPending.WithLabelValues(dt).Set(float64(counts[dt]))
+	}
+	for dt, c := range counts {
+		if _, ok := seen[dt]; !ok {
+			reconPending.WithLabelValues(label(dt)).Set(float64(c))
+		}
+	}
+}
+
 func label(v string) string {
 	if v == "" {
 		return labelUnknown

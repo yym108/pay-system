@@ -465,8 +465,10 @@ var fieldIDToName_RunBatchRequest = map[int16]string{
 }
 
 type RunBatchResponse struct {
-	Batch *ReconBatch  `thrift:"batch,1" frugal:"1,default,ReconBatch" json:"batch"`
-	Diffs []*ReconDiff `thrift:"diffs,2" frugal:"2,default,list<ReconDiff>" json:"diffs"`
+	Batch       *ReconBatch  `thrift:"batch,1" frugal:"1,default,ReconBatch" json:"batch"`
+	Diffs       []*ReconDiff `thrift:"diffs,2" frugal:"2,default,list<ReconDiff>" json:"diffs"`
+	ManualTotal *int32       `thrift:"manual_total,3,optional" frugal:"3,optional,i32" json:"manual_total,omitempty"`
+	ManualDiffs []*ReconDiff `thrift:"manual_diffs,4,optional" frugal:"4,optional,list<ReconDiff>" json:"manual_diffs,omitempty"`
 }
 
 func NewRunBatchResponse() *RunBatchResponse {
@@ -488,15 +490,47 @@ func (p *RunBatchResponse) GetBatch() (v *ReconBatch) {
 func (p *RunBatchResponse) GetDiffs() (v []*ReconDiff) {
 	return p.Diffs
 }
+
+var RunBatchResponse_ManualTotal_DEFAULT int32
+
+func (p *RunBatchResponse) GetManualTotal() (v int32) {
+	if !p.IsSetManualTotal() {
+		return RunBatchResponse_ManualTotal_DEFAULT
+	}
+	return *p.ManualTotal
+}
+
+var RunBatchResponse_ManualDiffs_DEFAULT []*ReconDiff
+
+func (p *RunBatchResponse) GetManualDiffs() (v []*ReconDiff) {
+	if !p.IsSetManualDiffs() {
+		return RunBatchResponse_ManualDiffs_DEFAULT
+	}
+	return p.ManualDiffs
+}
 func (p *RunBatchResponse) SetBatch(val *ReconBatch) {
 	p.Batch = val
 }
 func (p *RunBatchResponse) SetDiffs(val []*ReconDiff) {
 	p.Diffs = val
 }
+func (p *RunBatchResponse) SetManualTotal(val *int32) {
+	p.ManualTotal = val
+}
+func (p *RunBatchResponse) SetManualDiffs(val []*ReconDiff) {
+	p.ManualDiffs = val
+}
 
 func (p *RunBatchResponse) IsSetBatch() bool {
 	return p.Batch != nil
+}
+
+func (p *RunBatchResponse) IsSetManualTotal() bool {
+	return p.ManualTotal != nil
+}
+
+func (p *RunBatchResponse) IsSetManualDiffs() bool {
+	return p.ManualDiffs != nil
 }
 
 func (p *RunBatchResponse) String() string {
@@ -509,6 +543,8 @@ func (p *RunBatchResponse) String() string {
 var fieldIDToName_RunBatchResponse = map[int16]string{
 	1: "batch",
 	2: "diffs",
+	3: "manual_total",
+	4: "manual_diffs",
 }
 
 type ReconService interface {

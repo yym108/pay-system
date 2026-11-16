@@ -63,6 +63,10 @@ struct RunBatchResponse {
     1: ReconBatch batch
     // 最多 100 条，可以是空列表。
     2: list<ReconDiff> diffs
+    // “等待人工处理”的差错总数（不限批次）。
+    3: optional i32 manual_total
+    // “等待人工处理”的差错列表，按 bill_date 升序、同一 bill_date 内按 id 升序取前 100 条。
+    4: optional list<ReconDiff> manual_diffs
 }
 
 service ReconService {

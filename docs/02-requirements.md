@@ -418,7 +418,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | REC-05 | 内部对账（支付、退款、转账） | P0 | M6 | REC-01、PAY-04、REF-03、TRF-02、TRF-03、MQ-04 | DONE |
 | REC-06 | 差错自动处理 | P0 | M6 | REC-03、REC-05、PAY-09、MQ-05 | DONE |
 | REC-07 | 差错人工处理与挂账 | P0 | — | — | CUT |
-| REC-08 | 对账报告 | P0 | M6 | REC-03、REC-05 | TODO |
+| REC-08 | 对账报告 | P0 | M6 | REC-03、REC-05 | DONE |
 | OPS-01 | 健康检查与优雅退出 | P0 | M3 | BASE-08、BASE-09 | DONE |
 | OPS-02 | 链路追踪 | P0 | M5 | GW-01、GW-02、GW-06、ACC-11、MQ-03、MQ-04 | DONE |
 | OPS-03 | 业务与运行指标 | P0 | M5 | OPS-01、GW-02、GW-06、MQ-04 | DONE |
@@ -2620,9 +2620,11 @@ LEDGER_MISSING 复核：每次批次运行（任意账期）都查询全部 `dif
 
 验收：
 
-- [ ] 报告中的笔数和金额与账单、本地数据的手工统计一致。
-- [ ] “等待人工处理”：构造 `bill_date` 为 D−9、`handle_action = REQUERY` 的 PENDING 差错，D−3、`channel_status = FAILED` 的 `CHANNEL_MISSING`，D−3 窗口内 `handle_action = REQUERY`、`channel_status` 为空的差错，以及 D−9、`handle_action` 为空的 `LOCAL_MISSING`。报告的“等待人工处理”恰好列出前两条，`manual_total = 2`，`manual_diffs` 依次为 D−9、D−3 那条。
-- [ ] “等待人工处理”的排序与截断：构造 101 条符合条件的差错，其中 3 条 `bill_date` 相同。`manual_total = 101`，`manual_diffs` 有 100 条，按 `bill_date` 升序；同一 `bill_date` 内按 `id` 升序；被截掉的是排序最后的那条。
+- [x] 报告中的笔数和金额与账单、本地数据的手工统计一致。
+- [x] “等待人工处理”：构造 `bill_date` 为 D−9、`handle_action = REQUERY` 的 PENDING 差错，D−3、`channel_status = FAILED` 的 `CHANNEL_MISSING`，D−3 窗口内 `handle_action = REQUERY`、`channel_status` 为空的差错，以及 D−9、`handle_action` 为空的 `LOCAL_MISSING`。报告的“等待人工处理”恰好列出前两条，`manual_total = 2`，`manual_diffs` 依次为 D−9、D−3 那条。
+- [x] “等待人工处理”的排序与截断：构造 101 条符合条件的差错，其中 3 条 `bill_date` 相同。`manual_total = 101`，`manual_diffs` 有 100 条，按 `bill_date` 升序；同一 `bill_date` 内按 `id` 升序；被截掉的是排序最后的那条。
+
+实现说明（2026-11-16）：`idl/recon.thrift` 的 `RunBatchResponse` 新增 `3: optional i32 manual_total` 与 `4: optional list<ReconDiff> manual_diffs` 并已重新生成 `kitex_gen/recon/`；`service/recon/dal/diff.go` 新增 `AggregateBatchDiffs`、`CountManualDiffs`、`ListManualDiffs` 与 `CountPendingDiffsByType`；`service/recon/biz/batch.go` 扩展 `RunBatchOutput`（含 `DiffCountsByType`、`AutoHandledCount`、`ManualTotal`、`ManualDiffs`），在 `buildOutput` 中实时聚合与刷新 `pay_recon_pending_diffs`（`pkg/obs/metrics.go` 新增 `SetReconPendingDiffs`）；`service/recon/handler/handler.go` 映射返回 `ManualTotal` 与 `ManualDiffs`。
 
 ### 4.11 可观测与运维（OPS）
 

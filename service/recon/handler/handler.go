@@ -44,8 +44,11 @@ func (h *Handler) RunBatch(ctx context.Context, req *recon.RunBatchRequest) (*re
 	if err != nil {
 		return nil, toBizErr(err)
 	}
+	manualTotal := out.ManualTotal
 	return &recon.RunBatchResponse{
-		Batch: toBatch(out.Batch),
-		Diffs: toDiffs(out.Diffs),
+		Batch:       toBatch(out.Batch),
+		Diffs:       toDiffs(out.Diffs),
+		ManualTotal: &manualTotal,
+		ManualDiffs: toDiffs(out.ManualDiffs),
 	}, nil
 }
