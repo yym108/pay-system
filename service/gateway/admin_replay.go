@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/app/server"
@@ -31,6 +32,8 @@ func (h *Handler) registerAdmin(r *server.Hertz) {
 		return
 	}
 	r.POST("/admin/outbox/replay", h.replayOutbox)
+	r.POST("/admin/accounts/check", h.checkAccounts)
+	r.POST("/admin/recon/run", h.runRecon)
 }
 
 // replayView 的字段顺序就是 JSON 顺序：event_id，然后 rebuilt。
@@ -39,10 +42,15 @@ type replayView struct {
 	Rebuilt bool   `json:"rebuilt"`
 }
 
-// replayOutbox 只在管理端口。不读 X-Admin-Token 和 X-Admin-Operator，不写审计日志。
+// replayOutbox 只在管理端口。写操作要求 X-Admin-Operator，并写入审计日志。
 // 非法 JSON 或两个键不是二选一返回 10001，不调用 RPC。
 func (h *Handler) replayOutbox(ctx context.Context, c *app.RequestContext) {
 	if h == nil {
+		return
+	}
+	operator, bad := requireAdminOperator(c)
+	if bad != nil {
+		h.writeRoute(c, bad, nil)
 		return
 	}
 	body, err := c.Body()
@@ -59,16 +67,28 @@ func (h *Handler) replayOutbox(ctx context.Context, c *app.RequestContext) {
 		h.writeRoute(c, errno.ErrInternal, nil)
 		return
 	}
+	params := replayAuditParams(req)
 	resp, err := h.replay.ReplayEvent(ctx, req, callopt.WithRPCTimeout(RPCTimeout("ReplayEvent")))
 	if err != nil {
-		h.writeRoute(c, mapRouteErr(err), nil)
+		mapped := mapRouteErr(err)
+		h.writeAdminAudit(ctx, c, operator, "/admin/outbox/replay", params, mapped)
+		h.writeRoute(c, mapped, nil)
 		return
 	}
 	if resp == nil {
+		h.writeAdminAudit(ctx, c, operator, "/admin/outbox/replay", params, errno.ErrInternal)
 		h.writeRoute(c, errno.ErrInternal, nil)
 		return
 	}
+	h.writeAdminAudit(ctx, c, operator, "/admin/outbox/replay", params, nil)
 	WriteOK(c, replayView{EventID: resp.EventId, Rebuilt: resp.Rebuilt})
+}
+
+func replayAuditParams(req *payment.ReplayEventRequest) string {
+	if req.IsSetEventId() {
+		return fmt.Sprintf("event_id=%s", req.GetEventId())
+	}
+	return fmt.Sprintf("biz_no=%s event_type=%s", req.GetBizNo(), req.GetEventType())
 }
 
 func parseReplay(body []byte) (*payment.ReplayEventRequest, *errno.Error) {

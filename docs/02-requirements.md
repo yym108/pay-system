@@ -408,7 +408,7 @@ Go 1.27、Hertz v0.10.6、Kitex v0.16.3（Thrift）、MySQL 8.4.11、Redis 8.10.
 | GW-04 | 时间窗口与 nonce 防重放 | P0 | M5 | GW-03、GW-06、OPS-01 | DONE |
 | GW-05 | 商户限流（进程内） | P0 | M5 | GW-03 | DONE |
 | GW-06 | 渠道回调入口 | P0 | M3 | GW-01、PAY-04、CH-05、BASE-15 | DONE |
-| GW-07 | 管理接口（重放、核对、触发对账） | P0 | M6 | GW-01、MQ-05、ACC-10、ACC-11、REC-01 | TODO |
+| GW-07 | 管理接口（重放、核对、触发对账） | P0 | M6 | GW-01、MQ-05、ACC-10、ACC-11、REC-01 | DONE |
 | GW-08 | 商户密钥缓存 | P0 | M7 | GW-03、OPT-01、QA-02 | TODO |
 | GW-09 | 商户 API 路由（退款与转账） | P0 | M4 | GW-01、GW-02、GW-06、TL-01、REF-01、REF-05、TRF-01、TRF-05 | DONE |
 | REC-01 | 对账批次与调度 | P0 | M6 | BASE-03 | DONE |
@@ -2404,9 +2404,11 @@ account 进程在现有生产者之外用同一组 broker 启动消费组 `accou
 
 验收：
 
-- [ ] 无 Token、错误 Token 返回 401。
-- [ ] 写操作缺少 `X-Admin-Operator` 返回 `10001`。
-- [ ] 三个接口各调用一次成功：重放返回 MQ-05 的结果，余额核对返回 `passed = true`，触发对账返回批次与差错；每次写操作产生一条审计日志。
+- [x] 无 Token、错误 Token 返回 401。
+- [x] 写操作缺少 `X-Admin-Operator` 返回 `10001`。
+- [x] 三个接口各调用一次成功：重放返回 MQ-05 的结果，余额核对返回 `passed = true`，触发对账返回批次与差错；每次写操作产生一条审计日志。
+
+实现说明（2026-11-16）：管理端口 `:8090` 安装 `adminAuth` 中间件，对 `X-Admin-Token` 与 `ADMIN_TOKEN` 做常量时间比较，失败返回 401 / `20005`（未配置 Token 时 fail-closed 同样拒绝）。写操作（`POST /admin/outbox/replay`、`POST /admin/recon/run`）校验 `X-Admin-Operator`（1–64 字符、非空白、不含换行），缺失或非法返回 `10001` 且不调用 RPC，调用 RPC 后记录一条 `admin write audited` 审计日志（`operator`、`path`、`params`、`result`、`err_code`）。只读接口 `POST /admin/accounts/check` 不要求操作人、不写审计日志；`POST /admin/recon/run` 在 `manual_total` / `manual_diffs` 缺失时默认输出 `0` / `[]`。商户端口 `:8080` 不注册管理路由且跳过管理鉴权。不新增错误码，不改表，不改 IDL。
 
 #### GW-08 商户密钥缓存
 
@@ -3341,3 +3343,4 @@ A5 的 C1–C8、C12 与 A11 的 C9–C11、C13 合起来正好是 QA-01 的 C1�
 | 2026-11-11 | v3.0 | OPT-01：`pkg/obs.Stage` 给已经注册的 `pay_stage_duration_seconds{chain,stage}` 记一次耗时，并在当前 span 上写同名事件，属性是 `chain`、`stage` 和整数 `duration_ns`。没有 span 仍然记直方图。空标签记 `unknown`。结束函数可以放进 defer，重复调用只记一次。同一次请求先结束上一段再开始下一段。`transfer_tcc` 成功路径记 `confirm`，取消路径记 `cancel`。`outbox_wait` 从支付成功事务提交后到本次投递回写成功，`mq_wait` 从这次回写到消费开始，`ledger_tx` 只包住入账事务；这三段不互相包含，数据库事务里不等 Kafka。不新增错误码，不改表，不改 IDL，不新增指标名。§3 改为 DONE。 |
 | 2026-11-11 | v3.0 | OPT-01：阶段槽和链名过不了 Kitex，网关与 payment 各自写本进程 ctx。`gw_auth` 从 trace 中间件进入商户写路由开始，到响应写完记一次；每次 payment RPC 前停表、返回后继续。处理方法本身不算进 gw_auth。RPC 墙钟比 pay_handler_ns 多出来的正差额（编解码）加进 gw_auth。pay_handler_ns 是内部 TTHeader 回传，不是商户头，也不是 JSON 字段。`pay_create`、`pay_submit`、`refund` 用已知链名只记一次。转账在响应写完后按 `Mode` 记（`LOCAL` 为 `transfer_local`，`TCC` 为 `transfer_tcc`，其他值不记）。验签失败、到不了 RPC 时，已知链按已经过去的时间记一次；转账此时没有 `Mode`，不记成别的链。`CreatePayment`、`Pay`、`CreateRefund`、`CreateTransfer` 在取出 traceparent 之后套上阶段槽，span 结束前关闭。`CreateTransfer` 的 `db_insert` 从处理方法入口开始，这一段已经开着时 biz 不再 Begin。biz 只有自己创建槽时才关闭，调用方已有槽时最后一段覆盖到处理方法返回。接口耗时用保留单调钟的 `clock.Mono` 再 `time.Since`。`mq_wait` 用 Kafka 头 `produced_at_ns`（发送时的十进制纳秒，早于 SENT 回写），不把结束函数 Bind 到另一进程；头缺失或无法解析不记样本、不进 DLQ。`outbox_wait` 仍在 payment 进程开始和结束，span 事件用投递当时的 ctx。不新增错误码，不改表，不改 IDL，不新增指标名，不改阶段名。 |
 | 2026-11-16 | v3.0 | PAY-09：`SyncChannelTxn(biz_no)` 落地。请求为 nil 或 `biz_no` 为空返回 `10001`（不进 biz）；`channel_txn` 不存在返回 `30001`；渠道查单失败返回 `10004`，本地配置错误返回 `10003`。本地已是终态时只返回双方状态且 `changed = false`；本地为 `PROCESSING` 时按 PAY-05 分发规则推进（`source = QUERY`，退款重提被拒为 `SYNC`），重读 `channel_txn` 返回同步后 `local_status` 与 `changed`。服务端处理超时 2 秒。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |
+| 2026-11-16 | v3.0 | GW-07：管理端口 `:8090` 启用 `X-Admin-Token` 常量时间比较（401 / `20005`，未配置 Token 时 fail-closed 拒绝），写操作（重放、触发对账）校验 `X-Admin-Operator`（1–64 字符非空，缺失/非法返回 `10001`）并写审计日志；接入 `POST /admin/accounts/check` 与 `POST /admin/recon/run`（`manual_total`/`manual_diffs` 缺失补 `0`/`[]`）。商户端口 `:8080` 不注册管理路由且不校验管理 Token。不新增错误码，不改表，不改 IDL。§3 改为 DONE。 |

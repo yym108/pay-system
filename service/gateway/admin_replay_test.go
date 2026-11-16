@@ -31,10 +31,11 @@ func (f *replayFake) ReplayEvent(_ context.Context, req *payment.ReplayEventRequ
 
 func TestAdminReplay(t *testing.T) {
 	fake := &replayFake{resp: &payment.ReplayEventResponse{EventId: "EV9", Rebuilt: true}}
-	admin := startGW(t, NewAdmin(WithReplayAPI(fake)), nil)
+	admin := startGW(t, NewAdmin(WithAdminToken(testAdminToken), WithReplayAPI(fake)), nil)
 	merchant := startGW(t, NewMerchant(), nil)
+	hdr := adminHeaders(testAdminToken, "ops-replay")
 
-	got := do(t, http.MethodPost, "http://"+admin+"/admin/outbox/replay", []byte(`{"event_id":"EV9","note":1}`), nil)
+	got := do(t, http.MethodPost, "http://"+admin+"/admin/outbox/replay", []byte(`{"event_id":"EV9","note":1}`), hdr)
 	env := decodeEnv(t, got.body)
 	if got.status != http.StatusOK || signed(got.header) || env.Code != 0 || fake.calls != 1 {
 		t.Fatalf("status %d signed %v env %+v calls %d body %s", got.status, signed(got.header), env, fake.calls, got.body)
@@ -56,7 +57,7 @@ func TestAdminReplay(t *testing.T) {
 		`{"event_id":""}`,
 		`{"event_id":1}`,
 	} {
-		got = do(t, http.MethodPost, "http://"+admin+"/admin/outbox/replay", []byte(body), nil)
+		got = do(t, http.MethodPost, "http://"+admin+"/admin/outbox/replay", []byte(body), hdr)
 		env = decodeEnv(t, got.body)
 		if got.status != http.StatusBadRequest || env.Code != errno.ErrInvalidParam.Code || signed(got.header) {
 			t.Fatalf("body %s status %d env %+v", body, got.status, env)
@@ -66,7 +67,7 @@ func TestAdminReplay(t *testing.T) {
 		t.Fatalf("invalid body called rpc %d", fake.calls-before)
 	}
 
-	got = do(t, http.MethodPost, "http://"+admin+"/admin/outbox/replay", []byte(`{"biz_no":"PA1","event_type":"payment.succeeded","event_id":""}`), nil)
+	got = do(t, http.MethodPost, "http://"+admin+"/admin/outbox/replay", []byte(`{"biz_no":"PA1","event_type":"payment.succeeded","event_id":""}`), hdr)
 	env = decodeEnv(t, got.body)
 	if got.status != http.StatusOK || env.Code != 0 || fake.calls != before+1 {
 		t.Fatalf("biz replay status %d env %+v calls %d", got.status, env, fake.calls)
@@ -76,20 +77,20 @@ func TestAdminReplay(t *testing.T) {
 	}
 
 	fake.err = kerrors.NewBizStatusError(errno.ErrNotFound.Code, errno.ErrNotFound.Msg)
-	got = do(t, http.MethodPost, "http://"+admin+"/admin/outbox/replay", []byte(`{"event_id":"EV_NONE"}`), nil)
+	got = do(t, http.MethodPost, "http://"+admin+"/admin/outbox/replay", []byte(`{"event_id":"EV_NONE"}`), hdr)
 	env = decodeEnv(t, got.body)
 	if got.status != http.StatusNotFound || env.Code != errno.ErrNotFound.Code {
 		t.Fatalf("missing status %d env %+v", got.status, env)
 	}
 	fake.err = kerrors.NewBizStatusError(errno.ErrOrderStatusConflict.Code, errno.ErrOrderStatusConflict.Msg)
-	got = do(t, http.MethodPost, "http://"+admin+"/admin/outbox/replay", []byte(`{"event_id":"EV_PAYING"}`), nil)
+	got = do(t, http.MethodPost, "http://"+admin+"/admin/outbox/replay", []byte(`{"event_id":"EV_PAYING"}`), hdr)
 	env = decodeEnv(t, got.body)
 	if got.status != http.StatusConflict || env.Code != errno.ErrOrderStatusConflict.Code {
 		t.Fatalf("conflict status %d env %+v", got.status, env)
 	}
 
-	none := startGW(t, NewAdmin(), nil)
-	got = do(t, http.MethodPost, "http://"+none+"/admin/outbox/replay", []byte(`{"event_id":"EV1"}`), nil)
+	none := startGW(t, NewAdmin(WithAdminToken(testAdminToken)), nil)
+	got = do(t, http.MethodPost, "http://"+none+"/admin/outbox/replay", []byte(`{"event_id":"EV1"}`), hdr)
 	env = decodeEnv(t, got.body)
 	if got.status != http.StatusInternalServerError || env.Code != errno.ErrInternal.Code {
 		t.Fatalf("nil client status %d env %+v", got.status, env)

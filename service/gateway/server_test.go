@@ -244,13 +244,13 @@ func TestPlatformSignAndAdminNeverSigns(t *testing.T) {
 		t.Fatal("unsigned request was signed")
 	}
 
-	adminAddr := startGW(t, NewAdmin(WithClock(clk), WithSignSecret(secret)), func(r *server.Hertz) {
+	adminAddr := startGW(t, NewAdmin(WithAdminToken(testAdminToken), WithClock(clk), WithSignSecret(secret)), func(r *server.Hertz) {
 		r.GET("/admin", func(_ context.Context, c *app.RequestContext) {
 			MarkVerified(c)
 			WriteOK(c, map[string]int{"n": 1})
 		})
 	})
-	adminResp := do(t, http.MethodGet, "http://"+adminAddr+"/admin", nil, nil)
+	adminResp := do(t, http.MethodGet, "http://"+adminAddr+"/admin", nil, adminHeaders(testAdminToken, ""))
 	if adminResp.status != http.StatusOK || signed(adminResp.header) {
 		t.Fatalf("admin status %d signed %v body %s", adminResp.status, signed(adminResp.header), adminResp.body)
 	}

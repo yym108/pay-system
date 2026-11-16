@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | 3.6.3 |
+| 文档版本 | 3.6.4 |
 | API 版本 | v1（路径前缀 `/v1`） |
 | 最后修改 | 2026-11-16 |
 | 状态 | 设计基线，实现须与本文一致 |
@@ -91,6 +91,7 @@
 | 3.6.1 | 2026-11-14 | 文字对齐：CH-07 已在管理端口（:6064）实现 `GET /mockpay/admin/config` 与 `PUT /mockpay/admin/config`（业务端口 :9080 不提供）。`PUT` 支持局部或全量 JSON 更新，非法 JSON、未知/重复/`null` 字段或越界值返回 400，非 GET/PUT 返回 405。CH-09 的 `bill-inject` 仍待实现。不新增错误码，不改 IDL | §1、§9.8 | CH-07 |
 | 3.6.2 | 2026-11-15 | CH-09 已在管理端口（:6064）实现 `POST /mockpay/admin/bill-inject`（业务端口 :9080 不提供）。非法 JSON、缺必填字段、未知/重复/`null` 字段或非法参数返回 400，同 `(txn_type, req_no)` 冲突返回 409，同参数重复注入幂等返回 200，非 POST 返回 405。不新增错误码，不改 IDL | §1、§9.8 | CH-09 |
 | 3.6.3 | 2026-11-16 | `SyncChannelTxn`（PAY-09）已实现，仅对账自动处理 REC-06 使用。请求为 nil 或 `biz_no` 为空返回 `10001`（不进 biz）；`channel_txn` 不存在返回 `30001`；渠道查单失败返回 `10004`，本地配置错误返回 `10003`。本地终态只返回双方状态且 `changed = false`；本地 `PROCESSING` 按 PAY-05 分发推进并重读 `local_status`。`PaymentService` 全部 12 个方法均已实现。服务端处理超时 2 秒。不新增字段，不新增错误码，不改 IDL | §1、§10.2 | PAY-09 |
+| 3.6.4 | 2026-11-16 | GW-07 管理接口落地：管理端口 `:8090` 启用 `X-Admin-Token` 常量时间校验（失败返回 401 / `20005`），写操作（`POST /admin/outbox/replay`、`POST /admin/recon/run`）校验 `X-Admin-Operator`（缺失或非法返回 `10001`）并写审计日志；接入 `POST /admin/accounts/check` 与 `POST /admin/recon/run`。不新增字段，不新增错误码，不改 IDL | §1、§8.1–§8.4 | GW-07 |
 
 ## 1. 接口总览
 
@@ -122,9 +123,9 @@
 | 商户异步通知 | §6 | — | NTF-01、NTF-02 | 1.0.0 | 2026-11-11 |
 | merchant-demo `POST /notify`、`GET /stats` | §6.1 | — | TL-02 | 3.4.0 | 2026-11-11 |
 | `POST /callback/mockpay` 渠道回调入口 | §7 | `PaymentService.HandleChannelNotify` | GW-06、REF-03 | 1.0.0 | 2026-11-05 |
-| `POST /admin/recon/run` 执行对账 | §8.2 | `ReconService.RunBatch` | REC-01、REC-08 | 1.0.0 | 2026-10-27 |
-| `POST /admin/outbox/replay` 事件重放 | §8.3 | `PaymentService.ReplayEvent` | MQ-05 | 1.0.0 | 2026-11-10 |
-| `POST /admin/accounts/check` 余额核对 | §8.4 | `AccountService.CheckBalance` | ACC-10 | 1.0.0 | 2026-10-27 |
+| `POST /admin/recon/run` 执行对账 | §8.2 | `ReconService.RunBatch` | REC-01、REC-08、GW-07 | 1.0.0 | 2026-11-16 |
+| `POST /admin/outbox/replay` 事件重放 | §8.3 | `PaymentService.ReplayEvent` | MQ-05、GW-07 | 1.0.0 | 2026-11-16 |
+| `POST /admin/accounts/check` 余额核对 | §8.4 | `AccountService.CheckBalance` | ACC-10、GW-07 | 1.0.0 | 2026-11-16 |
 | 模拟渠道 `pay` / `query` / `close` / `refund` / `bills` | §9.2–§9.6 | — | CH-01~04、CH-08 | 1.0.0 | 2026-11-03 |
 | 模拟渠道回调 | §9.7 | — | CH-05、CH-06 | 1.0.0 | 2026-10-27 |
 | 模拟渠道管理 `config` / `bill-inject` | §9.8 | — | CH-07、CH-09 | 1.0.0 | 2026-11-15 |
@@ -667,7 +668,7 @@ PAY 回调推进支付单（GW-06、PAY-04），REFUND 回调推进退款单（R
 
 - 地址 `http://127.0.0.1:8090`，鉴权见 §3.6；响应结构同 §2.3，不签名。
 - 通用错误：`20005`、`10001`、`10003`、`10004`。
-- 写操作（执行对账、事件重放）必须带 `X-Admin-Operator`，并写入审计日志（操作人、接口、参数摘要、结果）。余额核对只读。MQ-05 已注册的重放路由目前不校验令牌和操作人，也不写审计日志；缺操作人不是 `10001`。令牌、操作人必填和审计日志仍是 GW-07。
+- 写操作（执行对账、事件重放）必须带 `X-Admin-Operator`，并写入审计日志（操作人、接口、参数摘要、结果）。余额核对只读。
 - 只提供以下三个接口（GW-07）；对账结果在执行接口的响应中返回，不提供批次、差错、流水的列表查询，也不提供差错人工处理接口。
 
 ### 8.2 执行对账
@@ -721,7 +722,7 @@ PAY 回调推进支付单（GW-06、PAY-04），REFUND 回调推进退款单（R
 
 业务错误：`10002`（事件不存在且不能重建）、`30003`（单据状态与事件类型不符，如 PAYING 订单重建 `payment.succeeded`、非 FAILED 转账单重建 `transfer.failed`）。
 
-实现（MQ-05）：管理端口已注册这条路由，调用 `PaymentService.ReplayEvent`。商户端口不注册。响应不签名。不读 `X-Admin-Token`、`X-Admin-Operator`，不写审计日志。请求体是一个 JSON 对象。空串和 JSON null 算没提供，不 trim。只含非空 `event_id`，或只含非空 `biz_no` 与 `event_type`，才调用 RPC。两个都给、都不给、只给一半、空 body、非法 JSON 或字段类型不对，返回已有的 `10001`，不调用 RPC。未知字段忽略。成功时 `data` 是 `{"event_id","rebuilt"}`。`10002` 的 HTTP 是 404，`30003` 是 409。网关调用超时是默认 1 秒，不重试。不新增字段。
+实现（MQ-05、GW-07）：管理端口已注册这条路由，调用 `PaymentService.ReplayEvent`。商户端口不注册。响应不签名。校验 `X-Admin-Token` 与 `X-Admin-Operator`，并写审计日志。请求体是一个 JSON 对象。空串和 JSON null 算没提供，不 trim。只含非空 `event_id`，或只含非空 `biz_no` 与 `event_type`，才调用 RPC。两个都给、都不给、只给一半、空 body、非法 JSON 或字段类型不对，返回已有的 `10001`，不调用 RPC。未知字段忽略。成功时 `data` 是 `{"event_id","rebuilt"}`。`10002` 的 HTTP 是 404，`30003` 是 409。网关调用超时是默认 1 秒，不重试。不新增字段。
 
 ### 8.4 余额核对
 

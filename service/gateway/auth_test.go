@@ -618,8 +618,8 @@ func TestGW03UnsignedBalance(t *testing.T) {
 // GW-03 验收：管理端口未签名 /v1 仍是 404、不签名、lookup 调用次数为 0。
 func TestGW03AdminSkipsLookup(t *testing.T) {
 	look := &fakeLookup{}
-	addr := startGW(t, NewAdmin(WithMerchantLookup(look)), nil)
-	got := do(t, http.MethodGet, "http://"+addr+"/v1/gw03-probe", nil, nil)
+	addr := startGW(t, NewAdmin(WithAdminToken(testAdminToken), WithMerchantLookup(look)), nil)
+	got := do(t, http.MethodGet, "http://"+addr+"/v1/gw03-probe", nil, adminHeaders(testAdminToken, ""))
 	if got.status != http.StatusNotFound {
 		t.Fatalf("status %d body %s", got.status, got.body)
 	}

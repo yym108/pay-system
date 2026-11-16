@@ -29,21 +29,24 @@ const (
 
 // Handler 是一个端口上的中间件和响应签名。商户端口和管理端口各一个。
 type Handler struct {
-	admin      bool
-	clk        clock.Clock
-	secret     []byte
-	lookup     MerchantLookup
-	payment    paymentAPI
-	account    accountAPI
-	notify     notifyAPI
-	replay     replayAPI
-	channelKey []byte
-	nonces     NonceStore
-	nextNonce  func() (string, error)
-	logger     *slog.Logger
-	limiters   sync.Map
-	defLimit   limitSpec
-	byApp      map[string]limitSpec
+	admin        bool
+	clk          clock.Clock
+	secret       []byte
+	adminToken   []byte
+	lookup       MerchantLookup
+	payment      paymentAPI
+	account      accountAPI
+	notify       notifyAPI
+	replay       replayAPI
+	checkBalance checkBalanceAPI
+	recon        reconAPI
+	channelKey   []byte
+	nonces       NonceStore
+	nextNonce    func() (string, error)
+	logger       *slog.Logger
+	limiters     sync.Map
+	defLimit     limitSpec
+	byApp        map[string]limitSpec
 	// rateAllow 非 nil 时代替令牌桶。测试用来计数，或让已验签的 /v1 全部被拒绝。生产保持 nil。
 	rateAllow func(appID string, now time.Time) (ok bool, retryAfter string)
 }
@@ -128,6 +131,7 @@ func (h *Handler) Register(r *server.Hertz) {
 	r.Use(h.nonce)
 	r.Use(h.platformSign)
 	if h.admin {
+		r.Use(h.adminAuth)
 		h.registerAdmin(r)
 	} else {
 		h.registerV1(r)
